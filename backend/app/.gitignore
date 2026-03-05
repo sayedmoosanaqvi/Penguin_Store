@@ -1,0 +1,10 @@
+# Python Backend
+backend/venv/
+backend/__pycache__/
+*.pyc
+
+# Flutter Frontend
+frontend/.dart_tool/
+frontend/build/
+frontend/.flutter-plugins
+frontend/.flutter-plugins-dependencies
