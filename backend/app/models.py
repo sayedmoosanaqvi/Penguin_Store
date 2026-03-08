@@ -21,6 +21,8 @@ class User(Base):
     __tablename__ = "users"
 
     # 2. Fixed the underscore in primary_key
+    # In your User model
+    is_admin = Column(Boolean, default=False)
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String, unique=True, index=True)
     hashed_password = Column(String)
