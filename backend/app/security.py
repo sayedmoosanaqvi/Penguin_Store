@@ -1,6 +1,8 @@
 import bcrypt
 from datetime import datetime, timedelta
 from jose import jwt
+from fastapi import Security, HTTPException, status
+from fastapi.security import APIKeyHeader
 
 # --- 1. NEW BCRYPT HASHING LOGIC (No Passlib) ---
 
@@ -31,3 +33,18 @@ def create_access_token(data: dict):
     # This creates the secure, scrambled JWT string
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
+
+   
+
+# 🛑 This is the key you will give to your partner! 
+# In a real app, put this in a .env file. For now, hardcode it to test.
+AGENT_API_KEY = "ctrl_x_alpha_key_2026" 
+api_key_header = APIKeyHeader(name="X-Agent-Key", auto_error=True)
+
+async def verify_agent(api_key: str = Security(api_key_header)):
+    if api_key != AGENT_API_KEY:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, 
+            detail="Access Denied: Invalid CTRL-X Agent Key"
+        )
+    return api_key

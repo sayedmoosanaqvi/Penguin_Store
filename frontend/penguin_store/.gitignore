@@ -43,19 +43,3 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
-
-# =========================
-# Backend / Python Related
-# =========================
-# Virtual environments
-venv/
-env/
-.env
-
-# Byte-compiled / optimized / DLL files
-__pycache__/
-*.py[cod]
-*$py.class
-
-# FastAPI / Uvicorn caching
-.pytest_cache/

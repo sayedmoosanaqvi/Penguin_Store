@@ -12,6 +12,7 @@ from . import models, schemas
 from .database import engine, get_db
 from .security import get_password_hash, verify_password, create_access_token
 from .models import User
+from .routers import agent
 
 # This loads your secret keys from the .env file so Python can use them safely
 load_dotenv()
@@ -40,6 +41,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(agent.router)
+
+@app.get("/")
+def read_root():
+    return {"message": "Penguin Store Backend is running."}
 
 @app.get("/")
 def read_root():
