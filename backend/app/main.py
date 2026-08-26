@@ -8,11 +8,17 @@ import uuid
 import boto3
 from dotenv import load_dotenv
 
+
 from . import models, schemas
 from .database import engine, get_db
 from .security import get_password_hash, verify_password, create_access_token
 from .models import User
 from .routers import agent
+from .routers import stripe
+from app.routers import stripe
+from app.routers import agent_chat
+from app.routers import supplier
+from app.routers import orders
 
 # This loads your secret keys from the .env file so Python can use them safely
 load_dotenv()
@@ -43,6 +49,17 @@ app.add_middleware(
 )
 
 app.include_router(agent.router)
+app.include_router(stripe.router)
+app.include_router(stripe.router)
+app.include_router(agent_chat.router)
+
+
+# Include the router in your FastAPI application
+app.include_router(orders.router)
+
+
+# Add this to your router list
+app.include_router(supplier.router)
 
 @app.get("/")
 def read_root():

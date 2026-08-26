@@ -47,15 +47,15 @@ class _ProductCardState extends State<ProductCard> {
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 200),
           decoration: BoxDecoration(
-            color: AppColors.pureWhite,
+            color: AppColors.card,
             borderRadius: BorderRadius.circular(16),
             border: Border.all(
-              color: isHovering ? AppColors.accentYellow : Colors.transparent,
+              color: isHovering ? AppColors.primary : Colors.transparent,
               width: 2,
             ),
             boxShadow: [
               BoxShadow(
-                color: AppColors.primaryBlack.withOpacity(0.05),
+                color: AppColors.background.withOpacity(0.3),
                 blurRadius: 10,
                 offset: const Offset(0, 4),
               ),
@@ -86,7 +86,7 @@ class _ProductCardState extends State<ProductCard> {
                         child: Container(
                           decoration: const BoxDecoration(
                             borderRadius: BorderRadius.vertical(top: Radius.circular(14)),
-                            color: AppColors.primaryBlack,
+                            color: AppColors.background,
                           ),
                         ),
                       ),
@@ -99,9 +99,9 @@ class _ProductCardState extends State<ProductCard> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           if (widget.product.discountPercent != null)
-                            _buildTag('-${widget.product.discountPercent}%', AppColors.primaryBlack, AppColors.accentYellow),
+                            _buildTag('-${widget.product.discountPercent}%', AppColors.background, AppColors.primary),
                           if (widget.product.isFeatured)
-                            _buildTag('FEATURED', AppColors.accentYellow, AppColors.primaryBlack),
+                            _buildTag('FEATURED', AppColors.primary, AppColors.background),
                         ],
                       ),
                     ),
@@ -143,8 +143,8 @@ class _ProductCardState extends State<ProductCard> {
                             padding: const EdgeInsets.all(12.0),
                             child: ElevatedButton.icon(
                               style: ElevatedButton.styleFrom(
-                                backgroundColor: AppColors.accentYellow,
-                                foregroundColor: AppColors.primaryBlack,
+                                backgroundColor: AppColors.primary,
+                                foregroundColor: AppColors.background,
                                 minimumSize: const Size(double.infinity, 44),
                                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                               ),
@@ -152,7 +152,7 @@ class _ProductCardState extends State<ProductCard> {
                                 Provider.of<CartProvider>(context, listen: false).addToCart(widget.product);
                                 ScaffoldMessenger.of(context).showSnackBar(
                                   SnackBar(
-                                    backgroundColor: AppColors.primaryBlack,
+                                    backgroundColor: AppColors.background,
                                     behavior: SnackBarBehavior.floating,
                                     duration: const Duration(seconds: 1),
                                     content: Text('${widget.product.name} added to cart!'),
@@ -182,23 +182,23 @@ class _ProductCardState extends State<ProductCard> {
                     const SizedBox(height: 6),
                     Text(
                       widget.product.name,
-                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: AppColors.primaryBlack),
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: AppColors.whiteText),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
                     const SizedBox(height: 6),
                     Row(
                       children: [
-                        const Icon(Icons.star, color: AppColors.accentYellow, size: 16),
+                        const Icon(Icons.star, color: AppColors.primary, size: 16),
                         const SizedBox(width: 4),
-                        Text("${widget.product.rating}", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                        Text("${widget.product.rating}", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: AppColors.whiteText)),
                         Text(" (${widget.product.reviews})", style: TextStyle(color: Colors.grey[500], fontSize: 12)),
                       ],
                     ),
                     const SizedBox(height: 10),
                     Text(
                       '\$${widget.product.price.toStringAsFixed(2)}',
-                      style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 18, color: AppColors.primaryBlack),
+                      style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 18, color: AppColors.primary),
                     ),
                   ],
                 ),

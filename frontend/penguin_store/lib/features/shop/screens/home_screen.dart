@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:penguin_store/features/shop/widgets/right_drawer.dart';
 import 'package:penguin_store/features/shop/widgets/top_nav_bar.dart';
 import '../../../core/responsive/responsive_layout.dart';
@@ -6,7 +7,7 @@ import '../../../core/theme/app_colors.dart';
 import '../models/product_model.dart';
 import '../widgets/product_card.dart';
 import '../services/product_service.dart';
-import '../widgets/product_card_skeleton.dart'; 
+import '../widgets/product_card_skeleton.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -17,11 +18,17 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   final ProductService _productService = ProductService();
-  
+
   late Future<List<Product>> _productsFuture;
 
-  String _selectedCategory = 'All'; 
-  final List<String> _categories = ['All', 'Shirts', 'Pants', 'Men Shoes', 'Accessories'];
+  String _selectedCategory = 'All';
+  final List<String> _categories = [
+    'All',
+    'Shirts',
+    'Pants',
+    'Men Shoes',
+    'Accessories',
+  ];
 
   @override
   void initState() {
@@ -29,36 +36,32 @@ class _HomeScreenState extends State<HomeScreen> {
     _productsFuture = _productService.fetchProducts();
   }
 
-  // UPGRADED: Now a Future so the Pull-to-Refresh circle knows when to stop spinning
   Future<void> _refreshProducts() async {
     setState(() {
       _productsFuture = _productService.fetchProducts();
     });
-    // Wait for the new data to arrive before hiding the refresh indicator
-    await _productsFuture; 
+    await _productsFuture;
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: AppColors.primaryBlack, 
+      backgroundColor: AppColors.background,
       appBar: const TopNavBar(),
       endDrawer: const RightDrawer(),
-      // UPGRADED: Wrapped the body in a RefreshIndicator
       body: RefreshIndicator(
-        color: AppColors.primaryBlack,
-        backgroundColor: AppColors.accentYellow,
-        onRefresh: _refreshProducts, // Triggers our new Future method
+        color: AppColors.background,
+        backgroundColor: AppColors.primary,
+        onRefresh: _refreshProducts,
         child: SingleChildScrollView(
-          // UPGRADED: Forces the screen to be drag-able even if it's mostly empty
-          physics: const AlwaysScrollableScrollPhysics(), 
+          physics: const AlwaysScrollableScrollPhysics(),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Container(
                 width: double.infinity,
                 decoration: const BoxDecoration(
-                  color: AppColors.secondaryWhite,
+                  color: AppColors.card,
                   borderRadius: BorderRadius.only(
                     topLeft: Radius.circular(32),
                     topRight: Radius.circular(32),
@@ -68,22 +71,23 @@ class _HomeScreenState extends State<HomeScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     const Padding(
-                      padding: EdgeInsets.only(left: 40.0, top: 40.0, bottom: 10.0),
+                      padding: EdgeInsets.only(
+                        left: 40.0,
+                        top: 40.0,
+                        bottom: 10.0,
+                      ),
                       child: Text(
                         'Featured Products',
                         style: TextStyle(
                           fontSize: 32,
                           fontWeight: FontWeight.bold,
-                          color: AppColors.primaryBlack,
+                          color: AppColors.whiteText,
                         ),
                       ),
                     ),
-
                     _buildCategoryFilter(),
                     const SizedBox(height: 20),
-
                     _buildLiveGrid(),
-
                     const SizedBox(height: 60),
                   ],
                 ),
@@ -93,9 +97,11 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       ),
       floatingActionButton: FloatingActionButton(
-        backgroundColor: AppColors.accentYellow,
-        foregroundColor: AppColors.primaryBlack,
-        onPressed: () {},
+        backgroundColor: AppColors.primary,
+        foregroundColor: AppColors.background,
+        onPressed: () {
+          context.go('/ctrlx');
+        },
         child: const Icon(Icons.auto_awesome),
       ),
     );
@@ -106,7 +112,7 @@ class _HomeScreenState extends State<HomeScreen> {
       height: 50,
       child: ListView.builder(
         scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 40), 
+        padding: const EdgeInsets.symmetric(horizontal: 40),
         itemCount: _categories.length,
         itemBuilder: (context, index) {
           final category = _categories[index];
@@ -118,15 +124,17 @@ class _HomeScreenState extends State<HomeScreen> {
               label: Text(
                 category,
                 style: TextStyle(
-                  color: isSelected ? AppColors.primaryBlack : Colors.grey[700],
+                  color: isSelected ? AppColors.background : Colors.grey[400],
                   fontWeight: FontWeight.bold,
                 ),
               ),
               selected: isSelected,
-              selectedColor: AppColors.accentYellow,
-              backgroundColor: Colors.white,
-              side: BorderSide(color: isSelected ? AppColors.accentYellow : Colors.grey[300]!),
-              showCheckmark: false, 
+              selectedColor: AppColors.primary,
+              backgroundColor: AppColors.card,
+              side: BorderSide(
+                color: isSelected ? AppColors.primary : AppColors.border,
+              ),
+              showCheckmark: false,
               onSelected: (bool selected) {
                 setState(() {
                   _selectedCategory = category;
@@ -143,8 +151,6 @@ class _HomeScreenState extends State<HomeScreen> {
     return FutureBuilder<List<Product>>(
       future: _productsFuture,
       builder: (context, snapshot) {
-        
-        // 1. SHOW SHIMMER SKELETON WHILE LOADING
         if (snapshot.connectionState == ConnectionState.waiting) {
           return ResponsiveLayout(
             mobile: _buildShimmerGrid(crossAxisCount: 2, isMobile: true),
@@ -158,13 +164,13 @@ class _HomeScreenState extends State<HomeScreen> {
 
         final allProducts = snapshot.data!;
 
-        // 2. SMART FUZZY FILTERING
-        final filteredProducts = _selectedCategory == 'All' 
-            ? allProducts 
+        final filteredProducts = _selectedCategory == 'All'
+            ? allProducts
             : allProducts.where((p) {
                 String databaseCategory = p.category.trim().toLowerCase();
                 String buttonCategory = _selectedCategory.trim().toLowerCase();
-                return databaseCategory.contains(buttonCategory) || buttonCategory.contains(databaseCategory);
+                return databaseCategory.contains(buttonCategory) ||
+                    buttonCategory.contains(databaseCategory);
               }).toList();
 
         if (filteredProducts.isEmpty) {
@@ -173,22 +179,32 @@ class _HomeScreenState extends State<HomeScreen> {
               padding: const EdgeInsets.all(40.0),
               child: Text(
                 'No $_selectedCategory available right now.',
-                style: TextStyle(fontSize: 16, color: Colors.grey[600]),
+                style: TextStyle(fontSize: 16, color: Colors.grey[400]),
               ),
             ),
           );
         }
 
-        // 3. RENDER THE ACTUAL PRODUCTS
         return ResponsiveLayout(
-          mobile: _gridBuilder(filteredProducts, crossAxisCount: 2, isMobile: true),
-          desktop: _gridBuilder(filteredProducts, crossAxisCount: 4, isMobile: false),
+          mobile: _gridBuilder(
+            filteredProducts,
+            crossAxisCount: 2,
+            isMobile: true,
+          ),
+          desktop: _gridBuilder(
+            filteredProducts,
+            crossAxisCount: 4,
+            isMobile: false,
+          ),
         );
       },
     );
   }
 
-  Widget _buildShimmerGrid({required int crossAxisCount, required bool isMobile}) {
+  Widget _buildShimmerGrid({
+    required int crossAxisCount,
+    required bool isMobile,
+  }) {
     return Padding(
       padding: EdgeInsets.symmetric(horizontal: isMobile ? 16.0 : 40.0),
       child: GridView.builder(
@@ -200,7 +216,7 @@ class _HomeScreenState extends State<HomeScreen> {
           mainAxisSpacing: 16,
           childAspectRatio: 0.68,
         ),
-        itemCount: 6, 
+        itemCount: 6,
         itemBuilder: (context, index) {
           return const ProductCardSkeleton();
         },
@@ -228,7 +244,7 @@ class _HomeScreenState extends State<HomeScreen> {
         itemBuilder: (context, index) {
           return ProductCard(
             product: products[index],
-            onProductDeleted: _refreshProducts, 
+            onProductDeleted: _refreshProducts,
           );
         },
       ),

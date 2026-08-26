@@ -13,8 +13,15 @@ class CartProvider with ChangeNotifier {
 
   Map<int, CartItem> get items => _items;
 
-  // THIS IS THE MISSING GETTER
-  int get itemCount => _items.length; 
+  int get itemCount => _items.length;
+
+  double get totalPrice {
+    double total = 0;
+    for (final item in _items.values) {
+      total += item.product.price * item.quantity;
+    }
+    return total;
+  }
 
   void addToCart(Product product) {
     if (_items.containsKey(product.id)) {

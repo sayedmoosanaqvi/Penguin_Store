@@ -8,7 +8,6 @@ import '../services/product_service.dart';
 // IMPORTANT: Import the CtrlXPanel file we created in the last step!
 // Adjust the path if you saved it somewhere else.
 
-
 class AdminScreen extends StatefulWidget {
   const AdminScreen({super.key});
 
@@ -128,12 +127,12 @@ class _AdminScreenState extends State<AdminScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: AppColors.secondaryWhite, 
+      backgroundColor: AppColors.background, 
       appBar: AppBar(
-        title: const Text('Admin Panel', style: TextStyle(color: AppColors.primaryBlack, fontWeight: FontWeight.bold)),
-        backgroundColor: Colors.white,
+        title: const Text('Admin Panel', style: TextStyle(color: AppColors.whiteText, fontWeight: FontWeight.bold)),
+        backgroundColor: AppColors.background,
         elevation: 0.5,
-        iconTheme: const IconThemeData(color: AppColors.primaryBlack),
+        iconTheme: const IconThemeData(color: AppColors.whiteText),
       ),
       
       // --- NEW: THE FLOATING AI AGENT BUTTON ---
@@ -154,7 +153,7 @@ class _AdminScreenState extends State<AdminScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text("New Product", style: TextStyle(color: AppColors.primaryBlack, fontSize: 22, fontWeight: FontWeight.bold)),
+              const Text("New Product", style: TextStyle(color: AppColors.whiteText, fontSize: 22, fontWeight: FontWeight.bold)),
               const SizedBox(height: 25),
 
               // --- NEW PREMIUM IMAGE UPLOAD BOX ---
@@ -164,11 +163,11 @@ class _AdminScreenState extends State<AdminScreen> {
                   height: 200,
                   width: double.infinity,
                   decoration: BoxDecoration(
-                    color: Colors.white,
+                    color: AppColors.card,
                     borderRadius: BorderRadius.circular(20),
-                    border: Border.all(color: AppColors.accentYellow, width: 2),
+                    border: Border.all(color: AppColors.primary, width: 2),
                     boxShadow: [
-                      BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 15, offset: const Offset(0, 5))
+                      BoxShadow(color: Colors.black.withOpacity(0.2), blurRadius: 15, offset: const Offset(0, 5))
                     ],
                   ),
                   child: _imageBytes != null
@@ -192,10 +191,10 @@ class _AdminScreenState extends State<AdminScreen> {
               Container(
                 padding: const EdgeInsets.all(20),
                 decoration: BoxDecoration(
-                  color: Colors.white,
+                  color: AppColors.card,
                   borderRadius: BorderRadius.circular(20),
                   boxShadow: [
-                    BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 15, offset: const Offset(0, 5))
+                    BoxShadow(color: Colors.black.withOpacity(0.2), blurRadius: 15, offset: const Offset(0, 5))
                   ],
                 ),
                 child: Column(
@@ -212,9 +211,9 @@ class _AdminScreenState extends State<AdminScreen> {
                     const SizedBox(height: 10),
                     SwitchListTile(
                       contentPadding: EdgeInsets.zero,
-                      title: const Text("Mark as Featured", style: TextStyle(fontWeight: FontWeight.w500)),
+                      title: const Text("Mark as Featured", style: TextStyle(fontWeight: FontWeight.w500, color: AppColors.whiteText)),
                       value: _isFeatured,
-                      activeColor: AppColors.accentYellow,
+                      activeColor: AppColors.primary,
                       onChanged: (val) => setState(() => _isFeatured = val),
                     ),
                   ],
@@ -246,15 +245,15 @@ class _AdminScreenState extends State<AdminScreen> {
                       height: 60,
                       child: ElevatedButton(
                         style: ElevatedButton.styleFrom(
-                          backgroundColor: AppColors.primaryBlack,
-                          foregroundColor: AppColors.accentYellow,
+                          backgroundColor: AppColors.primaryDark,
+                          foregroundColor: AppColors.whiteText,
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
                           elevation: 5,
                         ),
                         // Disable button if loading to prevent double-clicks
                         onPressed: _isLoading ? null : _submitData,
                         child: _isLoading 
-                            ? const CircularProgressIndicator(color: AppColors.accentYellow) 
+                            ? const CircularProgressIndicator(color: AppColors.whiteText) 
                             : const Text("PUBLISH PRODUCT", style: TextStyle(letterSpacing: 1.2, fontWeight: FontWeight.bold, fontSize: 16)),
                       ),
                     ),
@@ -275,20 +274,20 @@ class _AdminScreenState extends State<AdminScreen> {
       child: TextFormField(
         controller: controller,
         maxLines: maxLines,
-        style: const TextStyle(color: AppColors.primaryBlack),
+        style: const TextStyle(color: AppColors.whiteText),
         keyboardType: isNumber ? TextInputType.number : TextInputType.text,
         decoration: InputDecoration(
           prefixIcon: Icon(icon, color: Colors.grey[400], size: 20),
           labelText: label,
           labelStyle: TextStyle(color: Colors.grey[500], fontSize: 14),
           filled: true,
-          fillColor: AppColors.secondaryWhite.withOpacity(0.5),
+          fillColor: AppColors.background.withOpacity(0.4),
           enabledBorder: OutlineInputBorder(
-            borderSide: BorderSide(color: Colors.grey[200]!),
+            borderSide: BorderSide(color: AppColors.border),
             borderRadius: BorderRadius.circular(12),
           ),
           focusedBorder: OutlineInputBorder(
-            borderSide: const BorderSide(color: AppColors.accentYellow, width: 2),
+            borderSide: const BorderSide(color: AppColors.primary, width: 2),
             borderRadius: BorderRadius.circular(12),
           ),
           errorBorder: OutlineInputBorder(

@@ -16,19 +16,19 @@ class RightDrawer extends StatelessWidget {
     final authData = Provider.of<AuthProvider>(context);
 
     return Drawer(
-      backgroundColor: AppColors.primaryBlack,
+      backgroundColor: AppColors.background,
       child: Column(
         children: [
           // 2. Dynamic User Account Header
           UserAccountsDrawerHeader(
             decoration: const BoxDecoration(color: Color(0xFF1A1A1A)),
             currentAccountPicture: const CircleAvatar(
-              backgroundColor: AppColors.accentYellow,
-              child: Text('M', style: TextStyle(color: AppColors.primaryBlack, fontWeight: FontWeight.bold, fontSize: 24)),
+              backgroundColor: AppColors.primary,
+              child: Text('M', style: TextStyle(color: AppColors.background, fontWeight: FontWeight.bold, fontSize: 24)),
             ),
             accountName: Text(
               authData.isAuthenticated ? 'Welcome Back!' : 'Guest User', 
-              style: const TextStyle(color: AppColors.pureWhite, fontWeight: FontWeight.bold)
+              style: const TextStyle(color: AppColors.whiteText, fontWeight: FontWeight.bold)
             ),
             accountEmail: Text(
               authData.userEmail ?? 'Please log in to manage your cart', 
@@ -77,10 +77,10 @@ class RightDrawer extends StatelessWidget {
   // Helper Widget
   Widget _buildDrawerTile(IconData icon, String title, VoidCallback onTap, {bool isDanger = false}) {
     return ListTile(
-      leading: Icon(icon, color: isDanger ? Colors.redAccent : AppColors.accentYellow),
+      leading: Icon(icon, color: isDanger ? Colors.redAccent : AppColors.primary),
       title: Text(
         title, 
-        style: TextStyle(color: isDanger ? Colors.redAccent : AppColors.pureWhite, fontSize: 16)
+        style: TextStyle(color: isDanger ? Colors.redAccent : AppColors.whiteText, fontSize: 16)
       ),
       onTap: onTap,
     );

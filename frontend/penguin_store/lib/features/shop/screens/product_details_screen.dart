@@ -61,7 +61,7 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
     final authProvider = Provider.of<AuthProvider>(context);
 
     return Scaffold(
-      backgroundColor: AppColors.secondaryWhite,
+      backgroundColor: AppColors.background,
       
       body: CustomScrollView(
         physics: const BouncingScrollPhysics(),
@@ -71,7 +71,7 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
             expandedHeight: 400,
             pinned: true,
             stretch: true,
-            backgroundColor: AppColors.primaryBlack,
+            backgroundColor: AppColors.background,
             iconTheme: const IconThemeData(color: Colors.white),
             
             // Secure Delete Button moved to the SliverAppBar
@@ -111,7 +111,7 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
             child: Container(
               padding: const EdgeInsets.all(24),
               decoration: const BoxDecoration(
-                color: AppColors.secondaryWhite,
+                color: AppColors.card,
                 borderRadius: BorderRadius.only(topLeft: Radius.circular(30), topRight: Radius.circular(30)),
               ),
               child: Column(
@@ -120,23 +120,23 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Text(widget.product.category.toUpperCase(), style: TextStyle(color: Colors.grey[600], letterSpacing: 1.2)),
+                      Text(widget.product.category.toUpperCase(), style: TextStyle(color: Colors.grey[500], letterSpacing: 1.2)),
                       Row(
                         children: [
-                          const Icon(Icons.star, color: AppColors.accentYellow, size: 20),
-                          Text(" ${widget.product.rating} (${widget.product.reviews} reviews)", style: const TextStyle(fontWeight: FontWeight.bold)),
+                          const Icon(Icons.star, color: AppColors.primary, size: 20),
+                          Text(" ${widget.product.rating} (${widget.product.reviews} reviews)", style: const TextStyle(fontWeight: FontWeight.bold, color: AppColors.whiteText)),
                         ],
                       ),
                     ],
                   ),
                   const SizedBox(height: 10),
-                  Text(widget.product.name, style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold)),
+                  Text(widget.product.name, style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: AppColors.whiteText)),
                   const SizedBox(height: 15),
-                  Text("\$${widget.product.price.toStringAsFixed(2)}", style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w900, color: AppColors.primaryBlack)),
+                  Text("\$${widget.product.price.toStringAsFixed(2)}", style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w900, color: AppColors.primary)),
                   const SizedBox(height: 25),
-                  const Text("Description", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                  const Text("Description", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: AppColors.whiteText)),
                   const SizedBox(height: 10),
-                  Text(widget.product.description, style: TextStyle(color: Colors.grey[700], height: 1.5, fontSize: 16)),
+                  Text(widget.product.description, style: TextStyle(color: Colors.grey[400], height: 1.5, fontSize: 16)),
                   const SizedBox(height: 120), // Extra space so bottom sheet doesn't cover text
                 ],
               ),
@@ -149,20 +149,20 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
       bottomSheet: Container(
         padding: const EdgeInsets.all(20),
         height: 100,
-        color: Colors.white,
+        color: AppColors.card,
         child: Row(
           children: [
             Container(
               padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(border: Border.all(color: Colors.grey[300]!), borderRadius: BorderRadius.circular(15)),
-              child: const Icon(Icons.favorite_border),
+              decoration: BoxDecoration(border: Border.all(color: AppColors.border), borderRadius: BorderRadius.circular(15)),
+              child: const Icon(Icons.favorite_border, color: AppColors.whiteText),
             ),
             const SizedBox(width: 20),
             Expanded(
               child: ElevatedButton(
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: AppColors.primaryBlack,
-                  foregroundColor: AppColors.accentYellow,
+                  backgroundColor: AppColors.primaryDark,
+                  foregroundColor: AppColors.whiteText,
                   padding: const EdgeInsets.symmetric(vertical: 18),
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
                 ),
@@ -175,7 +175,7 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
                       content: Text('${widget.product.name} added to cart!'),
-                      backgroundColor: AppColors.primaryBlack,
+                      backgroundColor: AppColors.background,
                       behavior: SnackBarBehavior.floating,
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                       duration: const Duration(seconds: 2),

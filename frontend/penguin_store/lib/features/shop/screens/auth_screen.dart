@@ -70,11 +70,11 @@ class _AuthScreenState extends State<AuthScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: AppColors.primaryBlack,
+      backgroundColor: AppColors.background,
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         elevation: 0,
-        iconTheme: const IconThemeData(color: AppColors.pureWhite),
+        iconTheme: const IconThemeData(color: AppColors.whiteText),
       ),
       body: Center(
         child: SingleChildScrollView(
@@ -86,24 +86,26 @@ class _AuthScreenState extends State<AuthScreen> {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 // Logo or Icon
-                const Icon(Icons.storefront, size: 80, color: AppColors.accentYellow),
+                const Icon(Icons.storefront, size: 80, color: AppColors.primary),
                 const SizedBox(height: 20),
                 
                 Text(
                   _isLogin ? 'Welcome Back' : 'Create Account',
                   textAlign: TextAlign.center,
-                  style: const TextStyle(color: AppColors.pureWhite, fontSize: 32, fontWeight: FontWeight.bold),
+                  style: const TextStyle(color: AppColors.whiteText, fontSize: 32, fontWeight: FontWeight.bold),
                 ),
                 const SizedBox(height: 40),
 
                 // Email Field
                 TextFormField(
                   controller: _emailController,
-                  style: const TextStyle(color: AppColors.primaryBlack),
+                  style: const TextStyle(color: AppColors.background),
                   decoration: InputDecoration(
                     hintText: 'Email Address',
+                    hintStyle: TextStyle(color: Colors.grey[700]),
+                    labelStyle: TextStyle(color: Colors.grey[700]),
                     filled: true,
-                    fillColor: AppColors.pureWhite,
+                    fillColor: AppColors.whiteText,
                     prefixIcon: const Icon(Icons.email_outlined, color: Colors.grey),
                     border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
                   ),
@@ -115,11 +117,13 @@ class _AuthScreenState extends State<AuthScreen> {
                 TextFormField(
                   controller: _passwordController,
                   obscureText: true,
-                  style: const TextStyle(color: AppColors.primaryBlack),
+                  style: const TextStyle(color: AppColors.background),
                   decoration: InputDecoration(
                     hintText: 'Password',
+                    hintStyle: TextStyle(color: Colors.grey[700]),
+                    labelStyle: TextStyle(color: Colors.grey[700]),
                     filled: true,
-                    fillColor: AppColors.pureWhite,
+                    fillColor: AppColors.whiteText,
                     prefixIcon: const Icon(Icons.lock_outline, color: Colors.grey),
                     border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
                   ),
@@ -132,13 +136,13 @@ class _AuthScreenState extends State<AuthScreen> {
                   height: 55,
                   child: ElevatedButton(
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: AppColors.accentYellow,
-                      foregroundColor: AppColors.primaryBlack,
+                      backgroundColor: AppColors.primary,
+                      foregroundColor: AppColors.background,
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                     ),
                     onPressed: _isLoading ? null : _submit,
                     child: _isLoading
-                        ? const CircularProgressIndicator(color: AppColors.primaryBlack)
+                        ? const CircularProgressIndicator(color: AppColors.background)
                         : Text(
                             _isLogin ? 'LOG IN' : 'SIGN UP',
                             style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, letterSpacing: 1.2),
