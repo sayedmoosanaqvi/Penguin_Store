@@ -29529,7 +29529,7 @@ b=o}s=b+2
 if(p===s)return s
 if(a.charCodeAt(s)!==47)return q
 return b+3},
-a2F(){return"http://127.0.0.1:8000"},
+a2F(){return"https://penguin-store-backend.onrender.com"},
 RL(a,b){var s=0,r=A.J(t.H),q,p,o,n,m
 var $async$RL=A.F(function(c,d){if(c===1)return A.G(d,r)
 for(;;)switch(s){case 0:p=A.cu("http://localhost:8000/create-checkout-session",0,null)
