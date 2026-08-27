@@ -6,11 +6,9 @@ from langchain_core.messages import SystemMessage
 from app.agent.state import AgentState
 from app.agent.tools import search_inventory
 
-# 1. Initialize local model
+# 1. Initialize cloud-ready model (reads OPENAI_API_KEY from environment variables)
 llm = ChatOpenAI(
-    model="llama3.2", 
-    api_key="ollama", 
-    base_url="http://localhost:11434/v1", 
+    model="gpt-4o-mini", 
     temperature=0
 )
 
@@ -32,7 +30,6 @@ Your rules:
 
 # 3. Agent reasoning node
 def chatbot(state: AgentState):
-    # Ensure system prompt is always at the beginning of the context
     messages = [SYSTEM_PROMPT] + list(state["messages"])
     response = llm_with_tools.invoke(messages)
     return {"messages": [response]}
@@ -49,12 +46,3 @@ graph_builder.set_entry_point("chatbot")
 # 5. Checkpointer memory
 memory = MemorySaver()
 agent_app = graph_builder.compile(checkpointer=memory)
-
-# 5. Checkpointer memory
-memory = MemorySaver()
-
-# NEW: We compile the graph with an explicit interrupt barrier
-agent_app = graph_builder.compile(
-    checkpointer=memory,
-    # interrupt_before=["tools"] 
-)
