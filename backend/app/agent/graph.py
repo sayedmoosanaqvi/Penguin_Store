@@ -8,10 +8,10 @@ from app.agent.tools import search_inventory
 
 # 1. Initialize cloud-ready model (reads OPENAI_API_KEY from environment variables)
 llm = ChatOpenAI(
-    model="gpt-4o-mini", 
+    model="gpt-4o-mini",
+    base_url="https://api.openai.com/v1",
     temperature=0
 )
-
 tools = [search_inventory]
 llm_with_tools = llm.bind_tools(tools)
 
