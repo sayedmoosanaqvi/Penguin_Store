@@ -1,7 +1,7 @@
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.checkpoint.memory import MemorySaver
-from langchain_ollama import ChatOllama
+# from langchain_ollama import ChatOllama
 from langchain_core.messages import SystemMessage
 from app.agent.state import AgentState
 from app.agent.tools import search_inventory
