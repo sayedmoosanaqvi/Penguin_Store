@@ -1,4 +1,5 @@
-from typing import Optional, List, Dict
+import json
+from typing import Optional
 from pydantic import BaseModel, Field
 from langchain_core.tools import tool
 from sqlalchemy.orm import Session
@@ -11,7 +12,7 @@ class ProductSearchInput(BaseModel):
     is_featured: Optional[bool] = Field(None, description="Set to True if the user specifically asks for featured or trending items.")
 
 @tool("search_inventory", args_schema=ProductSearchInput)
-def search_inventory(category: Optional[str] = None, max_price: Optional[float] = None, is_featured: Optional[bool] = None) -> List[Dict]:
+def search_inventory(category: Optional[str] = None, max_price: Optional[float] = None, is_featured: Optional[bool] = None) -> str:
     """
     Searches the live PostgreSQL database for products based on category, maximum price, and featured status.
     Always use this tool when a user asks for product recommendations, prices, or availability.
@@ -42,9 +43,9 @@ def search_inventory(category: Optional[str] = None, max_price: Optional[float] 
         ]
         
         print(f"[TOOL RESULT] Found {len(results)} products: {results}\n")
-        return results
+        return json.dumps(results)
     except Exception as e:
         print(f"[TOOL ERROR] {str(e)}")
-        return []
+        return "[]"
     finally:
         db.close()

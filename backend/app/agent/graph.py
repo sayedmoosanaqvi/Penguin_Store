@@ -5,10 +5,17 @@ from langchain_ollama import ChatOllama
 from langchain_core.messages import SystemMessage
 from app.agent.state import AgentState
 from app.agent.tools import search_inventory
+import os
+from langchain_groq import ChatGroq
 
 # 1. Initialize local free model via Ollama (e.g., llama3 or mistral)
-llm = ChatOllama(
-    model="llama3.1",
+# llm = ChatOllama(
+#     model="llama3.1",
+#     temperature=0
+# )
+llm = ChatGroq(
+    api_key=os.getenv("GROQ_API_KEY"),
+    model="openai/gpt-oss-20b",
     temperature=0
 )
 tools = [search_inventory]
