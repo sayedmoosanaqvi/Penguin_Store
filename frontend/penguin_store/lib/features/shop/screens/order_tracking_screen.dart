@@ -1,7 +1,9 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:penguin_store/config/api_config.dart';
 import '../../../core/theme/app_colors.dart';
+ // Ensure path matches your file tree structure
 
 class OrderTrackingScreen extends StatefulWidget {
   final String customerEmail;
@@ -26,7 +28,7 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
   Future<void> _fetchOrderHistory() async {
     try {
       final response = await http.get(
-        Uri.parse('http://127.0.0.1:8000/api/orders/history/${widget.customerEmail}'),
+        Uri.parse('${ApiConfig.baseUrl}/api/orders/history/${widget.customerEmail}'),
       );
 
       if (response.statusCode == 200) {

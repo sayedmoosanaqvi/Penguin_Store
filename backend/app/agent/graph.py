@@ -1,15 +1,14 @@
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.checkpoint.memory import MemorySaver
-from langchain_openai import ChatOpenAI
+from langchain_ollama import ChatOllama
 from langchain_core.messages import SystemMessage
 from app.agent.state import AgentState
 from app.agent.tools import search_inventory
 
-# 1. Initialize cloud-ready model (reads OPENAI_API_KEY from environment variables)
-llm = ChatOpenAI(
-    model="gpt-4o-mini",
-    base_url="https://api.openai.com/v1",
+# 1. Initialize local free model via Ollama (e.g., llama3 or mistral)
+llm = ChatOllama(
+    model="llama3.1",
     temperature=0
 )
 tools = [search_inventory]
@@ -17,7 +16,7 @@ llm_with_tools = llm.bind_tools(tools)
 
 # 2. Strict system prompt for Penguin Store
 SYSTEM_PROMPT = SystemMessage(
-    content="""You are the official AI Personal Shopper for Penguin Store.
+    content=""""You are the official AI Personal Shopper for Penguin Store.
 Your rules:
 1. Always use the `search_inventory` tool to search for products when a user asks about items, prices, or recommendations.
 2. ONLY recommend products returned by the `search_inventory` tool. NEVER invent or hallucinate products that are not in the store database.

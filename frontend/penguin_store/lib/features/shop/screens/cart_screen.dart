@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:penguin_store/config/api_config.dart';
 import 'package:provider/provider.dart';
 import '../../../core/theme/app_colors.dart';
 import '../providers/cart_provider.dart';
@@ -85,15 +86,13 @@ class CartScreen extends StatelessWidget {
                     ? null
                     : () async {
                         try {
-                          // 1. Prepare cart items for your FastAPI checkout payload
                           final cartPayloadItems = items.map((item) => {
                             'product_id': item.product.id,
                             'quantity': item.quantity,
                           }).toList();
 
-                          // 2. Call your FastAPI /api/orders/checkout endpoint
                           final checkoutResponse = await http.post(
-                            Uri.parse('http://127.0.0.1:8000/api/orders/checkout'),
+                            Uri.parse('${ApiConfig.baseUrl}/api/orders/checkout'),
                             headers: {'Content-Type': 'application/json'},
                             body: jsonEncode({
                               'customer_name': 'Moosa Raza',
@@ -109,7 +108,6 @@ class CartScreen extends StatelessWidget {
                             final orderData = json.decode(checkoutResponse.body);
                             final int createdOrderId = orderData['order_id'];
 
-                            // 3. Generate Stripe Session using the secure order ID
                             await StripePaymentService.startCheckout(
                               orderId: createdOrderId,
                               currency: 'usd',

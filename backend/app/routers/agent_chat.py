@@ -29,22 +29,25 @@ async def chat_with_agent(request: ChatRequest):
         inputs = {"messages": [("user", request.user_input)]}
         config = {"configurable": {"thread_id": request.thread_id}}
         
-        # Invoke the graph
-        logger.info("Executing Agent Graph...")
+        # Invoke the graph with local Ollama model
+        logger.info("Executing Local Agent Graph...")
         result = agent_app.invoke(inputs, config=config)
         
-        # Extract the last message (which could be an AIMessage or ToolCall)
+        if not result or "messages" not in result or not result["messages"]:
+            raise HTTPException(status_code=500, detail="Agent graph returned an empty response.")
+            
         last_message = result["messages"][-1]
+        content = getattr(last_message, 'content', str(last_message))
         
-        # If the content is empty, the agent is trying to call a tool and got interrupted
-        if not last_message.content and hasattr(last_message, 'tool_calls') and last_message.tool_calls:
-            tool_name = last_message.tool_calls[0]['name']
-            tool_args = last_message.tool_calls[0]['args']
+        # Handle local model tool calls safely
+        if not content and hasattr(last_message, 'tool_calls') and last_message.tool_calls:
+            tool_name = last_message.tool_calls[0].get('name', 'unknown_tool')
+            tool_args = last_message.tool_calls[0].get('args', {})
             logger.warning(f"ACTION INTERRUPTED: Agent requested tool '{tool_name}' with args {tool_args}.")
             return {"status": "paused", "message": f"Agent is waiting for human approval to run {tool_name}."}
             
-        logger.info(f"Agent Final Response: '{last_message.content}'")
-        return {"status": "success", "response": last_message.content}
+        logger.info(f"Agent Final Response: '{content}'")
+        return {"status": "success", "response": content}
         
     except Exception as e:
         logger.error(f"AGENT CRASHED: {str(e)}")
@@ -60,9 +63,10 @@ async def approve_agent_action(request: ApproveRequest):
         result = agent_app.invoke(None, config=config)
         
         last_message = result["messages"][-1]
-        logger.info(f"Agent Post-Approval Response: '{last_message.content}'")
+        content = getattr(last_message, 'content', str(last_message))
+        logger.info(f"Agent Post-Approval Response: '{content}'")
         
-        return {"status": "success", "response": last_message.content}
+        return {"status": "success", "response": content}
         
     except Exception as e:
         logger.error(f"APPROVAL EXECUTION FAILED: {str(e)}")

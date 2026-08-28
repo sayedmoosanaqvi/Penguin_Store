@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:penguin_store/config/api_config.dart';
 import '../../../core/theme/app_colors.dart';
 
 class CtrlXScreen extends StatefulWidget {
@@ -27,23 +28,20 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
     _controller.clear();
 
     try {
-      // Assuming you are running this on Flutter Web (localhost)
-      // If testing on an Android emulator later, change 127.0.0.1 to 10.0.2.2
-      final url = Uri.parse('http://127.0.0.1:8000/api/agent/chat');
+      final url = Uri.parse('${ApiConfig.baseUrl}/api/agent/chat');
       
       final response = await http.post(
         url,
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
           "user_input": text,
-          "thread_id": "flutter_user_session" // Hardcoded for now; can be dynamic later
+          "thread_id": "flutter_user_session"
         }),
       );
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         
-        // Handle both standard success and HitL "paused" status messages
         final aiReply = data['response'] ?? data['message'] ?? "No response received.";
         
         setState(() {
@@ -116,7 +114,6 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
                     },
                   ),
           ),
-          // Loading indicator shown while waiting for HTTP response
           if (_isLoading)
             const Padding(
               padding: EdgeInsets.symmetric(vertical: 8.0),
@@ -131,7 +128,12 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
                   child: TextField(
                     controller: _controller,
                     style: const TextStyle(color: AppColors.whiteText),
-                    enabled: !_isLoading, // Disable input while waiting
+                    enabled: !_isLoading,
+                    onSubmitted: (_) {
+                      if (!_isLoading) {
+                        _sendMessage();
+                      }
+                    },
                     decoration: InputDecoration(
                       hintText: 'Type your prompt...',
                       hintStyle: TextStyle(color: Colors.grey[400]),

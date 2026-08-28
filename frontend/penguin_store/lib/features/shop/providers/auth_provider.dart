@@ -2,7 +2,9 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:jwt_decoder/jwt_decoder.dart';
+import 'package:penguin_store/config/api_config.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+ // Ensure path matches your project structure
 
 class AuthProvider with ChangeNotifier {
   bool _isAuthenticated = false;
@@ -15,9 +17,8 @@ class AuthProvider with ChangeNotifier {
   String? get userEmail => _userEmail;
   String? get token => _token;
 
-  // Since you are running on Web (Edge), 127.0.0.1 is correct!
-  // If you switch to an Android Emulator later, change this to 'http://10.0.2.2:8000'
-  final String _baseUrl = 'http://127.0.0.1:8000';
+  // Uses dynamic ApiConfig baseUrl for multi-platform support (Web, Render Cloud, Emulator)
+  String get _baseUrl => ApiConfig.baseUrl;
 
   // --- AUTO LOG IN ON APP START ---
   Future<void> tryAutoLogin() async {

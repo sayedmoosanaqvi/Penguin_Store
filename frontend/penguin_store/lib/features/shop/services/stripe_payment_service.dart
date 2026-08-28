@@ -3,11 +3,11 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_stripe/flutter_stripe.dart';
 import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
+import 'package:penguin_store/config/api_config.dart';
 
 class StripePaymentService {
-  static const String _baseUrl = 'http://localhost:8000';
+  static String get _baseUrl => ApiConfig.baseUrl;
 
-  // Updated to accept orderId for secure backend price lookup
   static Future<void> startCheckout({
     required int orderId,
     required String currency,
@@ -38,8 +38,6 @@ class StripePaymentService {
         throw 'Could not open Stripe Checkout';
       }
     } else {
-      // Note: For mobile/native platforms, if you want to use order_id with 
-      // PaymentIntent, you would update the backend /create-payment-intent route similarly.
       throw 'Mobile payment sheet requires backend adjustment for order_id lookup.';
     }
   }
