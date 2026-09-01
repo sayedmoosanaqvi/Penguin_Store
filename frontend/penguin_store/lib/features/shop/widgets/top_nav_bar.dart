@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
-import '../../../core/theme/app_colors.dart';
 import 'package:provider/provider.dart';
 import 'package:penguin_store/features/shop/providers/cart_provider.dart';
 import 'package:penguin_store/features/shop/screens/cart_screen.dart';
@@ -13,9 +12,12 @@ class TopNavBar extends StatelessWidget implements PreferredSizeWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Grab the global theme
+    final theme = Theme.of(context); 
+
     return AppBar(
-      backgroundColor: AppColors.background,
-      elevation: 0,
+      backgroundColor: theme.appBarTheme.backgroundColor ?? theme.scaffoldBackgroundColor,
+      elevation: theme.appBarTheme.elevation ?? 0,
       titleSpacing: 24,
       title: Row(
         mainAxisSize: MainAxisSize.min,
@@ -23,22 +25,22 @@ class TopNavBar extends StatelessWidget implements PreferredSizeWidget {
           Container(
             padding: const EdgeInsets.all(6),
             decoration: BoxDecoration(
-              color: AppColors.primary,
+              color: theme.primaryColor,
               borderRadius: BorderRadius.circular(8),
             ),
-            child: const Icon(
+            child: Icon(
               Icons.storefront,
-              color: AppColors.background,
+              color: theme.scaffoldBackgroundColor,
               size: 20,
             ),
           ),
           const SizedBox(width: 10),
-          const Flexible(
+          Flexible(
             child: Text(
               'PenguinStore',
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
-                color: AppColors.whiteText,
+                color: theme.appBarTheme.foregroundColor,
                 fontWeight: FontWeight.bold,
                 fontSize: 18,
               ),
@@ -60,12 +62,12 @@ class TopNavBar extends StatelessWidget implements PreferredSizeWidget {
                   ),
                 ),
                 isLabelVisible: cart.itemCount > 0,
-                backgroundColor: Colors.redAccent,
+                backgroundColor: theme.colorScheme.error,
                 offset: const Offset(-5, 5),
                 child: IconButton(
-                  icon: const Icon(
+                  icon: Icon(
                     Icons.shopping_bag_outlined,
-                    color: AppColors.whiteText,
+                    color: theme.appBarTheme.foregroundColor,
                   ),
                   onPressed: () {
                     Navigator.push(
@@ -80,14 +82,14 @@ class TopNavBar extends StatelessWidget implements PreferredSizeWidget {
         ),
         // NEW: Orders & Tracking Button added here
         IconButton(
-          icon: const Icon(Icons.local_shipping_outlined, color: AppColors.whiteText),
+          icon: Icon(Icons.local_shipping_outlined, color: theme.appBarTheme.foregroundColor),
           tooltip: 'My Orders',
           onPressed: () {
             context.push('/orders');
           },
         ),
         IconButton(
-          icon: const Icon(Icons.menu, color: AppColors.whiteText),
+          icon: Icon(Icons.menu, color: theme.appBarTheme.foregroundColor),
           onPressed: () {
             Scaffold.of(context).openEndDrawer();
           },

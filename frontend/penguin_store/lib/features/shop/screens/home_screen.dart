@@ -3,7 +3,6 @@ import 'package:go_router/go_router.dart';
 import 'package:penguin_store/features/shop/widgets/right_drawer.dart';
 import 'package:penguin_store/features/shop/widgets/top_nav_bar.dart';
 import '../../../core/responsive/responsive_layout.dart';
-import '../../../core/theme/app_colors.dart';
 import '../models/product_model.dart';
 import '../widgets/product_card.dart';
 import '../services/product_service.dart';
@@ -18,7 +17,6 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   final ProductService _productService = ProductService();
-
   late Future<List<Product>> _productsFuture;
 
   String _selectedCategory = 'All';
@@ -45,47 +43,201 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isLight = theme.brightness == Brightness.light;
+
     return Scaffold(
-      backgroundColor: AppColors.background,
+      backgroundColor: theme.scaffoldBackgroundColor,
       appBar: const TopNavBar(),
       endDrawer: const RightDrawer(),
       body: RefreshIndicator(
-        color: AppColors.background,
-        backgroundColor: AppColors.primary,
+        color: theme.scaffoldBackgroundColor,
+        backgroundColor: theme.primaryColor,
         onRefresh: _refreshProducts,
         child: SingleChildScrollView(
           physics: const AlwaysScrollableScrollPhysics(),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              // --- SECTION 1: Welcome & Overview Card ---
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 16.0),
+                child: Container(
+                  padding: const EdgeInsets.all(22),
+                  decoration: BoxDecoration(
+                    color: theme.cardTheme.color ?? theme.colorScheme.surface,
+                    borderRadius: BorderRadius.circular(24),
+                    boxShadow: [
+                      BoxShadow(
+                        color: isLight ? Colors.grey.withOpacity(0.08) : Colors.black.withOpacity(0.25),
+                        blurRadius: 15,
+                        offset: const Offset(0, 6),
+                      ),
+                    ],
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Row(
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.all(8),
+                                decoration: BoxDecoration(
+                                  color: theme.primaryColor.withOpacity(0.12),
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                child: Icon(Icons.store, size: 18, color: theme.primaryColor),
+                              ),
+                              const SizedBox(width: 10),
+                              Text(
+                                'PENGUIN STORE HQ',
+                                style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1.2, color: theme.primaryColor),
+                              ),
+                            ],
+                          ),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                            decoration: BoxDecoration(
+                              color: Colors.green.withOpacity(0.12),
+                              borderRadius: BorderRadius.circular(20),
+                            ),
+                            child: const Row(
+                              children: [
+                                Icon(Icons.circle, size: 8, color: Colors.green),
+                                SizedBox(width: 6),
+                                Text('Live API Online', style: TextStyle(color: Colors.green, fontSize: 10, fontWeight: FontWeight.bold)),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 16),
+                      Text(
+                        'Welcome back, Moosa',
+                        style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: theme.textTheme.titleLarge?.color),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Your storefront architecture is optimized and running smoothly.',
+                        style: TextStyle(fontSize: 13, color: theme.textTheme.bodySmall?.color),
+                      ),
+                      const SizedBox(height: 20),
+                      
+                      // Metric Mini-Cards Row
+                      Row(
+                        children: [
+                          Expanded(
+                            child: _buildMetricTile(theme, 'Catalog Status', 'Synced', Icons.cloud_done, Colors.blue),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: _buildMetricTile(theme, 'AI Assistant', 'Ready', Icons.auto_awesome, Colors.purple),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+
+              // --- SECTION 2: Promo / Quick Action Banner ---
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 4.0),
+                child: InkWell(
+                  onTap: () => context.go('/ctrlx'),
+                  borderRadius: BorderRadius.circular(20),
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(20),
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        colors: [theme.primaryColor, theme.primaryColor.withOpacity(0.85)],
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                      ),
+                      borderRadius: BorderRadius.circular(20),
+                      boxShadow: [
+                        BoxShadow(
+                          color: theme.primaryColor.withOpacity(0.25),
+                          blurRadius: 10,
+                          offset: const Offset(0, 4),
+                        ),
+                      ],
+                    ),
+                    child: Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.2),
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                          child: const Icon(Icons.bolt, color: Colors.white, size: 26),
+                        ),
+                        const SizedBox(width: 16),
+                        const Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'CTRL-X Agentic Assistant',
+                                style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold),
+                              ),
+                              SizedBox(height: 3),
+                              Text(
+                                'Ask questions about products, inventory, or orders instantly.',
+                                style: TextStyle(color: Colors.white70, fontSize: 11),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const Icon(Icons.arrow_forward_ios, color: Colors.white70, size: 14),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+
+              const SizedBox(height: 24),
+
+              // --- SECTION 3: Main Products Dashboard Container ---
               Container(
                 width: double.infinity,
-                decoration: const BoxDecoration(
-                  color: AppColors.card,
-                  borderRadius: BorderRadius.only(
+                decoration: BoxDecoration(
+                  color: theme.cardTheme.color ?? theme.colorScheme.surface,
+                  borderRadius: const BorderRadius.only(
                     topLeft: Radius.circular(32),
                     topRight: Radius.circular(32),
                   ),
+                  border: Border(top: BorderSide(color: Colors.grey.withOpacity(0.1))),
                 ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Padding(
-                      padding: EdgeInsets.only(
-                        left: 40.0,
-                        top: 40.0,
-                        bottom: 10.0,
-                      ),
-                      child: Text(
-                        'Featured Products',
-                        style: TextStyle(
-                          fontSize: 32,
-                          fontWeight: FontWeight.bold,
-                          color: AppColors.whiteText,
-                        ),
+                    Padding(
+                      padding: const EdgeInsets.only(left: 24.0, right: 24.0, top: 28.0, bottom: 12.0),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(
+                            'Featured Products',
+                            style: TextStyle(
+                              fontSize: 22,
+                              fontWeight: FontWeight.bold,
+                              color: theme.textTheme.titleLarge?.color,
+                            ),
+                          ),
+                          TextButton(
+                            onPressed: _refreshProducts,
+                            child: Text('Refresh', style: TextStyle(color: theme.primaryColor, fontWeight: FontWeight.bold, fontSize: 12)),
+                          ),
+                        ],
                       ),
                     ),
-                    _buildCategoryFilter(),
+                    _buildCategoryFilter(theme),
                     const SizedBox(height: 20),
                     _buildLiveGrid(),
                     const SizedBox(height: 60),
@@ -97,8 +249,8 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       ),
       floatingActionButton: FloatingActionButton(
-        backgroundColor: AppColors.primary,
-        foregroundColor: AppColors.background,
+        backgroundColor: theme.primaryColor,
+        foregroundColor: theme.colorScheme.onPrimary,
         onPressed: () {
           context.go('/ctrlx');
         },
@@ -107,32 +259,58 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildCategoryFilter() {
+  Widget _buildMetricTile(ThemeData theme, String title, String value, IconData icon, Color accentColor) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: theme.scaffoldBackgroundColor,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: Colors.grey.withOpacity(0.1)),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, size: 20, color: accentColor),
+          const SizedBox(width: 10),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(title, style: TextStyle(fontSize: 10, color: theme.textTheme.bodySmall?.color)),
+              const SizedBox(height: 2),
+              Text(value, style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: theme.textTheme.titleMedium?.color)),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCategoryFilter(ThemeData theme) {
     return SizedBox(
-      height: 50,
+      height: 45,
       child: ListView.builder(
         scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 40),
+        padding: const EdgeInsets.symmetric(horizontal: 24),
         itemCount: _categories.length,
         itemBuilder: (context, index) {
           final category = _categories[index];
           final isSelected = _selectedCategory == category;
 
           return Padding(
-            padding: const EdgeInsets.only(right: 12),
+            padding: const EdgeInsets.only(right: 10),
             child: ChoiceChip(
               label: Text(
                 category,
                 style: TextStyle(
-                  color: isSelected ? AppColors.background : Colors.grey[400],
+                  color: isSelected ? Colors.white : theme.textTheme.bodySmall?.color,
                   fontWeight: FontWeight.bold,
+                  fontSize: 12,
                 ),
               ),
               selected: isSelected,
-              selectedColor: AppColors.primary,
-              backgroundColor: AppColors.card,
+              selectedColor: theme.primaryColor,
+              backgroundColor: theme.scaffoldBackgroundColor,
               side: BorderSide(
-                color: isSelected ? AppColors.primary : AppColors.border,
+                color: isSelected ? theme.primaryColor : Colors.grey.withOpacity(0.2),
               ),
               showCheckmark: false,
               onSelected: (bool selected) {
@@ -206,7 +384,7 @@ class _HomeScreenState extends State<HomeScreen> {
     required bool isMobile,
   }) {
     return Padding(
-      padding: EdgeInsets.symmetric(horizontal: isMobile ? 16.0 : 40.0),
+      padding: EdgeInsets.symmetric(horizontal: isMobile ? 16.0 : 24.0),
       child: GridView.builder(
         shrinkWrap: true,
         physics: const NeverScrollableScrollPhysics(),
@@ -230,7 +408,7 @@ class _HomeScreenState extends State<HomeScreen> {
     required bool isMobile,
   }) {
     return Padding(
-      padding: EdgeInsets.symmetric(horizontal: isMobile ? 16.0 : 40.0),
+      padding: EdgeInsets.symmetric(horizontal: isMobile ? 16.0 : 24.0),
       child: GridView.builder(
         shrinkWrap: true,
         physics: const NeverScrollableScrollPhysics(),

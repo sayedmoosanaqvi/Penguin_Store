@@ -1,11 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:penguin_store/features/shop/providers/auth_provider.dart';
-import 'package:provider/provider.dart'; // Needed for Provider.of
-import '../../../core/theme/app_colors.dart';
+import 'package:provider/provider.dart';
 import '../models/product_model.dart';
 import '../services/product_service.dart'; 
-
-import '../providers/cart_provider.dart'; // Added your cart provider!
+import '../providers/cart_provider.dart';
 
 class ProductDetailScreen extends StatefulWidget {
   final Product product;
@@ -17,23 +15,23 @@ class ProductDetailScreen extends StatefulWidget {
 
 class _ProductDetailScreenState extends State<ProductDetailScreen> {
   // --- DELETE LOGIC ---
-  Future<void> _confirmDelete(BuildContext context) async {
+  Future<void> _confirmDelete(BuildContext context, ThemeData theme) async {
     showDialog(
       context: context,
       builder: (BuildContext context) {
         return AlertDialog(
-          title: const Text("Delete Product?"),
-          content: Text("Are you sure you want to delete '${widget.product.name}'?"),
+          backgroundColor: theme.cardTheme.color,
+          title: Text("Delete Product?", style: TextStyle(color: theme.textTheme.titleLarge?.color)),
+          content: Text("Are you sure you want to delete '${widget.product.name}'?", style: TextStyle(color: theme.textTheme.bodyLarge?.color)),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context),
-              child: const Text("CANCEL"),
+              child: const Text("CANCEL", style: TextStyle(color: Colors.grey)),
             ),
             TextButton(
               onPressed: () async {
                 Navigator.pop(context); // Close dialog
                 
-                // Using your ProductService
                 bool success = await ProductService().deleteProduct(widget.product.id);
                 
                 if (success) {
@@ -47,7 +45,7 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
                   );
                 }
               },
-              child: const Text("DELETE", style: TextStyle(color: Colors.red)),
+              child: const Text("DELETE", style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)),
             ),
           ],
         );
@@ -57,11 +55,11 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // 1. Activate AuthProvider to secure the Delete button
     final authProvider = Provider.of<AuthProvider>(context);
+    final theme = Theme.of(context);
 
     return Scaffold(
-      backgroundColor: AppColors.background,
+      backgroundColor: theme.scaffoldBackgroundColor,
       
       body: CustomScrollView(
         physics: const BouncingScrollPhysics(),
@@ -71,15 +69,15 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
             expandedHeight: 400,
             pinned: true,
             stretch: true,
-            backgroundColor: AppColors.background,
-            iconTheme: const IconThemeData(color: Colors.white),
+            backgroundColor: theme.scaffoldBackgroundColor,
+            iconTheme: IconThemeData(color: theme.appBarTheme.foregroundColor),
             
             // Secure Delete Button moved to the SliverAppBar
             actions: [
               if (authProvider.isAdmin)
                 IconButton(
                   icon: const Icon(Icons.delete_outline, color: Colors.redAccent),
-                  onPressed: () => _confirmDelete(context), 
+                  onPressed: () => _confirmDelete(context, theme), 
                 ),
             ],
             
@@ -110,9 +108,9 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
           SliverToBoxAdapter(
             child: Container(
               padding: const EdgeInsets.all(24),
-              decoration: const BoxDecoration(
-                color: AppColors.card,
-                borderRadius: BorderRadius.only(topLeft: Radius.circular(30), topRight: Radius.circular(30)),
+              decoration: BoxDecoration(
+                color: theme.cardTheme.color,
+                borderRadius: const BorderRadius.only(topLeft: Radius.circular(30), topRight: Radius.circular(30)),
               ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -120,23 +118,23 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Text(widget.product.category.toUpperCase(), style: TextStyle(color: Colors.grey[500], letterSpacing: 1.2)),
+                      Text(widget.product.category.toUpperCase(), style: TextStyle(color: theme.textTheme.bodySmall?.color, letterSpacing: 1.2)),
                       Row(
                         children: [
-                          const Icon(Icons.star, color: AppColors.primary, size: 20),
-                          Text(" ${widget.product.rating} (${widget.product.reviews} reviews)", style: const TextStyle(fontWeight: FontWeight.bold, color: AppColors.whiteText)),
+                          Icon(Icons.star, color: theme.primaryColor, size: 20),
+                          Text(" ${widget.product.rating} (${widget.product.reviews} reviews)", style: TextStyle(fontWeight: FontWeight.bold, color: theme.textTheme.titleMedium?.color)),
                         ],
                       ),
                     ],
                   ),
                   const SizedBox(height: 10),
-                  Text(widget.product.name, style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: AppColors.whiteText)),
+                  Text(widget.product.name, style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: theme.textTheme.titleLarge?.color)),
                   const SizedBox(height: 15),
-                  Text("\$${widget.product.price.toStringAsFixed(2)}", style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w900, color: AppColors.primary)),
+                  Text("\$${widget.product.price.toStringAsFixed(2)}", style: TextStyle(fontSize: 24, fontWeight: FontWeight.w900, color: theme.primaryColor)),
                   const SizedBox(height: 25),
-                  const Text("Description", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: AppColors.whiteText)),
+                  Text("Description", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: theme.textTheme.titleLarge?.color)),
                   const SizedBox(height: 10),
-                  Text(widget.product.description, style: TextStyle(color: Colors.grey[400], height: 1.5, fontSize: 16)),
+                  Text(widget.product.description, style: TextStyle(color: theme.textTheme.bodySmall?.color, height: 1.5, fontSize: 16)),
                   const SizedBox(height: 120), // Extra space so bottom sheet doesn't cover text
                 ],
               ),
@@ -149,33 +147,28 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
       bottomSheet: Container(
         padding: const EdgeInsets.all(20),
         height: 100,
-        color: AppColors.card,
+        color: theme.cardTheme.color,
         child: Row(
           children: [
             Container(
               padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(border: Border.all(color: AppColors.border), borderRadius: BorderRadius.circular(15)),
-              child: const Icon(Icons.favorite_border, color: AppColors.whiteText),
+              decoration: BoxDecoration(
+                border: Border.all(color: Colors.grey.withOpacity(0.2)), 
+                borderRadius: BorderRadius.circular(15),
+              ),
+              child: Icon(Icons.favorite_border, color: theme.textTheme.bodyLarge?.color),
             ),
             const SizedBox(width: 20),
             Expanded(
               child: ElevatedButton(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AppColors.primaryDark,
-                  foregroundColor: AppColors.whiteText,
-                  padding: const EdgeInsets.symmetric(vertical: 18),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
-                ),
                 // --- THE LIVE CART LOGIC ---
                 onPressed: () {
-                  // 1. Save to Provider
                   Provider.of<CartProvider>(context, listen: false).addToCart(widget.product);
                   
-                  // 2. Show Success Popup
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
                       content: Text('${widget.product.name} added to cart!'),
-                      backgroundColor: AppColors.background,
+                      backgroundColor: theme.scaffoldBackgroundColor,
                       behavior: SnackBarBehavior.floating,
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                       duration: const Duration(seconds: 2),

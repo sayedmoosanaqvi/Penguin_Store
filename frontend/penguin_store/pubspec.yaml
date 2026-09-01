@@ -39,7 +39,7 @@ flutter:
 flutter_launcher_icons:
   android: "launcher_icon"
   ios: true
-  image_path: "assets/logo_penguin.png"
-  adaptive_icon_background: "#FFC107" # This paints the professional yellow background
-  adaptive_icon_foreground: "assets/logo_penguin.png" # This places your penguin on top
+  image_path: "assets/app_icon.png"
+  adaptive_icon_background: "#FFC107"
+  adaptive_icon_foreground: "assets/app_icon.png"
   min_sdk_android: 21

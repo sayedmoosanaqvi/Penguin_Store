@@ -2,7 +2,6 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:penguin_store/config/api_config.dart';
-import '../../../core/theme/app_colors.dart';
 
 class CtrlXScreen extends StatefulWidget {
   const CtrlXScreen({super.key});
@@ -14,7 +13,7 @@ class CtrlXScreen extends StatefulWidget {
 class _CtrlXScreenState extends State<CtrlXScreen> {
   final TextEditingController _controller = TextEditingController();
   final List<Map<String, String>> _messages = [];
-  bool _isLoading = false; // Tracks if the AI is "thinking"
+  bool _isLoading = false;
 
   Future<void> _sendMessage() async {
     final text = _controller.text.trim();
@@ -41,7 +40,6 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
-        
         final aiReply = data['response'] ?? data['message'] ?? "No response received.";
         
         setState(() {
@@ -65,21 +63,23 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
     return Scaffold(
-      backgroundColor: AppColors.background,
+      backgroundColor: theme.scaffoldBackgroundColor,
       appBar: AppBar(
         title: const Text('CTRL‑X Assistant'),
-        backgroundColor: AppColors.background,
-        foregroundColor: AppColors.whiteText,
+        backgroundColor: theme.appBarTheme.backgroundColor,
+        foregroundColor: theme.appBarTheme.foregroundColor,
       ),
       body: Column(
         children: [
           Expanded(
             child: _messages.isEmpty
-                ? const Center(
+                ? Center(
                     child: Text(
                       'Ask anything to CTRL‑X...',
-                      style: TextStyle(color: AppColors.whiteText),
+                      style: TextStyle(color: theme.textTheme.bodyLarge?.color),
                     ),
                   )
                 : ListView.builder(
@@ -97,16 +97,16 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
                           padding: const EdgeInsets.all(12),
                           decoration: BoxDecoration(
                             color: isUser
-                                ? AppColors.primary
-                                : AppColors.card,
+                                ? theme.primaryColor
+                                : theme.cardTheme.color,
                             borderRadius: BorderRadius.circular(12),
                           ),
                           child: Text(
                             msg["text"] ?? '',
                             style: TextStyle(
                               color: isUser
-                                  ? AppColors.background
-                                  : AppColors.whiteText,
+                                  ? theme.scaffoldBackgroundColor
+                                  : theme.textTheme.bodyLarge?.color,
                             ),
                           ),
                         ),
@@ -115,19 +115,19 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
                   ),
           ),
           if (_isLoading)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 8.0),
-              child: CircularProgressIndicator(color: AppColors.primary),
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 8.0),
+              child: CircularProgressIndicator(color: theme.primaryColor),
             ),
           Container(
             padding: const EdgeInsets.all(12),
-            color: AppColors.card,
+            color: theme.cardTheme.color,
             child: Row(
               children: [
                 Expanded(
                   child: TextField(
                     controller: _controller,
-                    style: const TextStyle(color: AppColors.whiteText),
+                    style: TextStyle(color: theme.textTheme.bodyLarge?.color),
                     enabled: !_isLoading,
                     onSubmitted: (_) {
                       if (!_isLoading) {
@@ -136,9 +136,9 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
                     },
                     decoration: InputDecoration(
                       hintText: 'Type your prompt...',
-                      hintStyle: TextStyle(color: Colors.grey[400]),
+                      hintStyle: TextStyle(color: theme.textTheme.bodySmall?.color),
                       filled: true,
-                      fillColor: AppColors.background,
+                      fillColor: theme.scaffoldBackgroundColor,
                       border: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(10),
                         borderSide: BorderSide.none,
@@ -148,7 +148,7 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
                 ),
                 const SizedBox(width: 8),
                 IconButton(
-                  icon: const Icon(Icons.send, color: AppColors.primary),
+                  icon: Icon(Icons.send, color: theme.primaryColor),
                   onPressed: _isLoading ? null : _sendMessage,
                 )
               ],

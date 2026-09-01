@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:penguin_store/config/api_config.dart';
 import 'package:provider/provider.dart';
-import '../../../core/theme/app_colors.dart';
 import '../providers/cart_provider.dart';
 import '../services/stripe_payment_service.dart';
 
@@ -14,19 +13,20 @@ class CartScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final cart = Provider.of<CartProvider>(context);
     final items = cart.items.values.toList();
+    final theme = Theme.of(context);
 
     return Scaffold(
-      backgroundColor: AppColors.background,
+      backgroundColor: theme.scaffoldBackgroundColor,
       appBar: AppBar(
         title: const Text('Your Cart'),
-        backgroundColor: AppColors.background,
-        foregroundColor: AppColors.whiteText,
+        backgroundColor: theme.appBarTheme.backgroundColor,
+        foregroundColor: theme.appBarTheme.foregroundColor,
       ),
       body: items.isEmpty
-          ? const Center(
+          ? Center(
               child: Text(
                 'Your cart is empty.',
-                style: TextStyle(color: AppColors.whiteText, fontSize: 16),
+                style: TextStyle(color: theme.textTheme.bodyLarge?.color, fontSize: 16),
               ),
             )
           : ListView.builder(
@@ -37,7 +37,7 @@ class CartScreen extends StatelessWidget {
                 final product = item.product;
 
                 return Card(
-                  color: AppColors.card,
+                  color: theme.cardTheme.color,
                   margin: const EdgeInsets.only(bottom: 12),
                   child: ListTile(
                     leading: Image.network(
@@ -48,11 +48,11 @@ class CartScreen extends StatelessWidget {
                     ),
                     title: Text(
                       product.name,
-                      style: const TextStyle(color: AppColors.whiteText),
+                      style: TextStyle(color: theme.textTheme.titleMedium?.color),
                     ),
                     subtitle: Text(
                       '\$${product.price}  x${item.quantity}',
-                      style: const TextStyle(color: AppColors.greyText),
+                      style: TextStyle(color: theme.textTheme.bodySmall?.color),
                     ),
                   ),
                 );
@@ -61,27 +61,19 @@ class CartScreen extends StatelessWidget {
       bottomNavigationBar: SafeArea(
         child: Container(
           padding: const EdgeInsets.all(16),
-          color: AppColors.card,
+          color: theme.cardTheme.color,
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               Text(
                 'Total: \$${cart.totalPrice.toStringAsFixed(2)}',
-                style: const TextStyle(
-                  color: AppColors.whiteText,
+                style: TextStyle(
+                  color: theme.textTheme.titleLarge?.color,
                   fontSize: 16,
                   fontWeight: FontWeight.bold,
                 ),
               ),
               ElevatedButton(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.orange,
-                  foregroundColor: Colors.black,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 20,
-                    vertical: 12,
-                  ),
-                ),
                 onPressed: items.isEmpty
                     ? null
                     : () async {

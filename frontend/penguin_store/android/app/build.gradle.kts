@@ -2,7 +2,7 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("dev.flutter.flutter-gradle-plugin")
-    id("com.google.gms.google-services") // This connects your Firebase!
+    id("com.google.gms.google-services")
 }
 
 android {
@@ -36,8 +36,4 @@ android {
 
 flutter {
     source = "../.."
-}
-
-dependencies {
-    // Flutter plugins will automatically inject their own Android dependencies here.
 }

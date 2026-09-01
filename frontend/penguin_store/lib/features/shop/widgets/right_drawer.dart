@@ -2,9 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:penguin_store/features/shop/providers/auth_provider.dart';
 import 'package:penguin_store/features/shop/screens/auth_screen.dart';
 import 'package:provider/provider.dart'; // Need this for state management
-import '../../../core/theme/app_colors.dart';
 import '../screens/admin_screen.dart';
- // Your Auth Engine
+// Your Auth Engine
 // The Login Screen we just built
 
 class RightDrawer extends StatelessWidget {
@@ -14,32 +13,34 @@ class RightDrawer extends StatelessWidget {
   Widget build(BuildContext context) {
     // 1. This grabs the Auth state to check if someone is logged in
     final authData = Provider.of<AuthProvider>(context);
+    // Grab the dynamic theme
+    final theme = Theme.of(context);
 
     return Drawer(
-      backgroundColor: AppColors.background,
+      backgroundColor: theme.scaffoldBackgroundColor,
       child: Column(
         children: [
           // 2. Dynamic User Account Header
           UserAccountsDrawerHeader(
-            decoration: const BoxDecoration(color: Color(0xFF1A1A1A)),
-            currentAccountPicture: const CircleAvatar(
-              backgroundColor: AppColors.primary,
-              child: Text('M', style: TextStyle(color: AppColors.background, fontWeight: FontWeight.bold, fontSize: 24)),
+            decoration: BoxDecoration(color: theme.cardTheme.color ?? theme.colorScheme.surface),
+            currentAccountPicture: CircleAvatar(
+              backgroundColor: theme.primaryColor,
+              child: Text('M', style: TextStyle(color: theme.scaffoldBackgroundColor, fontWeight: FontWeight.bold, fontSize: 24)),
             ),
             accountName: Text(
               authData.isAuthenticated ? 'Welcome Back!' : 'Guest User', 
-              style: const TextStyle(color: AppColors.whiteText, fontWeight: FontWeight.bold)
+              style: TextStyle(color: theme.textTheme.titleMedium?.color, fontWeight: FontWeight.bold)
             ),
             accountEmail: Text(
               authData.userEmail ?? 'Please log in to manage your cart', 
-              style: TextStyle(color: Colors.grey[400])
+              style: TextStyle(color: theme.textTheme.bodySmall?.color ?? Colors.grey[400])
             ),
           ),
           
           // 3. Navigation Options
-          _buildDrawerTile(Icons.home_outlined, 'Home', () => Navigator.pop(context)),
-          _buildDrawerTile(Icons.person_outline, 'My Profile', () {}),
-          _buildDrawerTile(Icons.shopping_bag_outlined, 'My Orders', () {}),
+          _buildDrawerTile(Icons.home_outlined, 'Home', () => Navigator.pop(context), theme),
+          _buildDrawerTile(Icons.person_outline, 'My Profile', () {}, theme),
+          _buildDrawerTile(Icons.shopping_bag_outlined, 'My Orders', () {}, theme),
           
           const Divider(color: Colors.grey, indent: 20, endIndent: 20),
           
@@ -49,7 +50,7 @@ class RightDrawer extends StatelessWidget {
             _buildDrawerTile(Icons.admin_panel_settings_outlined, 'Admin Panel', () {
               Navigator.pop(context); // Close Drawer
               Navigator.push(context, MaterialPageRoute(builder: (context) => const AdminScreen()));
-            }),
+            }, theme),
           
           const Spacer(),
           
@@ -58,7 +59,7 @@ class RightDrawer extends StatelessWidget {
             _buildDrawerTile(Icons.logout, 'Logout', () {
               authData.logout(); // Tell the provider to clear the token
               Navigator.pop(context); // Close the drawer
-            }, isDanger: true)
+            }, theme, isDanger: true)
           else
             _buildDrawerTile(Icons.login, 'Log In', () {
               Navigator.pop(context); // Close the drawer
@@ -66,7 +67,7 @@ class RightDrawer extends StatelessWidget {
                 context, 
                 MaterialPageRoute(builder: (context) => const AuthScreen())
               );
-            }),
+            }, theme),
             
           const SizedBox(height: 20),
         ],
@@ -75,12 +76,12 @@ class RightDrawer extends StatelessWidget {
   }
 
   // Helper Widget
-  Widget _buildDrawerTile(IconData icon, String title, VoidCallback onTap, {bool isDanger = false}) {
+  Widget _buildDrawerTile(IconData icon, String title, VoidCallback onTap, ThemeData theme, {bool isDanger = false}) {
     return ListTile(
-      leading: Icon(icon, color: isDanger ? Colors.redAccent : AppColors.primary),
+      leading: Icon(icon, color: isDanger ? Colors.redAccent : theme.primaryColor),
       title: Text(
         title, 
-        style: TextStyle(color: isDanger ? Colors.redAccent : AppColors.whiteText, fontSize: 16)
+        style: TextStyle(color: isDanger ? Colors.redAccent : theme.textTheme.bodyLarge?.color, fontSize: 16)
       ),
       onTap: onTap,
     );

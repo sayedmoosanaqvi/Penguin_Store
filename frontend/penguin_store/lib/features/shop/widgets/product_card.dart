@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:penguin_store/features/shop/providers/auth_provider.dart';
 import 'package:penguin_store/features/shop/screens/product_details_screen.dart';
-import '../../../core/theme/app_colors.dart';
 import '../models/product_model.dart';
 import 'package:provider/provider.dart';
 import '../providers/cart_provider.dart';
@@ -30,6 +29,8 @@ class _ProductCardState extends State<ProductCard> {
   Widget build(BuildContext context) {
     // 2. ACCESS THE AUTH PROVIDER
     final authProvider = Provider.of<AuthProvider>(context);
+    // Grab the dynamic theme
+    final theme = Theme.of(context);
 
     return MouseRegion(
       onEnter: (_) => setState(() => isHovering = true),
@@ -47,15 +48,18 @@ class _ProductCardState extends State<ProductCard> {
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 200),
           decoration: BoxDecoration(
-            color: AppColors.card,
+            color: theme.cardTheme.color ?? theme.colorScheme.surface,
             borderRadius: BorderRadius.circular(16),
             border: Border.all(
-              color: isHovering ? AppColors.primary : Colors.transparent,
+              color: isHovering ? theme.primaryColor : Colors.transparent,
               width: 2,
             ),
+            // The signature Medical-Modern soft shadow
             boxShadow: [
               BoxShadow(
-                color: AppColors.background.withOpacity(0.3),
+                color: theme.brightness == Brightness.light 
+                    ? Colors.grey.withOpacity(0.1) 
+                    : Colors.black.withOpacity(0.3),
                 blurRadius: 10,
                 offset: const Offset(0, 4),
               ),
@@ -84,9 +88,9 @@ class _ProductCardState extends State<ProductCard> {
                         opacity: isHovering ? 0.1 : 0.0,
                         duration: const Duration(milliseconds: 200),
                         child: Container(
-                          decoration: const BoxDecoration(
-                            borderRadius: BorderRadius.vertical(top: Radius.circular(14)),
-                            color: AppColors.background,
+                          decoration: BoxDecoration(
+                            borderRadius: const BorderRadius.vertical(top: Radius.circular(14)),
+                            color: theme.scaffoldBackgroundColor,
                           ),
                         ),
                       ),
@@ -99,9 +103,9 @@ class _ProductCardState extends State<ProductCard> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           if (widget.product.discountPercent != null)
-                            _buildTag('-${widget.product.discountPercent}%', AppColors.background, AppColors.primary),
+                            _buildTag('-${widget.product.discountPercent}%', theme.scaffoldBackgroundColor, theme.primaryColor),
                           if (widget.product.isFeatured)
-                            _buildTag('FEATURED', AppColors.primary, AppColors.background),
+                            _buildTag('FEATURED', theme.primaryColor, theme.scaffoldBackgroundColor),
                         ],
                       ),
                     ),
@@ -116,7 +120,7 @@ class _ProductCardState extends State<ProductCard> {
                           duration: const Duration(milliseconds: 200),
                           child: Container(
                             decoration: BoxDecoration(
-                              color: Colors.white,
+                              color: theme.scaffoldBackgroundColor,
                               shape: BoxShape.circle,
                               boxShadow: [
                                 BoxShadow(color: Colors.black.withOpacity(0.1), blurRadius: 4)
@@ -125,7 +129,7 @@ class _ProductCardState extends State<ProductCard> {
                             child: IconButton(
                               icon: const Icon(Icons.delete_outline, color: Colors.redAccent, size: 20),
                               onPressed: () {
-                                _showDeleteDialog(context);
+                                _showDeleteDialog(context, theme);
                               },
                             ),
                           ),
@@ -143,8 +147,8 @@ class _ProductCardState extends State<ProductCard> {
                             padding: const EdgeInsets.all(12.0),
                             child: ElevatedButton.icon(
                               style: ElevatedButton.styleFrom(
-                                backgroundColor: AppColors.primary,
-                                foregroundColor: AppColors.background,
+                                backgroundColor: theme.primaryColor,
+                                foregroundColor: theme.scaffoldBackgroundColor,
                                 minimumSize: const Size(double.infinity, 44),
                                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                               ),
@@ -152,10 +156,13 @@ class _ProductCardState extends State<ProductCard> {
                                 Provider.of<CartProvider>(context, listen: false).addToCart(widget.product);
                                 ScaffoldMessenger.of(context).showSnackBar(
                                   SnackBar(
-                                    backgroundColor: AppColors.background,
+                                    backgroundColor: theme.scaffoldBackgroundColor,
                                     behavior: SnackBarBehavior.floating,
                                     duration: const Duration(seconds: 1),
-                                    content: Text('${widget.product.name} added to cart!'),
+                                    content: Text(
+                                      '${widget.product.name} added to cart!', 
+                                      style: TextStyle(color: theme.textTheme.bodyLarge?.color)
+                                    ),
                                   ),
                                 );
                               },
@@ -177,28 +184,28 @@ class _ProductCardState extends State<ProductCard> {
                   children: [
                     Text(
                       widget.product.category.toUpperCase(),
-                      style: TextStyle(color: Colors.grey[500], fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1),
+                      style: TextStyle(color: theme.textTheme.bodySmall?.color ?? Colors.grey[500], fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1),
                     ),
                     const SizedBox(height: 6),
                     Text(
                       widget.product.name,
-                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: AppColors.whiteText),
+                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: theme.textTheme.titleMedium?.color),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
                     const SizedBox(height: 6),
                     Row(
                       children: [
-                        const Icon(Icons.star, color: AppColors.primary, size: 16),
+                        Icon(Icons.star, color: theme.primaryColor, size: 16),
                         const SizedBox(width: 4),
-                        Text("${widget.product.rating}", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: AppColors.whiteText)),
-                        Text(" (${widget.product.reviews})", style: TextStyle(color: Colors.grey[500], fontSize: 12)),
+                        Text("${widget.product.rating}", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: theme.textTheme.bodyMedium?.color)),
+                        Text(" (${widget.product.reviews})", style: TextStyle(color: theme.textTheme.bodySmall?.color ?? Colors.grey[500], fontSize: 12)),
                       ],
                     ),
                     const SizedBox(height: 10),
                     Text(
                       '\$${widget.product.price.toStringAsFixed(2)}',
-                      style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 18, color: AppColors.primary),
+                      style: TextStyle(fontWeight: FontWeight.w900, fontSize: 18, color: theme.primaryColor),
                     ),
                   ],
                 ),
@@ -211,12 +218,13 @@ class _ProductCardState extends State<ProductCard> {
   }
 
   // Extracted Dialog for Cleanliness
-  void _showDeleteDialog(BuildContext context) {
+  void _showDeleteDialog(BuildContext context, ThemeData theme) {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text("Delete Product?"),
-        content: Text("Are you sure you want to delete '${widget.product.name}'?"),
+        backgroundColor: theme.cardTheme.color,
+        title: Text("Delete Product?", style: TextStyle(color: theme.textTheme.titleLarge?.color)),
+        content: Text("Are you sure you want to delete '${widget.product.name}'?", style: TextStyle(color: theme.textTheme.bodyLarge?.color)),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context), 

@@ -2,8 +2,6 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:penguin_store/config/api_config.dart';
-import '../../../core/theme/app_colors.dart';
- // Ensure path matches your file tree structure
 
 class OrderTrackingScreen extends StatefulWidget {
   final String customerEmail;
@@ -53,22 +51,24 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
     return Scaffold(
-      backgroundColor: AppColors.background,
+      backgroundColor: theme.scaffoldBackgroundColor,
       appBar: AppBar(
         title: const Text('My Orders & Tracking'),
-        backgroundColor: AppColors.background,
-        foregroundColor: AppColors.whiteText,
+        backgroundColor: theme.appBarTheme.backgroundColor,
+        foregroundColor: theme.appBarTheme.foregroundColor,
       ),
       body: _isLoading
-          ? const Center(child: CircularProgressIndicator(color: Colors.orange))
+          ? Center(child: CircularProgressIndicator(color: theme.primaryColor))
           : _errorMessage != null
               ? Center(child: Text(_errorMessage!, style: const TextStyle(color: Colors.red)))
               : _orders.isEmpty
-                  ? const Center(
+                  ? Center(
                       child: Text(
                         'No past orders found.',
-                        style: TextStyle(color: AppColors.whiteText, fontSize: 16),
+                        style: TextStyle(color: theme.textTheme.bodyLarge?.color, fontSize: 16),
                       ),
                     )
                   : ListView.builder(
@@ -77,7 +77,7 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
                       itemBuilder: (context, index) {
                         final order = _orders[index];
                         return Card(
-                          color: AppColors.card,
+                          color: theme.cardTheme.color,
                           margin: const EdgeInsets.only(bottom: 16),
                           child: Padding(
                             padding: const EdgeInsets.all(16),
@@ -89,16 +89,16 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
                                   children: [
                                     Text(
                                       'Order #${order['order_id']}',
-                                      style: const TextStyle(
-                                        color: AppColors.whiteText,
+                                      style: TextStyle(
+                                        color: theme.textTheme.titleMedium?.color,
                                         fontWeight: FontWeight.bold,
                                         fontSize: 16,
                                       ),
                                     ),
                                     Text(
                                       '\$${order['total_amount'].toStringAsFixed(2)}',
-                                      style: const TextStyle(
-                                        color: Colors.orange,
+                                      style: TextStyle(
+                                        color: theme.primaryColor,
                                         fontWeight: FontWeight.bold,
                                         fontSize: 16,
                                       ),
@@ -108,12 +108,15 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
                                 const SizedBox(height: 8),
                                 Text(
                                   'Shipped to: ${order['shipping_address']}, ${order['city']}',
-                                  style: const TextStyle(color: AppColors.greyText, fontSize: 13),
+                                  style: TextStyle(color: theme.textTheme.bodySmall?.color, fontSize: 13),
                                 ),
                                 const Divider(color: Colors.grey, height: 20),
                                 ...((order['items'] as List).map((item) {
+                                  final isDropship = item['fulfillment_type'] == 'DROPSHIP';
+                                  final badgeColor = isDropship ? Colors.blueAccent : Colors.amber.shade700;
+
                                   return Padding(
-                                    padding: const EdgeInsets.symmetric(vertical: 4),
+                                    padding: const EdgeInsets.symmetric(vertical: 6),
                                     child: Column(
                                       crossAxisAlignment: CrossAxisAlignment.start,
                                       children: [
@@ -123,25 +126,35 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
                                             Expanded(
                                               child: Text(
                                                 '${item['product_name']} (x${item['quantity']})',
-                                                style: const TextStyle(color: AppColors.whiteText),
+                                                style: TextStyle(
+                                                  color: theme.textTheme.bodyLarge?.color,
+                                                  fontWeight: FontWeight.w500,
+                                                ),
                                               ),
                                             ),
-                                            Chip(
-                                              label: Text(
-                                                item['fulfillment_type'],
-                                                style: const TextStyle(fontSize: 10, color: Colors.black),
+                                            // Enhanced Modern Badge UI
+                                            Container(
+                                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                              decoration: BoxDecoration(
+                                                color: badgeColor.withOpacity(0.15),
+                                                borderRadius: BorderRadius.circular(20),
+                                                border: Border.all(color: badgeColor.withOpacity(0.4)),
                                               ),
-                                              backgroundColor: item['fulfillment_type'] == 'DROPSHIP'
-                                                  ? Colors.blueAccent
-                                                  : Colors.amber,
-                                              padding: EdgeInsets.zero,
+                                              child: Text(
+                                                item['fulfillment_type'],
+                                                style: TextStyle(
+                                                  fontSize: 11,
+                                                  fontWeight: FontWeight.bold,
+                                                  color: badgeColor,
+                                                ),
+                                              ),
                                             ),
                                           ],
                                         ),
                                         const SizedBox(height: 4),
                                         Text(
                                           'Status: ${item['dispatch_status']} | Tracking: ${item['tracking_number'] ?? 'Pending'}',
-                                          style: const TextStyle(color: AppColors.greyText, fontSize: 12),
+                                          style: TextStyle(color: theme.textTheme.bodySmall?.color, fontSize: 12),
                                         ),
                                       ],
                                     ),

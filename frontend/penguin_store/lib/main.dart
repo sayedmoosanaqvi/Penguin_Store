@@ -3,6 +3,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:penguin_store/core/theme/app_theme.dart';
 import 'package:penguin_store/features/shop/providers/auth_provider.dart';
 import 'package:penguin_store/features/shop/providers/cart_provider.dart';
+import 'package:penguin_store/helpers/shared_preferences.dart';
 import 'package:provider/provider.dart';
 import 'core/routing/app_router.dart';
 import 'core/theme/app_colors.dart';
@@ -10,6 +11,9 @@ import 'package:flutter_stripe/flutter_stripe.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'firebase_options.dart';
+
+// Import your new helper files here
+import 'package:penguin_store/helpers/theme_provider.dart';
 
 Future<void> initPush() async {
   try {
@@ -30,6 +34,9 @@ Future<void> initPush() async {
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
+  // Initialize the shared preferences for saving the theme
+  await SharedPreferencesHelper.init();
+
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );
@@ -43,6 +50,8 @@ Future<void> main() async {
       providers: [
         ChangeNotifierProvider(create: (_) => CartProvider()),
         ChangeNotifierProvider(create: (_) => AuthProvider()),
+        // Add the ThemeProvider to your existing providers
+        ChangeNotifierProvider(create: (_) => ThemeProvider()),
       ],
       child: const PenguinStoreApp(),
     ),
@@ -54,22 +63,19 @@ class PenguinStoreApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp.router(
-      title: 'Penguin Store',
-      debugShowCheckedModeBanner: false,
-      routerConfig: appRouter,
-      theme: darkTheme,
-      // theme: ThemeData(
-      //   scaffoldBackgroundColor: AppColors.secondaryWhite,
-      //   primaryColor: AppColors.primaryBlack,
-      //   textTheme: GoogleFonts.poppinsTextTheme(Theme.of(context).textTheme),
-      //   useMaterial3: true,
-      //   appBarTheme: const AppBarTheme(
-      //     backgroundColor: AppColors.primaryBlack,
-      //     foregroundColor: AppColors.pureWhite,
-      //     elevation: 0,
-      //   ),
-      // ),
+    // Wrap with Consumer to listen to theme changes
+    return Consumer<ThemeProvider>(
+      builder: (context, themeProvider, child) {
+        return MaterialApp.router(
+          title: 'Penguin Store',
+          debugShowCheckedModeBanner: false,
+          routerConfig: appRouter,
+          // Apply the Medical-Modern themes here
+          theme: ThemeProvider.lightTheme(),
+          darkTheme: ThemeProvider.darkTheme(),
+          themeMode: themeProvider.themeMode, 
+        );
+      },
     );
   }
 }

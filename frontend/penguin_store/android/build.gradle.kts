@@ -24,7 +24,6 @@ tasks.register<Delete>("clean") {
     delete(rootProject.layout.buildDirectory)
 }
 
-// ✅ FIXED: Removed the hardcoded version numbers to prevent classpath collisions
 plugins {
     id("com.android.application") apply false
     id("com.android.library") apply false
