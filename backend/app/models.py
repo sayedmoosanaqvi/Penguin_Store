@@ -2,6 +2,8 @@ from datetime import datetime
 from sqlalchemy import Column, Integer, String, Float, Boolean, Text, ForeignKey, DateTime
 from sqlalchemy.orm import relationship
 from .database import Base
+from sqlalchemy import Column, Integer, String, Boolean, DateTime
+from sqlalchemy.sql import func
 
 class Product(Base):
     __tablename__ = "products"
@@ -41,11 +43,18 @@ class Order(Base):
     id = Column(Integer, primary_key=True, index=True)
     customer_name = Column(String, nullable=False)
     customer_email = Column(String, nullable=False)
+    
+    # ML Feature geographic data
     shipping_address = Column(String, nullable=False)
     city = Column(String, nullable=False)
+    state_province = Column(String, index=True, nullable=False) # e.g., 'Punjab'
+    country = Column(String, index=True, default="Pakistan")    # e.g., 'Pakistan'
     postal_code = Column(String, nullable=False)
+    
     total_amount = Column(Float, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Timestamp is critical for Time-Decayed ML weighting
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
     # Relationship to individual items
     items = relationship("OrderItem", back_populates="order")
@@ -66,3 +75,19 @@ class OrderItem(Base):
     tracking_number = Column(String, nullable=True)
 
     order = relationship("Order", back_populates="items")
+
+
+# Note: Ensure these imports are at the top of the file if they aren't already
+
+class Notification(Base):
+    __tablename__ = "notifications"
+
+    id = Column(Integer, primary_key=True, index=True)
+    customer_email = Column(String, index=True)
+    title = Column(String)
+    message = Column(String)
+    is_read = Column(Boolean, default=False)
+    notification_type = Column(String) # "ORDER", "PROMO", "SYSTEM"
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    

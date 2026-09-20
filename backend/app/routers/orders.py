@@ -1,10 +1,14 @@
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
 from pydantic import BaseModel
-from typing import List
+from typing import List, Optional
 from sqlalchemy.orm import Session
 from app.database import SessionLocal
-from app.models import Product, Order, OrderItem
+from app.models import Product, Order, OrderItem, Notification
 from app.adapters.supplier_adapter import DummyJSONAdapter
+
+# Import the notification helpers
+from app.email_utils import send_order_confirmation
+from app.push_utils import send_push_notification
 
 router = APIRouter(tags=["Order Dispatch"])
 
@@ -25,15 +29,20 @@ class CheckoutRequest(BaseModel):
     customer_email: str
     shipping_address: str
     city: str
+    state_province: Optional[str] = "Punjab"  # Added fallback
+    country: Optional[str] = "Pakistan"       # Added fallback
     postal_code: str
     items: List[CartItem]
 
 @router.post("/api/orders/checkout")
-async def process_checkout(payload: CheckoutRequest, db: Session = Depends(get_db)):
+async def process_checkout(
+    payload: CheckoutRequest, 
+    background_tasks: BackgroundTasks, 
+    db: Session = Depends(get_db)
+):
     """
-    Processes an order, verifies and deducts stock, and splits fulfillment based on item source:
-    - IN_HOUSE: Queued for internal packing.
-    - DROPSHIP: Dispatched automatically to supplier API.
+    Processes an order, verifies and deducts stock, splits fulfillment, 
+    and triggers background email & push notifications.
     """
     if not payload.items:
         raise HTTPException(status_code=400, detail="Cart cannot be empty")
@@ -106,6 +115,8 @@ async def process_checkout(payload: CheckoutRequest, db: Session = Depends(get_d
             customer_email=payload.customer_email,
             shipping_address=payload.shipping_address,
             city=payload.city,
+            state_province=payload.state_province or "Punjab", # Catch nulls here
+            country=payload.country or "Pakistan",             # Catch nulls here
             postal_code=payload.postal_code,
             total_amount=total_order_amount,
             items=order_items_to_create
@@ -113,6 +124,32 @@ async def process_checkout(payload: CheckoutRequest, db: Session = Depends(get_d
         db.add(new_order)
         db.commit()
         db.refresh(new_order)
+
+        # ---> IN-APP NOTIFICATION CREATION <---
+        in_app_notif = Notification(
+            customer_email=payload.customer_email,
+            title="Order Confirmed! 📦",
+            message=f"Your order #{new_order.id} has been placed successfully and is being processed.",
+            notification_type="ORDER"
+        )
+        db.add(in_app_notif)
+        db.commit()
+
+        # 4. TRIGGER NOTIFICATIONS (Runs in the background)
+        # Send Email Receipt
+        background_tasks.add_task(
+            send_order_confirmation, 
+            payload.customer_email, 
+            new_order.id
+        )
+        
+        # Send Push Notification to phone
+        background_tasks.add_task(
+            send_push_notification, 
+            payload.customer_email, 
+            "Payment Successful! 🎉", 
+            f"Your order #{new_order.id} is confirmed and being processed."
+        )
 
         return {
             "status": "success",
@@ -127,6 +164,7 @@ async def process_checkout(payload: CheckoutRequest, db: Session = Depends(get_d
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.get("/api/orders/history/{customer_email}")
 def get_order_history(customer_email: str, db: Session = Depends(get_db)):

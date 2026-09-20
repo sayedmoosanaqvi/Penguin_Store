@@ -1,6 +1,8 @@
+import json
 import logging
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+from langchain_core.messages import ToolMessage, AIMessage
 from app.agent.graph import agent_app
 
 # 1. Configure Enterprise-Grade Logging
@@ -29,25 +31,60 @@ async def chat_with_agent(request: ChatRequest):
         inputs = {"messages": [("user", request.user_input)]}
         config = {"configurable": {"thread_id": request.thread_id}}
         
-        # Invoke the graph with local Ollama model
-        logger.info("Executing Local Agent Graph...")
+        # Invoke the graph with your model
+        logger.info("Executing Agent Graph...")
         result = agent_app.invoke(inputs, config=config)
         
         if not result or "messages" not in result or not result["messages"]:
             raise HTTPException(status_code=500, detail="Agent graph returned an empty response.")
             
-        last_message = result["messages"][-1]
-        content = getattr(last_message, 'content', str(last_message))
+        messages = result["messages"]
+        final_text = ""
+        suggested_products = []
+        cart_action = None
+        data_type = "text"
         
-        # Handle local model tool calls safely
-        if not content and hasattr(last_message, 'tool_calls') and last_message.tool_calls:
-            tool_name = last_message.tool_calls[0].get('name', 'unknown_tool')
-            tool_args = last_message.tool_calls[0].get('args', {})
-            logger.warning(f"ACTION INTERRUPTED: Agent requested tool '{tool_name}' with args {tool_args}.")
-            return {"status": "paused", "message": f"Agent is waiting for human approval to run {tool_name}."}
-            
-        logger.info(f"Agent Final Response: '{content}'")
-        return {"status": "success", "response": content}
+        # 1. Extract the final conversational response
+        last_message = messages[-1]
+        if isinstance(last_message, AIMessage):
+            final_text = getattr(last_message, 'content', str(last_message))
+
+            # Handle edge case: LLM wants human approval for a local tool call
+            if not final_text and hasattr(last_message, 'tool_calls') and last_message.tool_calls:
+                tool_name = last_message.tool_calls[0].get('name', 'unknown_tool')
+                tool_args = last_message.tool_calls[0].get('args', {})
+                logger.warning(f"ACTION INTERRUPTED: Agent requested tool '{tool_name}' with args {tool_args}.")
+                return {"status": "paused", "message": f"Agent is waiting for human approval to run {tool_name}."}
+
+        # 2. Scan backwards for the most recent database tool call
+        for msg in reversed(messages):
+            if getattr(msg, 'type', '') == 'tool':
+                try:
+                    content = getattr(msg, 'content', '[]')
+                    parsed = json.loads(content)
+                    tool_name = getattr(msg, 'name', '')
+
+                    if tool_name == 'add_to_cart':
+                        cart_action = parsed
+                        data_type = "cart_update"
+                        break
+                    elif tool_name == 'search_inventory':
+                        suggested_products = parsed
+                        data_type = "product_list"
+                        break
+                except json.JSONDecodeError:
+                    logger.error("Failed to parse tool output as JSON.")
+
+        logger.info(f"Agent Final Response: '{final_text}' | Data Type: '{data_type}'")
+        
+        # 3. Return a multi-modal JSON payload to Flutter
+        return {
+            "status": "success", 
+            "response": final_text,
+            "data_type": data_type,
+            "suggested_products": suggested_products,
+            "cart_action": cart_action
+        }
         
     except Exception as e:
         logger.error(f"AGENT CRASHED: {str(e)}")

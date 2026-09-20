@@ -1,20 +1,22 @@
-from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File
-from sqlalchemy.orm import Session
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import OAuth2PasswordRequestForm
-from pydantic import BaseModel
 import os
 import uuid
 import boto3
 from dotenv import load_dotenv
 
+from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File
+from sqlalchemy.orm import Session
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import OAuth2PasswordRequestForm
+from pydantic import BaseModel
+
 from . import models, schemas
 from .database import engine, get_db
 from .security import get_password_hash, verify_password, create_access_token
 from .models import User
-from .routers import agent, stripe, agent_chat, supplier, orders
-
-# This loads your secret keys from the .env file so Python can use them safely
+from .routers import agent, stripe, agent_chat, supplier, orders, trending
+from .routers import agent, stripe, agent_chat, supplier, orders, trending, recommendations
+from .routers import notifications
+# Load secret keys from .env file
 load_dotenv()
 
 # Initialize the AWS S3 Client
@@ -29,14 +31,14 @@ AWS_BUCKET_NAME = os.getenv("AWS_BUCKET_NAME")
 AWS_REGION = os.getenv("AWS_REGION")
 print("🔥🔥🔥 DEBUG BUCKET NAME IS:", AWS_BUCKET_NAME)
 
-# Create the database tables
+# Create database tables
 models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Penguin Store API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # Allows all connections (perfect for development)
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -48,7 +50,9 @@ app.include_router(stripe.router)
 app.include_router(agent_chat.router)
 app.include_router(orders.router)
 app.include_router(supplier.router)
-
+app.include_router(trending.router)
+app.include_router(recommendations.router)
+app.include_router(notifications.router)
 @app.get("/")
 def read_root():
     return {"message": "Welcome to the Penguin Store API! The engine is running with local AI agent capabilities."}
@@ -73,7 +77,7 @@ def delete_product(product_id: int, db: Session = Depends(get_db)):
     product_query = db.query(models.Product).filter(models.Product.id == product_id)
     product = product_query.first()
 
-    if product == None:
+    if product is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Product with id: {product_id} does not exist")
 
     product_query.delete(synchronize_session=False)
