@@ -213,7 +213,7 @@ class _AdminScreenState extends State<AdminScreen> {
                       contentPadding: EdgeInsets.zero,
                       title: const Text("Mark as Featured", style: TextStyle(fontWeight: FontWeight.w500, color: AppColors.whiteText)),
                       value: _isFeatured,
-                      activeColor: AppColors.primary,
+                      activeThumbColor: AppColors.primary,
                       onChanged: (val) => setState(() => _isFeatured = val),
                     ),
                   ],

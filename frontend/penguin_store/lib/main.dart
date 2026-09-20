@@ -1,12 +1,9 @@
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
-import 'package:penguin_store/core/theme/app_theme.dart';
 import 'package:penguin_store/features/shop/providers/auth_provider.dart';
 import 'package:penguin_store/features/shop/providers/cart_provider.dart';
 import 'package:penguin_store/helpers/shared_preferences.dart';
 import 'package:provider/provider.dart';
 import 'core/routing/app_router.dart';
-import 'core/theme/app_colors.dart';
 import 'package:flutter_stripe/flutter_stripe.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:firebase_core/firebase_core.dart';

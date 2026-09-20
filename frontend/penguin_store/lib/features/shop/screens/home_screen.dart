@@ -1,7 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:penguin_store/features/shop/widgets/personalized_carousel.dart';
 import 'package:penguin_store/features/shop/widgets/right_drawer.dart';
 import 'package:penguin_store/features/shop/widgets/top_nav_bar.dart';
+import 'package:penguin_store/features/shop/widgets/trending_carousel.dart';
+// ---> NEW IMPORT FOR PREMIUM PHYSICS <---
+import 'package:penguin_store/features/shop/widgets/premium_interactive_card.dart';
 import '../../../core/responsive/responsive_layout.dart';
 import '../models/product_model.dart';
 import '../widgets/product_card.dart';
@@ -146,9 +150,9 @@ class _HomeScreenState extends State<HomeScreen> {
               // --- SECTION 2: Promo / Quick Action Banner ---
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 4.0),
-                child: InkWell(
+                // ---> PREMIUM INTERACTIVE CARD APPLIED HERE <---
+                child: PremiumInteractiveCard(
                   onTap: () => context.go('/ctrlx'),
-                  borderRadius: BorderRadius.circular(20),
                   child: Container(
                     width: double.infinity,
                     padding: const EdgeInsets.all(20),
@@ -200,6 +204,12 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
               ),
+
+              const SizedBox(height: 24),
+
+              // --- NEW SECTION: Netflix-Style Trending Carousel ---
+              const TrendingCarousel(country: "Pakistan"),
+              const PersonalizedCarousel(userEmail: "sayedmoosanaqvi@gmail.com"),
 
               const SizedBox(height: 24),
 
@@ -420,9 +430,23 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
         itemCount: products.length,
         itemBuilder: (context, index) {
-          return ProductCard(
-            product: products[index],
-            onProductDeleted: _refreshProducts,
+          return TweenAnimationBuilder<double>(
+            duration: Duration(milliseconds: 300 + (index * 80)),
+            tween: Tween<double>(begin: 0.0, end: 1.0),
+            curve: Curves.easeOut,
+            builder: (context, value, child) {
+              return Transform.translate(
+                offset: Offset(0, 40 * (1 - value)),
+                child: Opacity(
+                  opacity: value,
+                  child: child,
+                ),
+              );
+            },
+            child: ProductCard(
+              product: products[index],
+              onProductDeleted: _refreshProducts,
+            ),
           );
         },
       ),

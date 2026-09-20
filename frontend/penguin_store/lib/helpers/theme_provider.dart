@@ -62,7 +62,6 @@ class ThemeProvider extends ChangeNotifier {
         secondary: ACCENT_TEAL,
         tertiary: GRADIENT_INDIGO,
         surface: WHITE,
-        background: BG_GREY,
         error: LIGHT_RED,
       ),
       appBarTheme: AppBarTheme(
@@ -158,11 +157,9 @@ class ThemeProvider extends ChangeNotifier {
         primary: PRIMARY_BLUE,
         secondary: ACCENT_TEAL,
         tertiary: GRADIENT_INDIGO,
-        surface: Color(0xFF1E1E1E), 
-        background: Color(0xFF121212),
+        surface: Color(0xFF1E1E1E),
         error: LIGHT_RED,
         onSurface: Color(0xFFF0F0F0), 
-        onBackground: Color(0xFFF0F0F0), 
       ),
       appBarTheme: AppBarTheme(
         backgroundColor: Color(0xFF121212), // Matches background

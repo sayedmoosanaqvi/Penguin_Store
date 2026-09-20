@@ -4,9 +4,10 @@ import 'package:penguin_store/features/shop/screens/product_details_screen.dart'
 import '../models/product_model.dart';
 import 'package:provider/provider.dart';
 import '../providers/cart_provider.dart';
-// 1. IMPORT YOUR AUTH PROVIDER
 import '../services/product_service.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
+// ---> NEW IMPORT FOR CUSTOM TOAST <---
+import 'package:penguin_store/features/shop/widgets/custom_toast.dart';
 
 class ProductCard extends StatefulWidget {
   final Product product;
@@ -27,9 +28,7 @@ class _ProductCardState extends State<ProductCard> {
 
   @override
   Widget build(BuildContext context) {
-    // 2. ACCESS THE AUTH PROVIDER
     final authProvider = Provider.of<AuthProvider>(context);
-    // Grab the dynamic theme
     final theme = Theme.of(context);
 
     return MouseRegion(
@@ -40,7 +39,7 @@ class _ProductCardState extends State<ProductCard> {
           Navigator.push(
             context,
             MaterialPageRoute(
-              builder: (context) => ProductDetailScreen(product: widget.product),
+              builder: (context) => ProductDetailScreen(productId: widget.product.id),
             ),
           );
         },
@@ -54,7 +53,6 @@ class _ProductCardState extends State<ProductCard> {
               color: isHovering ? theme.primaryColor : Colors.transparent,
               width: 2,
             ),
-            // The signature Medical-Modern soft shadow
             boxShadow: [
               BoxShadow(
                 color: theme.brightness == Brightness.light 
@@ -82,7 +80,6 @@ class _ProductCardState extends State<ProductCard> {
                         ),
                       ),
                     ),
-
                     if (kIsWeb)
                       AnimatedOpacity(
                         opacity: isHovering ? 0.1 : 0.0,
@@ -94,8 +91,6 @@ class _ProductCardState extends State<ProductCard> {
                           ),
                         ),
                       ),
-
-                    // Tags
                     Positioned(
                       top: 12,
                       left: 12,
@@ -109,9 +104,7 @@ class _ProductCardState extends State<ProductCard> {
                         ],
                       ),
                     ),
-                    
-                    // --- ADMIN ONLY DELETE BUTTON ---
-                    if (authProvider.isAdmin) // 3. WRAP IN ADMIN CHECK
+                    if (authProvider.isAdmin) 
                       Positioned(
                         top: 8,
                         right: 8,
@@ -135,8 +128,6 @@ class _ProductCardState extends State<ProductCard> {
                           ),
                         ),
                       ),
-
-                    // --- ADD TO CART BUTTON (Web Only) ---
                     if (kIsWeb)
                       AnimatedOpacity(
                         opacity: isHovering ? 1.0 : 0.0,
@@ -154,17 +145,8 @@ class _ProductCardState extends State<ProductCard> {
                               ),
                               onPressed: () {
                                 Provider.of<CartProvider>(context, listen: false).addToCart(widget.product);
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(
-                                    backgroundColor: theme.scaffoldBackgroundColor,
-                                    behavior: SnackBarBehavior.floating,
-                                    duration: const Duration(seconds: 1),
-                                    content: Text(
-                                      '${widget.product.name} added to cart!', 
-                                      style: TextStyle(color: theme.textTheme.bodyLarge?.color)
-                                    ),
-                                  ),
-                                );
+                                // ---> TRIGGER CUSTOM TOAST <---
+                                CustomToast.show(context, '${widget.product.name} added to cart!');
                               },
                               icon: const Icon(Icons.shopping_bag_outlined, size: 18),
                               label: const Text("ADD TO CART", style: TextStyle(fontWeight: FontWeight.bold)),
@@ -175,8 +157,6 @@ class _ProductCardState extends State<ProductCard> {
                   ],
                 ),
               ),
-
-              // Details section
               Padding(
                 padding: const EdgeInsets.all(16.0),
                 child: Column(
@@ -217,7 +197,6 @@ class _ProductCardState extends State<ProductCard> {
     );
   }
 
-  // Extracted Dialog for Cleanliness
   void _showDeleteDialog(BuildContext context, ThemeData theme) {
     showDialog(
       context: context,
@@ -235,14 +214,12 @@ class _ProductCardState extends State<ProductCard> {
               Navigator.pop(context); 
               bool success = await ProductService().deleteProduct(widget.product.id);
               if (success) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Product deleted!'), backgroundColor: Colors.green),
-                );
+                // ---> TRIGGER CUSTOM TOAST <---
+                CustomToast.show(context, 'Product deleted!');
                 widget.onProductDeleted(); 
               } else {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Failed to delete.'), backgroundColor: Colors.red),
-                );
+                // ---> TRIGGER ERROR CUSTOM TOAST <---
+                CustomToast.show(context, 'Failed to delete.', isError: true);
               }
             },
             child: const Text("DELETE", style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)),

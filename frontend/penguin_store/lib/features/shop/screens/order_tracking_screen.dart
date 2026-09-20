@@ -132,7 +132,6 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
                                                 ),
                                               ),
                                             ),
-                                            // Enhanced Modern Badge UI
                                             Container(
                                               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                                               decoration: BoxDecoration(

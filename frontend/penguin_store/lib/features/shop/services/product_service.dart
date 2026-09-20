@@ -2,7 +2,6 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:penguin_store/config/api_config.dart';
 import '../models/product_model.dart';
-import 'dart:io';
 import 'package:image_picker/image_picker.dart';
 // 1. Import your new config file (adjust the path if your folder is named differently)
 

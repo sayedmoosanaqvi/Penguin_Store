@@ -12,7 +12,6 @@ class TopNavBar extends StatelessWidget implements PreferredSizeWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Grab the global theme
     final theme = Theme.of(context); 
 
     return AppBar(
@@ -49,38 +48,35 @@ class TopNavBar extends StatelessWidget implements PreferredSizeWidget {
         ],
       ),
       actions: [
-        ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 48),
-          child: Consumer<CartProvider>(
-            builder: (context, cart, child) {
-              return Badge(
-                label: Text(
-                  cart.itemCount.toString(),
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.bold,
-                  ),
+        // FIXED: Removed the ConstrainedBox that was breaking the layout!
+        Consumer<CartProvider>(
+          builder: (context, cart, child) {
+            return Badge(
+              label: Text(
+                cart.itemCount.toString(),
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
                 ),
-                isLabelVisible: cart.itemCount > 0,
-                backgroundColor: theme.colorScheme.error,
-                offset: const Offset(-5, 5),
-                child: IconButton(
-                  icon: Icon(
-                    Icons.shopping_bag_outlined,
-                    color: theme.appBarTheme.foregroundColor,
-                  ),
-                  onPressed: () {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(builder: (context) => const CartScreen()),
-                    );
-                  },
+              ),
+              isLabelVisible: cart.itemCount > 0,
+              backgroundColor: theme.colorScheme.error,
+              offset: const Offset(-5, 5),
+              child: IconButton(
+                icon: Icon(
+                  Icons.shopping_bag_outlined,
+                  color: theme.appBarTheme.foregroundColor,
                 ),
-              );
-            },
-          ),
+                onPressed: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (context) => const CartScreen()),
+                  );
+                },
+              ),
+            );
+          },
         ),
-        // NEW: Orders & Tracking Button added here
         IconButton(
           icon: Icon(Icons.local_shipping_outlined, color: theme.appBarTheme.foregroundColor),
           tooltip: 'My Orders',
@@ -89,12 +85,19 @@ class TopNavBar extends StatelessWidget implements PreferredSizeWidget {
           },
         ),
         IconButton(
+          icon: Icon(Icons.notifications_outlined, color: theme.appBarTheme.foregroundColor),
+          tooltip: 'Notifications',
+          onPressed: () {
+            context.push('/notifications?email=sayedmoosanaqvi@gmail.com');
+          },
+        ),
+        IconButton(
           icon: Icon(Icons.menu, color: theme.appBarTheme.foregroundColor),
           onPressed: () {
             Scaffold.of(context).openEndDrawer();
           },
         ),
-        const SizedBox(width: 16),
+        const SizedBox(width: 8), // Slightly reduced edge padding
       ],
     );
   }
