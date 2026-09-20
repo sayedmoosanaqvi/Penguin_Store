@@ -1,9 +1,12 @@
 from fastapi_mail import FastMail, MessageSchema, ConnectionConfig, MessageType
-from pydantic import EmailStr
+from pydantic import EmailStr, SecretStr
 import os
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# Resolve the Pydantic V2 forward reference for SecretStr
+ConnectionConfig.model_rebuild()
 
 conf = ConnectionConfig(
     MAIL_USERNAME = os.getenv('MAIL_USERNAME'),
