@@ -1,16 +1,22 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:image_picker/image_picker.dart';
+
 import 'package:penguin_store/features/shop/widgets/personalized_carousel.dart';
 import 'package:penguin_store/features/shop/widgets/right_drawer.dart';
 import 'package:penguin_store/features/shop/widgets/top_nav_bar.dart';
 import 'package:penguin_store/features/shop/widgets/trending_carousel.dart';
-// ---> NEW IMPORT FOR PREMIUM PHYSICS <---
 import 'package:penguin_store/features/shop/widgets/premium_interactive_card.dart';
+
 import '../../../core/responsive/responsive_layout.dart';
 import '../models/product_model.dart';
 import '../widgets/product_card.dart';
 import '../services/product_service.dart';
+import '../services/visual_search_service.dart';
 import '../widgets/product_card_skeleton.dart';
+
+// ---> NEW IMPORT FOR RESULTS SCREEN <---
+import 'visual_search_results_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -21,6 +27,7 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   final ProductService _productService = ProductService();
+  final VisualSearchService _visualSearchService = VisualSearchService();
   late Future<List<Product>> _productsFuture;
 
   String _selectedCategory = 'All';
@@ -63,6 +70,10 @@ class _HomeScreenState extends State<HomeScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              
+              // --- SECTION: Visual Search Bar ---
+              _buildVisualSearchBar(theme),
+
               // --- SECTION 1: Welcome & Overview Card ---
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 16.0),
@@ -150,7 +161,6 @@ class _HomeScreenState extends State<HomeScreen> {
               // --- SECTION 2: Promo / Quick Action Banner ---
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 4.0),
-                // ---> PREMIUM INTERACTIVE CARD APPLIED HERE <---
                 child: PremiumInteractiveCard(
                   onTap: () => context.go('/ctrlx'),
                   child: Container(
@@ -207,7 +217,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
               const SizedBox(height: 24),
 
-              // --- NEW SECTION: Netflix-Style Trending Carousel ---
+              // --- SECTION: Netflix-Style Trending Carousel ---
               const TrendingCarousel(country: "Pakistan"),
               const PersonalizedCarousel(userEmail: "sayedmoosanaqvi@gmail.com"),
 
@@ -265,6 +275,57 @@ class _HomeScreenState extends State<HomeScreen> {
           context.go('/ctrlx');
         },
         child: const Icon(Icons.auto_awesome),
+      ),
+    );
+  }
+
+  // ---> VISUAL SEARCH BAR WITH NAVIGATION <---
+  Widget _buildVisualSearchBar(ThemeData theme) {
+    return Padding(
+      padding: const EdgeInsets.only(left: 24.0, right: 24.0, top: 16.0),
+      child: SearchBar(
+        hintText: 'Search Penguin Store...',
+        leading: const Icon(Icons.search),
+        elevation: WidgetStateProperty.all(2),
+        backgroundColor: WidgetStateProperty.all(theme.cardTheme.color ?? theme.colorScheme.surface),
+        trailing: [
+          IconButton(
+            icon: Icon(Icons.camera_alt, color: theme.primaryColor),
+            tooltip: 'Visual Search',
+            onPressed: () async {
+              // 1. Show loading feedback
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('Analyzing image with PyTorch Vision Engine...'),
+                  duration: Duration(seconds: 2),
+                ),
+              );
+              
+              // 2. Open Camera and search
+              var matches = await _visualSearchService.searchWithCameraOrGallery(ImageSource.camera);
+              
+              // 3. Clear loading snackbar and navigate to results screen
+              if (mounted) {
+                ScaffoldMessenger.of(context).hideCurrentSnackBar();
+                if (matches.isNotEmpty) {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => VisualSearchResultsScreen(matches: matches),
+                    ),
+                  );
+                } else {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('No visual matches found.'),
+                      backgroundColor: Colors.redAccent,
+                    ),
+                  );
+                }
+              }
+            },
+          ),
+        ],
       ),
     );
   }

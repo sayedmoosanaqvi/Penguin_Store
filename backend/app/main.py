@@ -16,6 +16,7 @@ from .models import User
 from .routers import agent, stripe, agent_chat, supplier, orders, trending
 from .routers import agent, stripe, agent_chat, supplier, orders, trending, recommendations
 from .routers import notifications
+from .routers import visual_search
 # Load secret keys from .env file
 load_dotenv()
 
@@ -53,6 +54,7 @@ app.include_router(supplier.router)
 app.include_router(trending.router)
 app.include_router(recommendations.router)
 app.include_router(notifications.router)
+app.include_router(visual_search.router)
 @app.get("/")
 def read_root():
     return {"message": "Welcome to the Penguin Store API! The engine is running with local AI agent capabilities."}

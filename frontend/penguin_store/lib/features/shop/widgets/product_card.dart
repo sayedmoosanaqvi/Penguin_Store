@@ -77,6 +77,19 @@ class _ProductCardState extends State<ProductCard> {
                         child: Image.network(
                           widget.product.imageUrl,
                           fit: BoxFit.cover,
+                          // ---> ROBUST FALLBACK FOR BROKEN/BLOCKED URLS <---
+                          errorBuilder: (context, error, stackTrace) {
+                            return Container(
+                              color: theme.scaffoldBackgroundColor.withOpacity(0.5),
+                              child: Center(
+                                child: Icon(
+                                  Icons.image_not_supported_outlined,
+                                  color: theme.textTheme.bodySmall?.color ?? Colors.grey,
+                                  size: 32,
+                                ),
+                              ),
+                            );
+                          },
                         ),
                       ),
                     ),
@@ -145,7 +158,6 @@ class _ProductCardState extends State<ProductCard> {
                               ),
                               onPressed: () {
                                 Provider.of<CartProvider>(context, listen: false).addToCart(widget.product);
-                                // ---> TRIGGER CUSTOM TOAST <---
                                 CustomToast.show(context, '${widget.product.name} added to cart!');
                               },
                               icon: const Icon(Icons.shopping_bag_outlined, size: 18),
@@ -214,11 +226,9 @@ class _ProductCardState extends State<ProductCard> {
               Navigator.pop(context); 
               bool success = await ProductService().deleteProduct(widget.product.id);
               if (success) {
-                // ---> TRIGGER CUSTOM TOAST <---
                 CustomToast.show(context, 'Product deleted!');
                 widget.onProductDeleted(); 
               } else {
-                // ---> TRIGGER ERROR CUSTOM TOAST <---
                 CustomToast.show(context, 'Failed to delete.', isError: true);
               }
             },

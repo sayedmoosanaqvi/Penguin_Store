@@ -26,8 +26,9 @@ class Product(Base):
     supplier_id = Column(String, default="PENGUIN_DIRECT")
     supplier_sku = Column(String, nullable=True)
     cost_price = Column(Float, nullable=True)
-
-
+    
+    # ML Feature visual vector data
+    visual_embedding = Column(Text, nullable=True)
 class User(Base):
     __tablename__ = "users"
 

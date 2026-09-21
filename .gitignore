@@ -59,3 +59,4 @@ __pycache__/
 
 # FastAPI / Uvicorn caching
 .pytest_cache/
+.fake

@@ -3,7 +3,9 @@ import logging
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from langchain_core.messages import ToolMessage, AIMessage
-from app.agent.graph import agent_app
+
+
+from app.agent.multi_agent_orchestrator import multi_agent_app as agent_app
 
 # 1. Configure Enterprise-Grade Logging
 logging.basicConfig(
