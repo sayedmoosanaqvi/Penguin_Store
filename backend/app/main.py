@@ -1,7 +1,7 @@
 import os
 import uuid
-import boto3
 from dotenv import load_dotenv
+from supabase import create_client, Client
 
 from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File
 from sqlalchemy.orm import Session
@@ -13,24 +13,15 @@ from . import models, schemas
 from .database import engine, get_db
 from .security import get_password_hash, verify_password, create_access_token
 from .models import User
-from .routers import agent, stripe, agent_chat, supplier, orders, trending
-from .routers import agent, stripe, agent_chat, supplier, orders, trending, recommendations
-from .routers import notifications
-from .routers import visual_search
+from .routers import agent, stripe, agent_chat, supplier, orders, trending, recommendations, notifications, visual_search
+
 # Load secret keys from .env file
 load_dotenv()
 
-# Initialize the AWS S3 Client
-s3_client = boto3.client(
-    's3',
-    aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
-    aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
-    region_name=os.getenv("AWS_REGION")
-)
-
-AWS_BUCKET_NAME = os.getenv("AWS_BUCKET_NAME")
-AWS_REGION = os.getenv("AWS_REGION")
-print("🔥🔥🔥 DEBUG BUCKET NAME IS:", AWS_BUCKET_NAME)
+# Initialize the Supabase Client
+supabase_url: str = os.getenv("SUPABASE_URL")
+supabase_key: str = os.getenv("SUPABASE_KEY")
+supabase: Client = create_client(supabase_url, supabase_key)
 
 # Create database tables
 models.Base.metadata.create_all(bind=engine)
@@ -55,6 +46,7 @@ app.include_router(trending.router)
 app.include_router(recommendations.router)
 app.include_router(notifications.router)
 app.include_router(visual_search.router)
+
 @app.get("/")
 def read_root():
     return {"message": "Welcome to the Penguin Store API! The engine is running with local AI agent capabilities."}
@@ -140,25 +132,27 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
     return {"access_token": access_token, "token_type": "bearer"}
 
 @app.post("/upload-file/")
-async def upload_file_to_s3(file: UploadFile = File(...)):
+async def upload_file_to_supabase(file: UploadFile = File(...)):
     try:
         file_extension = file.filename.split(".")[-1]
         unique_filename = f"{uuid.uuid4()}.{file_extension}"
         
-        s3_client.upload_fileobj(
-            file.file,
-            AWS_BUCKET_NAME,
-            unique_filename,
-            ExtraArgs={
-                "ContentType": file.content_type
-            }
+        # Read the file asynchronously
+        file_bytes = await file.read()
+        
+        # Upload to Supabase Storage
+        supabase.storage.from_("penguin-store-assets").upload(
+            path=unique_filename,
+            file=file_bytes,
+            file_options={"content-type": file.content_type}
         )
         
-        file_url = f"https://{AWS_BUCKET_NAME}.s3.{AWS_REGION}.amazonaws.com/{unique_filename}"
+        # Generate the public URL
+        file_url = supabase.storage.from_("penguin-store-assets").get_public_url(unique_filename)
         return {"url": file_url}
 
     except Exception as e:
-        print(f"AWS Upload Error: {e}")
+        print(f"Supabase Upload Error: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
             detail="Failed to upload file to cloud storage"
