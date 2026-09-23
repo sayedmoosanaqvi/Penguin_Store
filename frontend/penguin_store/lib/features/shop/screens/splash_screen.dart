@@ -42,7 +42,7 @@ class _SplashScreenState extends State<SplashScreen> with TickerProviderStateMix
     // Continuous motion controller for falling/floating items
     _particleController = AnimationController(
       vsync: this,
-      duration: const Duration(seconds: 5),
+      duration: const Duration(seconds: 9),
     )..repeat();
 
     // Automatically navigate to home after 3 seconds

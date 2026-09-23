@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
-import 'package:go_router/go_router.dart'; // Added for navigation
+import 'package:go_router/go_router.dart';
+import 'package:penguin_store/config/api_config.dart';
+ // Adjust relative path as needed // Import your central config file
 
 class TrendingCarousel extends StatefulWidget {
   final String country;
@@ -24,8 +26,8 @@ class _TrendingCarouselState extends State<TrendingCarousel> {
 
   Future<void> _fetchTrending() async {
     try {
-      // Note: Use 10.0.2.2 instead of 127.0.0.1 if testing on an Android Emulator
-      final url = Uri.parse('http://127.0.0.1:8000/api/trending/top-10?country=${widget.country}');
+      // Use ApiConfig.baseUrl instead of hardcoded localhost
+      final url = Uri.parse('${ApiConfig.baseUrl}/api/trending/top-10?country=${widget.country}');
       final response = await http.get(url);
 
       if (response.statusCode == 200) {
@@ -83,11 +85,8 @@ class _TrendingCarouselState extends State<TrendingCarousel> {
             itemBuilder: (context, index) {
               final product = _trendingProducts[index];
               
-              // --- ADDED: GestureDetector to make the cards clickable ---
               return GestureDetector(
                 onTap: () {
-                  // Adjust this route string to match exactly how you configured 
-                  // your product details page in your GoRouter setup!
                   context.push('/product/${product['id']}');
                 },
                 child: Container(

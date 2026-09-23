@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:go_router/go_router.dart';
+import 'package:penguin_store/config/api_config.dart';
+ // Import your central config file
 
 class PersonalizedCarousel extends StatefulWidget {
   final String userEmail;
@@ -24,7 +26,8 @@ class _PersonalizedCarouselState extends State<PersonalizedCarousel> {
 
   Future<void> _fetchRecommendations() async {
     try {
-      final url = Uri.parse('http://127.0.0.1:8000/api/recommendations/for-user?email=${widget.userEmail}&limit=5');
+      // Use ApiConfig.baseUrl instead of hardcoded localhost
+      final url = Uri.parse('${ApiConfig.baseUrl}/api/recommendations/for-user?email=${widget.userEmail}&limit=5');
       final response = await http.get(url);
 
       if (response.statusCode == 200) {
