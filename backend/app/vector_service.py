@@ -1,23 +1,35 @@
-import io
-from PIL import Image
-from sentence_transformers import SentenceTransformer
+import os
+import requests
 
-# Initialize the CLIP model globally so it loads into memory only once upon server startup.
-# The ViT-B-32 model generates exact 512-dimensional vectors.
-print("Loading CLIP Vision Model...")
-vision_model = SentenceTransformer('clip-ViT-B-32')
-print("CLIP Model Loaded Successfully.")
+# Public Hugging Face inference endpoint for the standard CLIP model
+API_URL = "https://api-inference.huggingface.co/models/openai/clip-vit-base-patch32"
 
 def generate_image_vector(image_bytes: bytes) -> list[float]:
     """
-    Takes raw image bytes, processes them through the CLIP AI model, 
-    and returns a 512-dimensional mathematical array.
+    Sends raw image bytes to the inference endpoint and retrieves
+    the 512-dimensional CLIP embedding without requiring local PyTorch memory.
     """
-    # Open the image using PIL and ensure it is in standard RGB format
-    image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    headers = {"User-Agent": "FastAPI-PenguinStore"}
     
-    # Generate the mathematical embedding
-    vector = vision_model.encode(image)
+    # Optional: If you add HUGGINGFACE_TOKEN to your .env, it prevents public rate limiting
+    hf_token = os.getenv("HUGGINGFACE_TOKEN")
+    if hf_token:
+        headers["Authorization"] = f"Bearer {hf_token}"
+
+    response = requests.post(
+        API_URL,
+        headers=headers,
+        data=image_bytes,
+        timeout=15
+    )
+
+    if response.status_code != 200:
+        raise Exception(f"Vision API error ({response.status_code}): {response.text}")
+
+    vector = response.json()
     
-    # Convert the numpy array to a standard Python list for Supabase
-    return vector.tolist()
+    # Handle nested output format if returned as a 2D array [[...]]
+    if isinstance(vector, list) and len(vector) > 0 and isinstance(vector[0], list):
+        return vector[0]
+        
+    return vector
