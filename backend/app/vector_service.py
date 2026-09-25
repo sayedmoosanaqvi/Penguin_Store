@@ -1,35 +1,28 @@
 import os
-import requests
+from huggingface_hub import InferenceClient
 
-# Public Hugging Face inference endpoint for the standard CLIP model
-API_URL = "https://api-inference.huggingface.co/models/openai/clip-vit-base-patch32"
+# Initialize the lightweight HTTP client
+# Optional: Add HUGGINGFACE_TOKEN to your Render environment variables to bypass public rate limits
+hf_token = os.getenv("HUGGINGFACE_TOKEN")
+client = InferenceClient(token=hf_token)
 
 def generate_image_vector(image_bytes: bytes) -> list[float]:
     """
-    Sends raw image bytes to the inference endpoint and retrieves
-    the 512-dimensional CLIP embedding without requiring local PyTorch memory.
+    Sends raw image bytes to the Hugging Face Router via the official InferenceClient.
+    Automatically handles the new API endpoints without requiring local PyTorch memory.
     """
-    headers = {"User-Agent": "FastAPI-PenguinStore"}
-    
-    # Optional: If you add HUGGINGFACE_TOKEN to your .env, it prevents public rate limiting
-    hf_token = os.getenv("HUGGINGFACE_TOKEN")
-    if hf_token:
-        headers["Authorization"] = f"Bearer {hf_token}"
-
-    response = requests.post(
-        API_URL,
-        headers=headers,
-        data=image_bytes,
-        timeout=15
-    )
-
-    if response.status_code != 200:
-        raise Exception(f"Vision API error ({response.status_code}): {response.text}")
-
-    vector = response.json()
-    
-    # Handle nested output format if returned as a 2D array [[...]]
-    if isinstance(vector, list) and len(vector) > 0 and isinstance(vector[0], list):
-        return vector[0]
+    try:
+        # Use the feature_extraction task to get the CLIP vector
+        vector = client.feature_extraction(
+            data=image_bytes,
+            model="openai/clip-vit-base-patch32"
+        )
         
-    return vector
+        # Format the output into a standard Python float list for Supabase pgvector
+        if isinstance(vector, list) and len(vector) > 0 and isinstance(vector[0], list):
+            return [float(x) for x in vector[0]]
+            
+        return [float(x) for x in vector]
+        
+    except Exception as e:
+        raise Exception(f"Hugging Face Inference Error: {str(e)}")
