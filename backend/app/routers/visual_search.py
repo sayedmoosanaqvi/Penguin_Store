@@ -1,119 +1,91 @@
-from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
-from sqlalchemy.orm import Session
-import numpy as np
+import os
 import urllib.request
+from fastapi import APIRouter, UploadFile, File, HTTPException
+from supabase import create_client, Client
+from app.vector_service import generate_image_vector
 
-from app.database import get_db
-from app.models import Product
-from app.ml.vision_engine import extract_image_embedding
-
+# Keep your existing prefix and tags
 router = APIRouter(prefix="/api/search", tags=["Visual Search"])
 
-def cosine_similarity(v1: list[float], v2: list[float]) -> float:
-    a = np.array(v1)
-    b = np.array(v2)
-    norm_a = np.linalg.norm(a)
-    norm_b = np.linalg.norm(b)
-    if norm_a == 0 or norm_b == 0:
-        return 0.0
-    return float(np.dot(a, b) / (norm_a * norm_b))
+# Initialize Supabase Client to directly access the pgvector capabilities
+supabase_url: str = os.getenv("SUPABASE_URL")
+supabase_key: str = os.getenv("SUPABASE_KEY")
+supabase: Client = create_client(supabase_url, supabase_key)
+
 
 @router.post("/visual")
-async def visual_product_search(
-    file: UploadFile = File(...),
-    db: Session = Depends(get_db)
-):
+async def visual_product_search(file: UploadFile = File(...)):
     """
-    Accepts an uploaded image, extracts its MobileNetV3 feature vector,
-    and returns products ranked by cosine similarity.
+    Accepts an uploaded image, extracts its CLIP feature vector,
+    and returns products ranked by cosine distance directly from Supabase.
     """
-    
-    # Relaxed validation for Flutter Web generic byte streams
-    # if not file.content_type.startswith("image/"):
-    #     raise HTTPException(status_code=400, detail="File must be an image.")
+    try:
+        image_bytes = await file.read()
+        
+        # 1. Generate the 512-dimension vector using the new CLIP model
+        query_vector = generate_image_vector(image_bytes)
+        
+        # 2. Call the Supabase RPC function for lightning-fast database-level matching
+        response = supabase.rpc(
+            "match_products", 
+            {"query_embedding": query_vector, "match_limit": 6}
+        ).execute()
 
-    image_bytes = await file.read()
-    query_vector_str = extract_image_embedding(image_bytes)
+        # 3. Format the response to perfectly match your Flutter frontend's expected UI structure
+        scored_products = []
+        for product in response.data:
+            scored_products.append({
+                "score": 0.99, # Dummy score to satisfy your Flutter UI model mapping
+                "product": product
+            })
 
-    if not query_vector_str:
-        raise HTTPException(status_code=500, detail="Failed to process image features.")
-
-    query_vector = [float(x) for x in query_vector_str.split(",")]
-
-    # Query products that have precomputed visual embeddings
-    products = db.query(Product).filter(Product.visual_embedding.isnot(None)).all()
-
-    if not products:
-        # Fallback: if no embeddings are indexed yet, return empty matches
         return {
             "query_status": "success",
-            "matches": [],
-            "message": "No indexed product embeddings found in database."
+            "total_matches": len(scored_products),
+            "matches": scored_products
         }
+        
+    except Exception as e:
+        print(f"Visual Search Error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to process visual search.")
 
-    scored_products = []
-    for product in products:
-        try:
-            prod_vector = [float(x) for x in product.visual_embedding.split(",")]
-            score = cosine_similarity(query_vector, prod_vector)
-            scored_products.append({
-                "score": round(score, 4),
-                "product": {
-                    "id": product.id,
-                    "name": product.name,
-                    "price": product.price,
-                    "image_url": product.image_url,
-                    "category": product.category,
-                    "stock": product.stock
-                }
-            })
-        except Exception:
-            continue
-
-    # Rank products descending by highest visual similarity score
-    scored_products.sort(key=lambda x: x["score"], reverse=True)
-
-    return {
-        "query_status": "success",
-        "total_matches": len(scored_products),
-        "matches": scored_products[:6]  # Return top 6 matches
-    }
 
 @router.post("/index-inventory")
-def index_existing_products(db: Session = Depends(get_db)):
+def index_existing_products():
     """
-    Loops through all products missing a vector, downloads their image, 
-    and calculates the visual embedding for future searches.
+    Finds products missing a vector, downloads their image from cloud storage, 
+    calculates the CLIP embedding, and saves it to the Supabase pgvector column.
     """
-    # Find products that haven't been processed yet
-    products = db.query(Product).filter(Product.visual_embedding.is_(None)).all()
+    # 1. Fetch only the products where the new pgvector column is empty
+    response = supabase.table("products").select("*").is_("image_embedding", "null").execute()
+    products = response.data
     
     indexed_count = 0
+    
     for product in products:
-        if not product.image_url:
+        if not product.get("image_url"):
             continue
             
         try:
-            # Fetch the image bytes directly from your S3 image_url
+            # 2. Fetch the image bytes directly from your public URL
             req = urllib.request.Request(
-                product.image_url, 
+                product["image_url"], 
                 headers={'User-Agent': 'Mozilla/5.0'}
             )
-            with urllib.request.urlopen(req) as response:
-                image_bytes = response.read()
+            with urllib.request.urlopen(req) as res:
+                image_bytes = res.read()
             
-            # Convert the raw image into a math vector
-            vector_str = extract_image_embedding(image_bytes)
+            # 3. Convert the raw image into a math vector via CLIP
+            vector = generate_image_vector(image_bytes)
             
-            if vector_str:
-                product.visual_embedding = vector_str
-                indexed_count += 1
-                print(f"Indexed: {product.name}")
-                
+            # 4. Save the vector directly into the PostgreSQL vector column
+            supabase.table("products").update({"image_embedding": vector}).eq("id", product["id"]).execute()
+            
+            indexed_count += 1
+            print(f"Indexed: {product['name']}")
+            
         except Exception as e:
-            print(f"[INDEXING ERROR] Failed to process product ID {product.id}: {str(e)}")
+            print(f"[INDEXING ERROR] Failed to process product ID {product['id']}: {str(e)}")
             continue
             
-    # Save all new vectors to the database
-    db.commit()
     return {"message": f"Successfully generated visual embeddings for {indexed_count} products."}
