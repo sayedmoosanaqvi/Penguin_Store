@@ -2,7 +2,6 @@ import 'package:image_picker/image_picker.dart';
 import 'package:http/http.dart' as http;
 import 'package:penguin_store/config/api_config.dart';
 import 'dart:convert';
-// Import your central config file
 
 class VisualSearchService {
   final ImagePicker _picker = ImagePicker();
@@ -13,10 +12,10 @@ class VisualSearchService {
       final XFile? image = await _picker.pickImage(source: source);
       if (image == null) return [];
 
-      // 2. Read the file as raw bytes (Works on Web, Android, and iOS)
+      // 2. Read the file as raw bytes
       final bytes = await image.readAsBytes();
 
-      // 3. Prepare the multipart request using ApiConfig.baseUrl
+      // 3. Prepare the multipart request pointing to your cloud API
       final url = Uri.parse('${ApiConfig.baseUrl}/api/search/visual');
       var request = http.MultipartRequest('POST', url);
       request.files.add(http.MultipartFile.fromBytes(
@@ -25,20 +24,26 @@ class VisualSearchService {
         filename: image.name,
       ));
 
-      // 4. Send the image to your backend
+      print("🚀 Sending image to AI Backend...");
       var streamedResponse = await request.send();
       var response = await http.Response.fromStream(streamedResponse);
 
-      // 5. Parse the ranked matches
+      // 4. Parse the results properly
       if (response.statusCode == 200) {
         var jsonResult = json.decode(response.body);
-        return jsonResult['matches']; 
-      } else {
-        print("Backend Error: ${response.statusCode} - ${response.body}");
+        print("✅ AI Match Successful: ${jsonResult['total_matches']} products found.");
+        
+        if (jsonResult['matches'] != null) {
+          return jsonResult['matches'];
+        }
         return [];
+      } else {
+        // Stop silently hiding errors! Print the exact backend crash log.
+        print("❌ Backend Crash (${response.statusCode}): ${response.body}");
+        return []; 
       }
     } catch (e) {
-      print("Visual Search Exception: $e");
+      print("❌ Network/Frontend Exception: $e");
       return [];
     }
   }

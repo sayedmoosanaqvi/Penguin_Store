@@ -293,20 +293,40 @@ class _HomeScreenState extends State<HomeScreen> {
             icon: Icon(Icons.camera_alt, color: theme.primaryColor),
             tooltip: 'Visual Search',
             onPressed: () async {
-              // 1. Show loading feedback
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('Analyzing image with PyTorch Vision Engine...'),
-                  duration: Duration(seconds: 2),
-                ),
+              // 1. Show professional blocking loading dialog immediately
+              showDialog(
+                context: context,
+                barrierDismissible: false, // Prevents user from dismissing it by tapping outside
+                builder: (BuildContext context) {
+                  return Dialog(
+                    backgroundColor: theme.cardTheme.color ?? theme.colorScheme.surface,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                    child: const Padding(
+                      padding: EdgeInsets.all(24.0),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          CircularProgressIndicator(),
+                          SizedBox(width: 24),
+                          Text(
+                            'AI is analyzing image...', 
+                            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
               );
               
-              // 2. Open Camera and search
+              // 2. Open Camera and run the search
               var matches = await _visualSearchService.searchWithCameraOrGallery(ImageSource.camera);
               
-              // 3. Clear loading snackbar and navigate to results screen
+              // 3. Close the loading dialog once the API returns
               if (mounted) {
-                ScaffoldMessenger.of(context).hideCurrentSnackBar();
+                Navigator.of(context, rootNavigator: true).pop();
+                
+                // 4. Navigate to results or show failure
                 if (matches.isNotEmpty) {
                   Navigator.push(
                     context,
@@ -317,7 +337,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 } else {
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(
-                      content: Text('No visual matches found.'),
+                      content: Text('No visual matches found. Please try another image.'),
                       backgroundColor: Colors.redAccent,
                     ),
                   );
