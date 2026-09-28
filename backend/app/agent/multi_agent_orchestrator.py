@@ -16,7 +16,11 @@ def check_order_status(order_id: str) -> str:
     """Checks the delivery and tracking status of an order."""
     return f"Order #{order_id} is in transit."
 
-llm = ChatGroq(model="openai/gpt-oss-20b")
+# ---> FIX: Use a lighter, faster model and strictly limit retries to prevent 429 loops <---
+llm = ChatGroq(
+    model="llama3-8b-8192", 
+    max_retries=1
+)
 
 class AgentState(TypedDict):
     messages: Annotated[Sequence[BaseMessage], add_messages]
