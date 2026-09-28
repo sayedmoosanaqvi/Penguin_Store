@@ -1,22 +1,23 @@
 import os
+import json
 from huggingface_hub import InferenceClient
 
-# Initialize the lightweight HTTP client
-# Optional: Add HUGGINGFACE_TOKEN to your Render environment variables to bypass public rate limits
 hf_token = os.getenv("HUGGINGFACE_TOKEN")
 client = InferenceClient(token=hf_token)
 
 def generate_image_vector(image_bytes: bytes) -> list[float]:
     """
-    Sends raw image bytes to the Hugging Face Router via the official InferenceClient.
-    Automatically handles the new API endpoints without requiring local PyTorch memory.
+    Sends raw image bytes directly to the Hugging Face Router via HTTP post.
     """
     try:
-        # Use the feature_extraction task to get the CLIP vector
-        vector = client.feature_extraction(
+        # Send raw bytes using the base post method instead of the restricted helper
+        response = client.post(
             data=image_bytes,
             model="openai/clip-vit-base-patch32"
         )
+        
+        # Parse the byte string response into a Python dictionary/list
+        vector = json.loads(response)
         
         # Format the output into a standard Python float list for Supabase pgvector
         if isinstance(vector, list) and len(vector) > 0 and isinstance(vector[0], list):
