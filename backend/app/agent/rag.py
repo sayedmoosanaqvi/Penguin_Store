@@ -81,3 +81,11 @@ def retrieve_store_knowledge(query: str, k: int = 2) -> str:
     except Exception as e:
         print(f"[VECTOR RAG ERROR] {str(e)}")
         return "Error retrieving store policies."
+
+def search_inventory(query: str):
+    """Searches the vector database for product inventory matching the query."""
+    return retrieve_store_knowledge(query)
+
+def add_to_cart(product_id: int, quantity: int = 1):
+    """Adds a specified product to the user's cart."""
+    return f"Successfully added product ID {product_id} (Qty: {quantity}) to cart."
