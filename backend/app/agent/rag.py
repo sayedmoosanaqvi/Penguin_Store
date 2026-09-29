@@ -89,3 +89,7 @@ def search_inventory(query: str):
 def add_to_cart(product_id: int, quantity: int = 1):
     """Adds a specified product to the user's cart."""
     return f"Successfully added product ID {product_id} (Qty: {quantity}) to cart."
+
+def check_order_status(order_id: str) -> str:
+    """Checks the delivery and tracking status of an order."""
+    return f"Order #{order_id} is currently in transit and on schedule."
