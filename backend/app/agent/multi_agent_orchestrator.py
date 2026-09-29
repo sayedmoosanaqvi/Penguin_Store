@@ -7,18 +7,11 @@ from langchain_groq import ChatGroq
 from langgraph.prebuilt import create_react_agent
 from pydantic import BaseModel, Field
 
-# 1. Correctly import the vector RAG function from your rag.py file
-from app.agent.rag import retrieve_store_knowledge
+# Restore your actual e-commerce tools here!
+from app.agent.rag import search_inventory, add_to_cart, check_order_status
 
-# 2. Temporary mock tool for logistics to prevent schema crashes
-# Replace this later once you write your real tracking function
-def check_order_status(order_id: str) -> str:
-    """Checks the delivery and tracking status of an order."""
-    return f"Order #{order_id} is in transit."
-
-# ---> FIX: Use a lighter, faster model and strictly limit retries to prevent 429 loops <---
 llm = ChatGroq(
-    model="llama3-8b-8192", 
+    model="openai/gpt-oss-20b", 
     max_retries=1
 )
 
@@ -27,30 +20,42 @@ class AgentState(TypedDict):
     next_agent: str
 
 class Route(BaseModel):
-    next_agent: Literal["RetrievalAgent", "LogisticsAgent", "FINISH"] = Field(
-        description="The next agent to route the conversation to."
+    next_agent: Literal["RetrievalAgent", "LogisticsAgent"] = Field(
+        description="The next agent to route to."
     )
 
 def retrieval_agent(state: AgentState):
-    agent = create_react_agent(llm, tools=[retrieve_store_knowledge]) 
+    agent = create_react_agent(
+        llm, 
+        tools=[search_inventory, add_to_cart], 
+        state_modifier=(
+            "You are the official AI assistant for Penguin Store. "
+            "You MUST use the 'search_inventory' tool to fetch and show products when the user asks for items like shirts or phones. "
+            "You MUST use the 'add_to_cart' tool when they ask to buy or add an item to their cart. "
+            "Never say you do not have a store."
+        )
+    ) 
     result = agent.invoke({"messages": state["messages"]})
     return {"messages": result["messages"]}
 
 def logistics_agent(state: AgentState):
-    agent = create_react_agent(llm, tools=[check_order_status]) 
+    agent = create_react_agent(
+        llm, 
+        tools=[check_order_status],
+        state_modifier="You are a logistics assistant for Penguin Store. Assist users with order tracking."
+    ) 
     result = agent.invoke({"messages": state["messages"]})
     return {"messages": result["messages"]}
 
 def supervisor_node(state: AgentState):
     system_prompt = (
         "You are the routing supervisor for an e-commerce AI system.\n"
-        "1. If the user asks about products, store policies, or general knowledge, route to 'RetrievalAgent'.\n"
-        "2. If the user asks about order tracking, checkout, or payments, route to 'LogisticsAgent'.\n"
-        "3. If the user's request has been fully answered, route to 'FINISH'."
+        "1. If the user asks about finding products, shopping, or adding to cart, route to 'RetrievalAgent'.\n"
+        "2. If the user asks about order tracking or shipments, route to 'LogisticsAgent'."
     )
     
     router = llm.with_structured_output(Route)
-    response = router.invoke([{"role": "system", "content": system_prompt}] + state["messages"])
+    response = router.invoke([{"role": "system", "content": system_prompt}] + list(state["messages"]))
     
     return {"next_agent": response.next_agent}
 
@@ -66,13 +71,12 @@ workflow.add_conditional_edges(
     lambda state: state["next_agent"],
     {
         "RetrievalAgent": "RetrievalAgent",
-        "LogisticsAgent": "LogisticsAgent",
-        "FINISH": END
+        "LogisticsAgent": "LogisticsAgent"
     }
 )
 
-workflow.add_edge("RetrievalAgent", "Supervisor")
-workflow.add_edge("LogisticsAgent", "Supervisor")
+workflow.add_edge("RetrievalAgent", END)
+workflow.add_edge("LogisticsAgent", END)
 
 checkpointer = MemorySaver()
 multi_agent_app = workflow.compile(checkpointer=checkpointer)

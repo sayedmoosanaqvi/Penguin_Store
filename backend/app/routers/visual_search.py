@@ -7,9 +7,13 @@ from app.vector_service import generate_image_vector
 # Keep your existing prefix and tags
 router = APIRouter(prefix="/api/search", tags=["Visual Search"])
 
-# Initialize Supabase Client to directly access the pgvector capabilities
+# Initialize Supabase Client with robust fallback keys for cloud deployment
 supabase_url: str = os.getenv("SUPABASE_URL")
-supabase_key: str = os.getenv("SUPABASE_KEY")
+supabase_key: str = os.getenv("SUPABASE_KEY") or os.getenv("SUPABASE_SERVICE_KEY")
+
+if not supabase_url or not supabase_key:
+    raise ValueError("Supabase URL or Key is missing from environment variables.")
+
 supabase: Client = create_client(supabase_url, supabase_key)
 
 

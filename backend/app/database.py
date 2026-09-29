@@ -7,25 +7,28 @@ from dotenv import load_dotenv
 # Load environment variables from the .env file in the backend directory
 load_dotenv()
 
-# --- NEW SUPABASE SETUP ---
-# Look for SUPABASE_DATABASE_URL, or fall back to DATABASE_URL or the direct string if missing
+# --- SUPABASE SETUP ---
 SQLALCHEMY_DATABASE_URL = os.getenv("SUPABASE_DATABASE_URL") or os.getenv("DATABASE_URL")
 
-# Fallback hardcoded safeguard so it never evaluates to None
+# Fallback hardcoded safeguard (Updated to Port 6543 for Transaction Mode)
 if not SQLALCHEMY_DATABASE_URL:
-    SQLALCHEMY_DATABASE_URL = "postgresql://postgres.bjfspmjpiagfqildttjd:Penguinstore%401234@aws-0-ap-northeast-1.pooler.supabase.com:5432/postgres"
+    SQLALCHEMY_DATABASE_URL = "postgresql://postgres.bjfspmjpiagfqildttjd:Penguinstore%401234@aws-0-ap-northeast-1.pooler.supabase.com:6543/postgres"
 
-# SQLAlchemy requires the dialect to be 'postgresql://' instead of 'postgres://'
+# Ensure postgresql:// dialect is used
 if SQLALCHEMY_DATABASE_URL and SQLALCHEMY_DATABASE_URL.startswith("postgres://"):
     SQLALCHEMY_DATABASE_URL = SQLALCHEMY_DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-# Establish the connection engine
-engine = create_engine(SQLALCHEMY_DATABASE_URL)
+# Establish the connection engine with pool safeguards
+engine = create_engine(
+    SQLALCHEMY_DATABASE_URL,
+    pool_pre_ping=True,   # Tests connection liveness before every query
+    pool_recycle=300      # Recycles connections every 5 minutes to prevent stale SSL drops
+)
 
 # Create a session factory
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-# Base class for our models
+# Base class for models
 Base = declarative_base()
 
 # Dependency to get the database session for API routes
