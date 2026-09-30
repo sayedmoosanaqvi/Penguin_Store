@@ -1,24 +1,16 @@
-import os
-import requests
+from fastembed import ImageEmbedding
+from PIL import Image
+import io
+
+# Load the lightweight ONNX CLIP model into memory (will not crash Render)
+model = ImageEmbedding(model_name="Qdrant/clip-ViT-B-32-vision")
 
 def generate_image_vector(image_bytes: bytes) -> list[float]:
-    # Swapped to a model that explicitly returns feature vectors instead of image classification
-    api_url = "https://router.huggingface.co/hf-inference/models/sentence-transformers/clip-ViT-B-32"
+    # 1. Open the raw image bytes
+    image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     
-    headers = {
-        "Authorization": f"Bearer {os.getenv('HUGGINGFACE_TOKEN')}",
-        "Content-Type": "application/octet-stream"
-    }
+    # 2. FastEmbed automatically handles the extraction locally
+    embeddings = list(model.embed([image]))
     
-    response = requests.post(api_url, headers=headers, data=image_bytes)
-    
-    if response.status_code != 200:
-        raise Exception(f"Hugging Face API Error: {response.status_code} - {response.text}")
-        
-    vector = response.json()
-    
-    # Format the output into a standard Python float list for pgvector
-    if isinstance(vector, list) and len(vector) > 0 and isinstance(vector[0], list):
-        return [float(x) for x in vector[0]]
-        
-    return [float(x) for x in vector]
+    # 3. Format the output into a standard Python float list for Supabase pgvector
+    return [float(x) for x in embeddings[0]]
