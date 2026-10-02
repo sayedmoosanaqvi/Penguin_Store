@@ -29863,7 +29863,7 @@ if(p===s)return s
 if(a.charCodeAt(s)!==47)return q
 return b+3},
 h1(){var s=A.SV().gkb()
-if(s==="localhost"||s==="127.0.0.1")return"http://localhost:8000"
+if(s==="localhost"||s==="127.0.0.1")return"http://127.0.0.1:8000"
 return"https://penguin-store-backend.onrender.com"},
 Sg(a,b){var s=0,r=A.J(t.H),q,p,o,n,m
 var $async$Sg=A.F(function(c,d){if(c===1)return A.G(d,r)
