@@ -56,26 +56,21 @@ class Product(Base):
         Float,
         nullable=True,
     )
-
     # -----------------------------------------------------------------------
-    # Visual Search Embedding
+    # Visual Search Embeddings
     # -----------------------------------------------------------------------
-    #
-    # This corresponds to the EXISTING Supabase column:
-    #
-    #     image_embedding vector(512)
-    #
-    # It is used by the visual search RPC:
-    #
-    #     match_products(...)
-    #
-    # We are NOT creating or modifying the database column here.
-    # This simply makes SQLAlchemy's model accurately describe the
-    # existing PostgreSQL schema.
-    #
 
+    # Existing 512-D embedding column.
+    # Kept unchanged for compatibility with the previous pipeline.
     image_embedding = Column(
         VECTOR(512),
+        nullable=True,
+    )
+
+    # New 2048-D embedding column used by the lightweight
+    # ResNet-based visual search pipeline.
+    image_embedding_v2 = Column(
+        VECTOR(2048),
         nullable=True,
     )
 

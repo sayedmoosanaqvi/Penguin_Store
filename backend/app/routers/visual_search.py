@@ -106,8 +106,6 @@ def _read_limited_upload(
 
         return data
 
-    # This helper should normally not be called directly.
-    # Kept here only for structure/readability.
     return asyncio.run(_read())
 
 
@@ -145,7 +143,6 @@ def _download_remote_image(
                         "Remote image exceeds the configured size limit."
                     )
             except ValueError as exc:
-                # If it is our own size error, re-raise it.
                 if "exceeds" in str(exc):
                     raise
 
@@ -180,7 +177,7 @@ async def visual_product_search(
     file: UploadFile = File(...),
 ):
     """
-    Accept an uploaded image, generate its 512-D CLIP embedding,
+    Accept an uploaded image, generate its 2048-D image embedding,
     query Supabase pgvector, and return matching products.
 
     Existing Flutter response structure is preserved.
@@ -222,7 +219,7 @@ async def visual_product_search(
             )
 
         # ---------------------------------------------------------------
-        # 3. Generate CLIP vector
+        # 3. Generate 2048-D image vector
         # ---------------------------------------------------------------
         #
         # FastEmbed inference is synchronous CPU work.
@@ -243,7 +240,7 @@ async def visual_product_search(
 
         except RuntimeError as exc:
             logger.exception(
-                "CLIP vector generation failed: %s",
+                "Image vector generation failed: %s",
                 exc,
             )
 
@@ -258,9 +255,9 @@ async def visual_product_search(
         # 4. Final vector validation
         # ---------------------------------------------------------------
 
-        if len(query_vector) != 512:
+        if len(query_vector) != 2048:
             logger.error(
-                "Invalid CLIP vector dimension: %d",
+                "Invalid image vector dimension: %d",
                 len(query_vector),
             )
 
@@ -277,7 +274,7 @@ async def visual_product_search(
 
         try:
             response = supabase.rpc(
-                "match_products",
+                "match_products_v2",
                 {
                     "query_embedding": query_vector,
                     "match_limit": 6,
@@ -298,21 +295,16 @@ async def visual_product_search(
             ) from exc
 
         # ---------------------------------------------------------------
-        # 6. Preserve your existing Flutter response format
+        # 6. Preserve existing Flutter response format
         # ---------------------------------------------------------------
 
         scored_products = []
 
-        for product in response.data or []:
+        for match in response.data or []:
             scored_products.append(
                 {
-                    # Kept exactly as your current frontend expects.
-                    #
-                    # We will replace this with the REAL cosine/
-                    # similarity score after inspecting your
-                    # Supabase `match_products` function.
-                    "score": 0.99,
-                    "product": product,
+                    "score": float(match.get("score", 0.0)),
+                    "product": match.get("product", {}),
                 }
             )
 
@@ -344,12 +336,12 @@ async def visual_product_search(
 @router.post("/index-inventory")
 def index_existing_products():
     """
-    Find products without an image embedding, download their images,
-    generate 512-D CLIP embeddings, and save them to Supabase.
+    Find products without a 2048-D image embedding, download their
+    images, generate embeddings, and save them to image_embedding_v2.
     """
 
     # ---------------------------------------------------------------
-    # 1. Fetch products without embeddings
+    # 1. Fetch products without v2 embeddings
     # ---------------------------------------------------------------
 
     try:
@@ -357,7 +349,7 @@ def index_existing_products():
             supabase
             .table("products")
             .select("id,name,image_url")
-            .is_("image_embedding", "null")
+            .is_("image_embedding_v2", "null")
             .execute()
         )
 
@@ -408,7 +400,7 @@ def index_existing_products():
                 )
 
             # -------------------------------------------------------
-            # Generate 512-D CLIP vector
+            # Generate 2048-D image vector
             # -------------------------------------------------------
 
             vector = generate_image_vector(
@@ -424,7 +416,7 @@ def index_existing_products():
                 .table("products")
                 .update(
                     {
-                        "image_embedding": vector,
+                        "image_embedding_v2": vector,
                     }
                 )
                 .eq("id", product_id)
