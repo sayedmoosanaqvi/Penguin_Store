@@ -1,18 +1,30 @@
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Float, Boolean, Text, ForeignKey, DateTime
+
+from pgvector.sqlalchemy import VECTOR
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+)
 from sqlalchemy.orm import relationship
-from .database import Base
-from sqlalchemy import Column, Integer, String, Boolean, DateTime
 from sqlalchemy.sql import func
+
+from .database import Base
+
 
 class Product(Base):
     __tablename__ = "products"
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, index=True, nullable=False)
-    description = Column(Text, nullable=True) 
+    description = Column(Text, nullable=True)
     price = Column(Float, nullable=False)
-    original_price = Column(Float, nullable=True) 
+    original_price = Column(Float, nullable=True)
     image_url = Column(String, nullable=False)
     category = Column(String, index=True, nullable=False)
     rating = Column(Float, default=0.0)
@@ -21,74 +33,253 @@ class Product(Base):
     is_featured = Column(Boolean, default=False)
     stock = Column(Integer, default=50)
 
+    # -----------------------------------------------------------------------
     # Hybrid Inventory & Dropshipping Metadata
-    fulfillment_type = Column(String, default="IN_HOUSE")
-    supplier_id = Column(String, default="PENGUIN_DIRECT")
-    supplier_sku = Column(String, nullable=True)
-    cost_price = Column(Float, nullable=True)
-    
-    # ML Feature visual vector data
-    visual_embedding = Column(Text, nullable=True)
+    # -----------------------------------------------------------------------
+
+    fulfillment_type = Column(
+        String,
+        default="IN_HOUSE",
+    )
+
+    supplier_id = Column(
+        String,
+        default="PENGUIN_DIRECT",
+    )
+
+    supplier_sku = Column(
+        String,
+        nullable=True,
+    )
+
+    cost_price = Column(
+        Float,
+        nullable=True,
+    )
+
+    # -----------------------------------------------------------------------
+    # Visual Search Embedding
+    # -----------------------------------------------------------------------
+    #
+    # This corresponds to the EXISTING Supabase column:
+    #
+    #     image_embedding vector(512)
+    #
+    # It is used by the visual search RPC:
+    #
+    #     match_products(...)
+    #
+    # We are NOT creating or modifying the database column here.
+    # This simply makes SQLAlchemy's model accurately describe the
+    # existing PostgreSQL schema.
+    #
+
+    image_embedding = Column(
+        VECTOR(512),
+        nullable=True,
+    )
+
+    # -----------------------------------------------------------------------
+    # Legacy column
+    # -----------------------------------------------------------------------
+    #
+    # Kept because it exists in the database.
+    # VS Code search showed this is not referenced elsewhere in the codebase.
+    # We are deliberately not deleting it from PostgreSQL in this step.
+    #
+
+    visual_embedding = Column(
+        Text,
+        nullable=True,
+    )
+
+
 class User(Base):
     __tablename__ = "users"
 
-    id = Column(Integer, primary_key=True, index=True)
-    email = Column(String, unique=True, index=True)
-    hashed_password = Column(String)
-    is_admin = Column(Boolean, default=False)
+    id = Column(
+        Integer,
+        primary_key=True,
+        index=True,
+    )
+
+    email = Column(
+        String,
+        unique=True,
+        index=True,
+    )
+
+    hashed_password = Column(
+        String,
+    )
+
+    is_admin = Column(
+        Boolean,
+        default=False,
+    )
 
 
 class Order(Base):
     __tablename__ = "orders"
 
-    id = Column(Integer, primary_key=True, index=True)
-    customer_name = Column(String, nullable=False)
-    customer_email = Column(String, nullable=False)
-    
-    # ML Feature geographic data
-    shipping_address = Column(String, nullable=False)
-    city = Column(String, nullable=False)
-    state_province = Column(String, index=True, nullable=False) # e.g., 'Punjab'
-    country = Column(String, index=True, default="Pakistan")    # e.g., 'Pakistan'
-    postal_code = Column(String, nullable=False)
-    
-    total_amount = Column(Float, nullable=False)
-    
-    # Timestamp is critical for Time-Decayed ML weighting
-    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    id = Column(
+        Integer,
+        primary_key=True,
+        index=True,
+    )
 
-    # Relationship to individual items
-    items = relationship("OrderItem", back_populates="order")
+    customer_name = Column(
+        String,
+        nullable=False,
+    )
+
+    customer_email = Column(
+        String,
+        nullable=False,
+    )
+
+    # -----------------------------------------------------------------------
+    # Geographic / shipping data
+    # -----------------------------------------------------------------------
+
+    shipping_address = Column(
+        String,
+        nullable=False,
+    )
+
+    city = Column(
+        String,
+        nullable=False,
+    )
+
+    state_province = Column(
+        String,
+        index=True,
+        nullable=False,
+    )
+
+    country = Column(
+        String,
+        index=True,
+        default="Pakistan",
+    )
+
+    postal_code = Column(
+        String,
+        nullable=False,
+    )
+
+    total_amount = Column(
+        Float,
+        nullable=False,
+    )
+
+    # -----------------------------------------------------------------------
+    # Timestamp
+    # -----------------------------------------------------------------------
+
+    created_at = Column(
+        DateTime,
+        default=datetime.utcnow,
+        index=True,
+    )
+
+    # -----------------------------------------------------------------------
+    # Relationships
+    # -----------------------------------------------------------------------
+
+    items = relationship(
+        "OrderItem",
+        back_populates="order",
+    )
 
 
 class OrderItem(Base):
     __tablename__ = "order_items"
 
-    id = Column(Integer, primary_key=True, index=True)
-    order_id = Column(Integer, ForeignKey("orders.id"))
-    product_id = Column(Integer, ForeignKey("products.id"))
-    quantity = Column(Integer, default=1)
-    unit_price = Column(Float, nullable=False)
-    
-    # Fulfillment tracking per line item
-    fulfillment_type = Column(String, nullable=False)   # 'IN_HOUSE' or 'DROPSHIP'
-    dispatch_status = Column(String, default="PENDING")  # 'PENDING', 'DISPATCHED', 'PACKING'
-    tracking_number = Column(String, nullable=True)
+    id = Column(
+        Integer,
+        primary_key=True,
+        index=True,
+    )
 
-    order = relationship("Order", back_populates="items")
+    order_id = Column(
+        Integer,
+        ForeignKey("orders.id"),
+    )
 
+    product_id = Column(
+        Integer,
+        ForeignKey("products.id"),
+    )
 
-# Note: Ensure these imports are at the top of the file if they aren't already
+    quantity = Column(
+        Integer,
+        default=1,
+    )
+
+    unit_price = Column(
+        Float,
+        nullable=False,
+    )
+
+    # -----------------------------------------------------------------------
+    # Fulfillment tracking
+    # -----------------------------------------------------------------------
+
+    fulfillment_type = Column(
+        String,
+        nullable=False,
+    )
+
+    dispatch_status = Column(
+        String,
+        default="PENDING",
+    )
+
+    tracking_number = Column(
+        String,
+        nullable=True,
+    )
+
+    order = relationship(
+        "Order",
+        back_populates="items",
+    )
+
 
 class Notification(Base):
     __tablename__ = "notifications"
 
-    id = Column(Integer, primary_key=True, index=True)
-    customer_email = Column(String, index=True)
-    title = Column(String)
-    message = Column(String)
-    is_read = Column(Boolean, default=False)
-    notification_type = Column(String) # "ORDER", "PROMO", "SYSTEM"
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    id = Column(
+        Integer,
+        primary_key=True,
+        index=True,
+    )
 
-    
+    customer_email = Column(
+        String,
+        index=True,
+    )
+
+    title = Column(
+        String,
+    )
+
+    message = Column(
+        String,
+    )
+
+    is_read = Column(
+        Boolean,
+        default=False,
+    )
+
+    notification_type = Column(
+        String,
+    )
+
+    created_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )

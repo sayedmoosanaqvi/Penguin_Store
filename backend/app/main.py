@@ -1,9 +1,17 @@
 import os
 import uuid
+
 from dotenv import load_dotenv
 from supabase import create_client, Client
 
-from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File
+from fastapi import (
+    FastAPI,
+    Depends,
+    HTTPException,
+    status,
+    UploadFile,
+    File,
+)
 from sqlalchemy.orm import Session
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
@@ -11,32 +19,90 @@ from pydantic import BaseModel
 
 from . import models, schemas
 from .database import engine, get_db
-from .security import get_password_hash, verify_password, create_access_token
+from .security import (
+    get_password_hash,
+    verify_password,
+    create_access_token,
+)
 from .models import User
-from .routers import agent, stripe, agent_chat, supplier, orders, trending, recommendations, notifications, visual_search
+from .routers import (
+    agent,
+    stripe,
+    agent_chat,
+    supplier,
+    orders,
+    trending,
+    recommendations,
+    notifications,
+    visual_search,
+)
 
-# Load secret keys from .env file
+
+# ---------------------------------------------------------------------------
+# Environment
+# ---------------------------------------------------------------------------
+
 load_dotenv()
 
-# Initialize the Supabase Client
-supabase_url: str = os.getenv("SUPABASE_URL")
-supabase_key: str = os.getenv("SUPABASE_KEY")
-supabase: Client = create_client(supabase_url, supabase_key)
 
-# Create database tables
+# ---------------------------------------------------------------------------
+# Supabase client
+# ---------------------------------------------------------------------------
+
+supabase_url: str | None = os.getenv("SUPABASE_URL")
+
+supabase_key: str | None = (
+    os.getenv("SUPABASE_KEY")
+    or os.getenv("SUPABASE_SERVICE_KEY")
+)
+
+if not supabase_url or not supabase_key:
+    raise RuntimeError(
+        "SUPABASE_URL and SUPABASE_KEY "
+        "(or SUPABASE_SERVICE_KEY) must be configured."
+    )
+
+supabase: Client = create_client(
+    supabase_url,
+    supabase_key,
+)
+
+
+# ---------------------------------------------------------------------------
+# Database initialization
+# ---------------------------------------------------------------------------
+
+# Keep your existing behaviour for now.
+# We will review whether this should be moved to a migration system later.
 models.Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="Penguin Store API")
+
+# ---------------------------------------------------------------------------
+# FastAPI application
+# ---------------------------------------------------------------------------
+
+app = FastAPI(
+    title="Penguin Store API",
+)
+
+
+# ---------------------------------------------------------------------------
+# CORS
+# ---------------------------------------------------------------------------
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allows all origins for your final year project showcase
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["*"],  # Allows all methods (GET, POST, etc.)
-    allow_headers=["*"],  # Allows all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-# Register Routers
+
+# ---------------------------------------------------------------------------
+# Routers
+# ---------------------------------------------------------------------------
+
 app.include_router(agent.router)
 app.include_router(stripe.router)
 app.include_router(agent_chat.router)
@@ -45,115 +111,307 @@ app.include_router(supplier.router)
 app.include_router(trending.router)
 app.include_router(recommendations.router)
 app.include_router(notifications.router)
+
+# Visual search:
+#
+# /api/search/visual
+# /api/search/index-inventory
+#
 app.include_router(visual_search.router)
+
+
+# ---------------------------------------------------------------------------
+# Root
+# ---------------------------------------------------------------------------
 
 @app.get("/")
 def read_root():
-    return {"message": "Welcome to the Penguin Store API! The engine is running with local AI agent capabilities."}
+    return {
+        "message": (
+            "Welcome to the Penguin Store API! "
+            "The engine is running with local AI agent capabilities."
+        )
+    }
 
-# --- PRODUCT ROUTES ---
 
-@app.post("/products/", response_model=schemas.Product)
-def create_product(product: schemas.ProductCreate, db: Session = Depends(get_db)):
-    db_product = models.Product(**product.model_dump())
+# ---------------------------------------------------------------------------
+# PRODUCT ROUTES
+# ---------------------------------------------------------------------------
+
+@app.post(
+    "/products/",
+    response_model=schemas.Product,
+)
+def create_product(
+    product: schemas.ProductCreate,
+    db: Session = Depends(get_db),
+):
+    db_product = models.Product(
+        **product.model_dump()
+    )
+
     db.add(db_product)
     db.commit()
     db.refresh(db_product)
+
     return db_product
 
-@app.get("/products/", response_model=list[schemas.Product])
-def get_products(db: Session = Depends(get_db)):
-    products = db.query(models.Product).all()
+
+@app.get(
+    "/products/",
+    response_model=list[schemas.Product],
+)
+def get_products(
+    db: Session = Depends(get_db),
+):
+    products = db.query(
+        models.Product
+    ).all()
+
     return products
 
-@app.delete("/products/{product_id}", status_code=status.HTTP_200_OK)
-def delete_product(product_id: int, db: Session = Depends(get_db)):
-    product_query = db.query(models.Product).filter(models.Product.id == product_id)
+
+@app.delete(
+    "/products/{product_id}",
+    status_code=status.HTTP_200_OK,
+)
+def delete_product(
+    product_id: int,
+    db: Session = Depends(get_db),
+):
+    product_query = (
+        db.query(models.Product)
+        .filter(models.Product.id == product_id)
+    )
+
     product = product_query.first()
 
     if product is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Product with id: {product_id} does not exist")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                f"Product with id: {product_id} "
+                "does not exist"
+            ),
+        )
 
-    product_query.delete(synchronize_session=False)
+    product_query.delete(
+        synchronize_session=False
+    )
+
     db.commit()
-    
-    return {"message": "Product deleted successfully"}
 
-# --- SCHEMAS ---
+    return {
+        "message": "Product deleted successfully"
+    }
+
+
+# ---------------------------------------------------------------------------
+# SCHEMAS
+# ---------------------------------------------------------------------------
+
 class UserCreate(BaseModel):
     email: str
     password: str
 
-# --- AUTHENTICATION ROUTES ---
 
-@app.post("/signup", status_code=status.HTTP_201_CREATED)
-def create_user(user: UserCreate, db: Session = Depends(get_db)):
-    db_user = db.query(User).filter(User.email == user.email).first()
+# ---------------------------------------------------------------------------
+# AUTHENTICATION ROUTES
+# ---------------------------------------------------------------------------
+
+@app.post(
+    "/signup",
+    status_code=status.HTTP_201_CREATED,
+)
+def create_user(
+    user: UserCreate,
+    db: Session = Depends(get_db),
+):
+    db_user = (
+        db.query(User)
+        .filter(User.email == user.email)
+        .first()
+    )
+
     if db_user:
-        raise HTTPException(status_code=400, detail="Email already registered")
-    
-    hashed_password = get_password_hash(user.password)
-    
-    new_user = User(email=user.email, hashed_password=hashed_password, is_admin=False)
+        raise HTTPException(
+            status_code=400,
+            detail="Email already registered",
+        )
+
+    hashed_password = get_password_hash(
+        user.password
+    )
+
+    new_user = User(
+        email=user.email,
+        hashed_password=hashed_password,
+        is_admin=False,
+    )
+
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
-    
-    return {"message": "User created successfully. Welcome to Penguin Store!"}
+
+    return {
+        "message": (
+            "User created successfully. "
+            "Welcome to Penguin Store!"
+        )
+    }
+
 
 @app.post("/login")
-def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    if form_data.username == "admin@penguin.com" and form_data.password == "Penguin123456":
-        admin_user = db.query(User).filter(User.email == "admin@penguin.com").first()
-        
+def login(
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: Session = Depends(get_db),
+):
+    # Existing admin login behaviour preserved for now.
+    if (
+        form_data.username == "admin@penguin.com"
+        and form_data.password == "Penguin123456"
+    ):
+        admin_user = (
+            db.query(User)
+            .filter(
+                User.email == "admin@penguin.com"
+            )
+            .first()
+        )
+
         if not admin_user:
-            hashed_pw = get_password_hash("Penguin123456")
-            admin_user = User(email="admin@penguin.com", hashed_password=hashed_pw, is_admin=True)
+            hashed_pw = get_password_hash(
+                "Penguin123456"
+            )
+
+            admin_user = User(
+                email="admin@penguin.com",
+                hashed_password=hashed_pw,
+                is_admin=True,
+            )
+
             db.add(admin_user)
             db.commit()
             db.refresh(admin_user)
-        
-        access_token = create_access_token(data={"sub": admin_user.email, "is_admin": True})
-        return {"access_token": access_token, "token_type": "bearer"}
 
-    user = db.query(User).filter(User.email == form_data.username).first()
-    
-    if not user or not verify_password(form_data.password, user.hashed_password):
+        access_token = create_access_token(
+            data={
+                "sub": admin_user.email,
+                "is_admin": True,
+            }
+        )
+
+        return {
+            "access_token": access_token,
+            "token_type": "bearer",
+        }
+
+    user = (
+        db.query(User)
+        .filter(
+            User.email == form_data.username
+        )
+        .first()
+    )
+
+    if not user or not verify_password(
+        form_data.password,
+        user.hashed_password,
+    ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
-            headers={"WWW-Authenticate": "Bearer"},
+            headers={
+                "WWW-Authenticate": "Bearer"
+            },
         )
-    
+
     access_token = create_access_token(
-        data={"sub": user.email, "is_admin": user.is_admin}
+        data={
+            "sub": user.email,
+            "is_admin": user.is_admin,
+        }
     )
-    
-    return {"access_token": access_token, "token_type": "bearer"}
+
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+    }
+
+
+# ---------------------------------------------------------------------------
+# FILE UPLOAD
+# ---------------------------------------------------------------------------
 
 @app.post("/upload-file/")
-async def upload_file_to_supabase(file: UploadFile = File(...)):
+async def upload_file_to_supabase(
+    file: UploadFile = File(...),
+):
     try:
-        file_extension = file.filename.split(".")[-1]
-        unique_filename = f"{uuid.uuid4()}.{file_extension}"
-        
-        # Read the file asynchronously
+        if not file.filename:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Filename is missing.",
+            )
+
+        file_extension = (
+            file.filename.rsplit(".", 1)[-1]
+            if "." in file.filename
+            else ""
+        )
+
+        unique_filename = (
+            f"{uuid.uuid4()}"
+            f"{('.' + file_extension) if file_extension else ''}"
+        )
+
         file_bytes = await file.read()
-        
-        # Upload to Supabase Storage
-        supabase.storage.from_("penguin-store-assets").upload(
+
+        if not file_bytes:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Uploaded file is empty.",
+            )
+
+        # Upload to Supabase Storage.
+        supabase.storage.from_(
+            "penguin-store-assets"
+        ).upload(
             path=unique_filename,
             file=file_bytes,
-            file_options={"content-type": file.content_type}
+            file_options={
+                "content-type": (
+                    file.content_type
+                    or "application/octet-stream"
+                )
+            },
         )
-        
-        # Generate the public URL
-        file_url = supabase.storage.from_("penguin-store-assets").get_public_url(unique_filename)
-        return {"url": file_url}
+
+        # Generate public URL.
+        file_url = (
+            supabase.storage
+            .from_("penguin-store-assets")
+            .get_public_url(unique_filename)
+        )
+
+        return {
+            "url": file_url
+        }
+
+    except HTTPException:
+        raise
 
     except Exception as e:
-        print(f"Supabase Upload Error: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
-            detail="Failed to upload file to cloud storage"
+        print(
+            f"Supabase Upload Error: {e}"
         )
+
+        raise HTTPException(
+            status_code=(
+                status.HTTP_500_INTERNAL_SERVER_ERROR
+            ),
+            detail=(
+                "Failed to upload file "
+                "to cloud storage"
+            ),
+        ) from e
