@@ -1,3 +1,4 @@
+
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
@@ -5,22 +6,75 @@ import 'package:penguin_store/features/shop/screens/home_screen.dart';
 import 'package:penguin_store/features/shop/screens/ctrlx_screen.dart';
 import 'package:penguin_store/features/shop/screens/order_tracking_screen.dart';
 import 'package:penguin_store/features/shop/screens/product_details_screen.dart';
-import 'package:penguin_store/features/shop/screens/notification_screen.dart'; 
-import 'package:penguin_store/features/shop/screens/splash_screen.dart'; // ---> NEW SPLASH IMPORT <---
+import 'package:penguin_store/features/shop/screens/notification_screen.dart';
+import 'package:penguin_store/features/shop/screens/splash_screen.dart';
+import 'package:penguin_store/features/shop/screens/cart_screen.dart';
+import 'package:penguin_store/features/shop/screens/discover_screen.dart';
+import 'package:penguin_store/features/shop/screens/support_screen.dart';
+import 'package:penguin_store/features/shop/screens/profile_screen.dart';
 import 'package:penguin_store/features/shop/services/notification_service.dart';
+import 'package:penguin_store/features/shop/widgets/bottom_nav_bar.dart';
 
 final GoRouter appRouter = GoRouter(
-  initialLocation: '/splash', // ---> CHANGED TO LAUNCH SPLASH FIRST <---
+  initialLocation: '/splash',
   routes: [
-    // ---> NEW SPLASH ROUTE <---
     GoRoute(
       path: '/splash',
       builder: (context, state) => const SplashScreen(),
     ),
-    GoRoute(
-      path: '/',
-      builder: (context, state) => const HomeScreen(),
+
+    ShellRoute(
+      builder: (context, state, child) {
+        final path = state.uri.path;
+
+        int currentIndex = 0;
+
+        switch (path) {
+          case '/discover':
+            currentIndex = 1;
+            break;
+          case '/cart':
+            currentIndex = 2;
+            break;
+          case '/support':
+            currentIndex = 3;
+            break;
+          case '/profile':
+            currentIndex = 4;
+            break;
+        }
+
+        return Scaffold(
+          body: child,
+          bottomNavigationBar: BottomNavBar(
+            currentIndex: currentIndex,
+          ),
+        );
+      },
+      routes: [
+        GoRoute(
+          path: '/',
+          builder: (context, state) => const HomeScreen(),
+        ),
+        GoRoute(
+          path: '/discover',
+          builder: (context, state) => const DiscoverScreen(),
+        ),
+        GoRoute(
+          path: '/cart',
+          builder: (context, state) => const CartScreen(),
+        ),
+        GoRoute(
+          path: '/support',
+          builder: (context, state) => const SupportScreen(),
+        ),
+        GoRoute(
+          path: '/profile',
+          builder: (context, state) => const ProfileScreen(),
+        ),
+      ],
     ),
+
     GoRoute(
       path: '/ctrlx',
       builder: (context, state) => const CtrlXScreen(),
@@ -37,7 +91,7 @@ final GoRouter appRouter = GoRouter(
       builder: (context, state) {
         final productIdStr = state.pathParameters['id'] ?? '0';
         final productId = int.tryParse(productIdStr) ?? 0;
-        return ProductDetailScreen(productId: productId); 
+        return ProductDetailScreen(productId: productId);
       },
     ),
     GoRoute(
@@ -64,16 +118,27 @@ final GoRouter appRouter = GoRouter(
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                const Icon(Icons.check_circle, color: Colors.green, size: 80),
+                const Icon(
+                  Icons.check_circle,
+                  color: Colors.green,
+                  size: 80,
+                ),
                 const SizedBox(height: 16),
                 const Text(
                   'Payment Successful!',
-                  style: TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold),
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 24,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
                 const SizedBox(height: 8),
                 const Text(
                   'Your order has been placed and dispatched.',
-                  style: TextStyle(color: Colors.grey, fontSize: 16),
+                  style: TextStyle(
+                    color: Colors.grey,
+                    fontSize: 16,
+                  ),
                 ),
                 const SizedBox(height: 24),
                 ElevatedButton(

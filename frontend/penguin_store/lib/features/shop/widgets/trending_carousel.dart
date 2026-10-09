@@ -1,14 +1,18 @@
-import 'package:flutter/material.dart';
+
 import 'dart:convert';
-import 'package:http/http.dart' as http;
+
+import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:http/http.dart' as http;
 import 'package:penguin_store/config/api_config.dart';
- // Adjust relative path as needed // Import your central config file
 
 class TrendingCarousel extends StatefulWidget {
   final String country;
-  
-  const TrendingCarousel({super.key, this.country = "Pakistan"});
+
+  const TrendingCarousel({
+    super.key,
+    this.country = 'Pakistan',
+  });
 
   @override
   State<TrendingCarousel> createState() => _TrendingCarouselState();
@@ -24,35 +28,73 @@ class _TrendingCarouselState extends State<TrendingCarousel> {
     _fetchTrending();
   }
 
+  @override
+  void didUpdateWidget(covariant TrendingCarousel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+
+    if (oldWidget.country != widget.country) {
+      _fetchTrending();
+    }
+  }
+
   Future<void> _fetchTrending() async {
+    setState(() => _isLoading = true);
+
     try {
-      // Use ApiConfig.baseUrl instead of hardcoded localhost
-      final url = Uri.parse('${ApiConfig.baseUrl}/api/trending/top-10?country=${widget.country}');
+      final url = Uri.parse(
+        '${ApiConfig.baseUrl}/api/trending/top-10',
+      ).replace(
+        queryParameters: {'country': widget.country},
+      );
+
       final response = await http.get(url);
 
+      if (!mounted) return;
+
       if (response.statusCode == 200) {
-        final data = json.decode(response.body);
+        final data = jsonDecode(response.body);
+
         setState(() {
-          _trendingProducts = data['products'];
+          _trendingProducts = data is Map &&
+                  data['products'] is List
+              ? List<dynamic>.from(data['products'])
+              : [];
+          _isLoading = false;
+        });
+      } else {
+        setState(() {
+          _trendingProducts = [];
           _isLoading = false;
         });
       }
     } catch (e) {
       debugPrint('Error fetching trends: $e');
-      setState(() => _isLoading = false);
+
+      if (!mounted) return;
+
+      setState(() {
+        _trendingProducts = [];
+        _isLoading = false;
+      });
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final themeColors = Theme.of(context).colorScheme;
+    final theme = Theme.of(context);
+    final primary = theme.primaryColor;
 
     if (_isLoading) {
       return SizedBox(
-        height: 250, 
+        height: 100,
         child: Center(
-          child: CircularProgressIndicator(
-            color: themeColors.primary, 
+          child: SizedBox(
+            width: 23,
+            height: 23,
+            child: CircularProgressIndicator(
+              strokeWidth: 2.5,
+              color: primary,
+            ),
           ),
         ),
       );
@@ -62,91 +104,246 @@ class _TrendingCarouselState extends State<TrendingCarousel> {
       return const SizedBox.shrink();
     }
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
-          child: Text(
-            "Top 10 in ${widget.country} Today",
-            style: Theme.of(context).textTheme.titleLarge?.copyWith(
-              fontWeight: FontWeight.bold,
-              color: themeColors.onSurface, 
-            ),
-          ),
-        ),
-        SizedBox(
-          height: 220,
-          child: ListView.builder(
-            scrollDirection: Axis.horizontal,
-            physics: const BouncingScrollPhysics(),
-            itemCount: _trendingProducts.length,
-            padding: const EdgeInsets.symmetric(horizontal: 8.0),
-            itemBuilder: (context, index) {
-              final product = _trendingProducts[index];
-              
-              return GestureDetector(
-                onTap: () {
-                  context.push('/product/${product['id']}');
-                },
-                child: Container(
-                  width: 140,
-                  margin: const EdgeInsets.symmetric(horizontal: 8.0),
-                  child: Stack(
-                    children: [
-                      Positioned.fill(
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(12),
-                          child: Image.network(
-                            product['image_url'],
-                            fit: BoxFit.cover,
-                            errorBuilder: (context, error, stackTrace) => 
-                              ColoredBox(color: themeColors.surfaceContainerHighest),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final cardWidth = constraints.maxWidth >= 900
+            ? 165.0
+            : constraints.maxWidth >= 600
+                ? 145.0
+                : 122.0;
+
+        final cardHeight = cardWidth * 1.47;
+
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 8, 14, 11),
+              child: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(7),
+                    decoration: BoxDecoration(
+                      color: primary.withOpacity(0.10),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Icon(
+                      Icons.local_fire_department_rounded,
+                      color: primary,
+                      size: 19,
+                    ),
+                  ),
+                  const SizedBox(width: 9),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Trending in ${widget.country}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w800,
+                            color: theme.colorScheme.onSurface,
                           ),
                         ),
+                        Text(
+                          'Top products today',
+                          style: TextStyle(
+                            fontSize: 10,
+                            color: theme.colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 9,
+                      vertical: 5,
+                    ),
+                    decoration: BoxDecoration(
+                      color: primary.withOpacity(0.09),
+                      borderRadius: BorderRadius.circular(7),
+                    ),
+                    child: Text(
+                      'TOP ${_trendingProducts.length}',
+                      style: TextStyle(
+                        color: primary,
+                        fontSize: 10,
+                        fontWeight: FontWeight.w800,
                       ),
-                      Positioned.fill(
-                        child: DecoratedBox(
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            SizedBox(
+              height: cardHeight,
+              child: ListView.separated(
+                scrollDirection: Axis.horizontal,
+                physics: const BouncingScrollPhysics(),
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                itemCount: _trendingProducts.length,
+                separatorBuilder: (_, __) =>
+                    const SizedBox(width: 9),
+                itemBuilder: (context, index) {
+                  final raw = _trendingProducts[index];
+
+                  if (raw is! Map) {
+                    return const SizedBox.shrink();
+                  }
+
+                  final product = raw;
+                  final id = product['id'];
+                  final name =
+                      (product['name'] ?? 'Trending Product').toString();
+                  final imageUrl =
+                      (product['image_url'] ?? '').toString();
+
+                  final price = product['price'];
+                  final priceText = price is num
+                      ? '\$${price.toStringAsFixed(2)}'
+                      : null;
+
+                  return SizedBox(
+                    width: cardWidth,
+                    child: Material(
+                      color: theme.colorScheme.surface,
+                      borderRadius: BorderRadius.circular(11),
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(11),
+                        onTap: id == null
+                            ? null
+                            : () => context.push('/product/$id'),
+                        child: Container(
                           decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(12),
-                            gradient: LinearGradient(
-                              colors: [
-                                themeColors.primary.withOpacity(0.8), 
-                                Colors.transparent
-                              ],
-                              begin: Alignment.bottomCenter,
-                              end: Alignment.center,
+                            borderRadius: BorderRadius.circular(11),
+                            border: Border.all(
+                              color: theme.dividerColor.withOpacity(0.16),
                             ),
                           ),
-                        ),
-                      ),
-                      Positioned(
-                        left: -5,
-                        bottom: -10,
-                        child: Text(
-                          "${index + 1}",
-                          style: TextStyle(
-                            fontSize: 80,
-                            fontWeight: FontWeight.w900,
-                            color: themeColors.onPrimary, 
-                            shadows: [
-                              Shadow(
-                                offset: const Offset(2, 2),
-                                blurRadius: 4,
-                                color: themeColors.shadow.withOpacity(0.5),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Expanded(
+                                child: Stack(
+                                  fit: StackFit.expand,
+                                  children: [
+                                    ClipRRect(
+                                      borderRadius:
+                                          const BorderRadius.vertical(
+                                        top: Radius.circular(10),
+                                      ),
+                                      child: Image.network(
+                                        imageUrl,
+                                        fit: BoxFit.contain,
+                                        errorBuilder:
+                                            (context, error, stack) {
+                                          return Container(
+                                            color: primary.withOpacity(0.04),
+                                            child: Icon(
+                                              Icons.image_not_supported_outlined,
+                                              color: theme.colorScheme
+                                                  .onSurfaceVariant,
+                                            ),
+                                          );
+                                        },
+                                      ),
+                                    ),
+                                    Positioned(
+                                      left: 7,
+                                      top: 7,
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 7,
+                                          vertical: 4,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: primary,
+                                          borderRadius:
+                                              BorderRadius.circular(6),
+                                        ),
+                                        child: Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            const Icon(
+                                              Icons.local_fire_department,
+                                              color: Colors.white,
+                                              size: 12,
+                                            ),
+                                            const SizedBox(width: 3),
+                                            Text(
+                                              '#${index + 1}',
+                                              style: const TextStyle(
+                                                color: Colors.white,
+                                                fontSize: 10,
+                                                fontWeight: FontWeight.w800,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              Padding(
+                                padding: const EdgeInsets.fromLTRB(
+                                  8, 8, 8, 9,
+                                ),
+                                child: Column(
+                                  crossAxisAlignment:
+                                      CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      name,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w700,
+                                        color: theme.colorScheme.onSurface,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 4),
+                                    if (priceText != null)
+                                      Text(
+                                        priceText,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: TextStyle(
+                                          color: primary,
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.w800,
+                                        ),
+                                      )
+                                    else
+                                      Text(
+                                        'View Product',
+                                        style: TextStyle(
+                                          color: primary,
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                  ],
+                                ),
                               ),
                             ],
                           ),
                         ),
                       ),
-                    ],
-                  ),
-                ),
-              );
-            },
-          ),
-        ),
-      ],
+                    ),
+                  );
+                },
+              ),
+            ),
+            const SizedBox(height: 14),
+          ],
+        );
+      },
     );
   }
 }

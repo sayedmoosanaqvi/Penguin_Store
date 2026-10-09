@@ -1,5 +1,6 @@
 import 'package:image_picker/image_picker.dart';
 import 'package:http/http.dart' as http;
+import 'package:http_parser/http_parser.dart'; // <-- Required for MediaType
 import 'package:penguin_store/config/api_config.dart';
 import 'dart:convert';
 
@@ -8,42 +9,41 @@ class VisualSearchService {
 
   Future<List<dynamic>> searchWithCameraOrGallery(ImageSource source) async {
     try {
-      // 1. Capture or select the image
       final XFile? image = await _picker.pickImage(source: source);
       if (image == null) return [];
 
-      // 2. Read the file as raw bytes
       final bytes = await image.readAsBytes();
 
-      // 3. Prepare the multipart request pointing to your cloud API
       final url = Uri.parse('${ApiConfig.baseUrl}/api/search/visual');
       var request = http.MultipartRequest('POST', url);
+      
+      // Explicitly define the MediaType so FastAPI accepts the file
       request.files.add(http.MultipartFile.fromBytes(
         'file', 
         bytes,
-        filename: image.name,
+        filename: image.name.isNotEmpty ? image.name : 'upload.png',
+        contentType: MediaType('image', 'png'), 
       ));
 
-      print("🚀 Sending image to AI Backend...");
+      request.headers.addAll({
+        'Accept': 'application/json',
+      });
+
       var streamedResponse = await request.send();
       var response = await http.Response.fromStream(streamedResponse);
 
-      // 4. Parse the results properly
       if (response.statusCode == 200) {
         var jsonResult = json.decode(response.body);
-        print("✅ AI Match Successful: ${jsonResult['total_matches']} products found.");
-        
         if (jsonResult['matches'] != null) {
           return jsonResult['matches'];
         }
         return [];
       } else {
-        // Stop silently hiding errors! Print the exact backend crash log.
-        print("❌ Backend Crash (${response.statusCode}): ${response.body}");
+        print("❌ Backend Error (${response.statusCode}): ${response.body}");
         return []; 
       }
     } catch (e) {
-      print("❌ Network/Frontend Exception: $e");
+      print("❌ Network Exception: $e");
       return [];
     }
   }

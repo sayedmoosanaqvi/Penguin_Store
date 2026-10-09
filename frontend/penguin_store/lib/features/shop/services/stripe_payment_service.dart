@@ -1,4 +1,6 @@
+
 import 'dart:convert';
+
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
@@ -11,33 +13,59 @@ class StripePaymentService {
     required int orderId,
     required String currency,
   }) async {
-    if (kIsWeb) {
-      final response = await http.post(
-        Uri.parse('$_baseUrl/create-checkout-session'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'order_id': orderId,
-          'currency': currency,
-        }),
+    if (!kIsWeb) {
+      throw UnsupportedError(
+        'Mobile checkout requires a separate payment integration.',
       );
+    }
 
-      if (response.statusCode != 200) {
-        throw 'Checkout session failed: ${response.body}';
-      }
+    final response = await http.post(
+      Uri.parse('$_baseUrl/create-checkout-session'),
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: jsonEncode({
+        'order_id': orderId,
+        'currency': currency,
+        'frontend_origin': Uri.base.origin,
+      }),
+    );
 
-      final data = jsonDecode(response.body);
-      final url = data['url'];
+    if (response.statusCode != 200) {
+      throw Exception(
+        'Checkout session failed: ${response.body}',
+      );
+    }
 
-      if (url == null) {
-        throw 'Checkout session response missing "url": ${response.body}';
-      }
+    final data = jsonDecode(response.body);
 
-      final uri = Uri.parse(url);
-      if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
-        throw 'Could not open Stripe Checkout';
-      }
-    } else {
-      throw 'Mobile payment sheet requires backend adjustment for order_id lookup.';
+    if (data is! Map || data['url'] is! String) {
+      throw Exception(
+        'Invalid Stripe checkout response.',
+      );
+    }
+
+    final checkoutUrl = data['url'] as String;
+    final uri = Uri.tryParse(checkoutUrl);
+
+    if (uri == null ||
+        uri.scheme != 'https' ||
+        !(uri.host == 'checkout.stripe.com' ||
+            uri.host.endsWith('.checkout.stripe.com'))) {
+      throw Exception(
+        'Invalid Stripe Checkout URL.',
+      );
+    }
+
+    final launched = await launchUrl(
+      uri,
+      webOnlyWindowName: '_self',
+    );
+
+    if (!launched) {
+      throw Exception(
+        'Unable to open Stripe Checkout.',
+      );
     }
   }
 }

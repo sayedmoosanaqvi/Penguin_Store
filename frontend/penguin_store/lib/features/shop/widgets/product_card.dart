@@ -1,12 +1,13 @@
-import 'package:flutter/material.dart';
-import 'package:penguin_store/features/shop/providers/auth_provider.dart';
-import 'package:penguin_store/features/shop/screens/product_details_screen.dart';
-import '../models/product_model.dart';
-import 'package:provider/provider.dart';
-import '../providers/cart_provider.dart';
-import '../services/product_service.dart';
+
 import 'package:flutter/foundation.dart' show kIsWeb;
-// ---> NEW IMPORT FOR CUSTOM TOAST <---
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+
+import 'package:penguin_store/features/shop/models/product_model.dart';
+import 'package:penguin_store/features/shop/providers/auth_provider.dart';
+import 'package:penguin_store/features/shop/providers/cart_provider.dart';
+import 'package:penguin_store/features/shop/screens/product_details_screen.dart';
+import 'package:penguin_store/features/shop/services/product_service.dart';
 import 'package:penguin_store/features/shop/widgets/custom_toast.dart';
 
 class ProductCard extends StatefulWidget {
@@ -14,7 +15,7 @@ class ProductCard extends StatefulWidget {
   final VoidCallback onProductDeleted;
 
   const ProductCard({
-    super.key, 
+    super.key,
     required this.product,
     required this.onProductDeleted,
   });
@@ -24,227 +25,395 @@ class ProductCard extends StatefulWidget {
 }
 
 class _ProductCardState extends State<ProductCard> {
-  bool isHovering = false;
+  bool _isHovering = false;
+  bool _isDeleting = false;
 
-  @override
-  Widget build(BuildContext context) {
-    final authProvider = Provider.of<AuthProvider>(context);
-    final theme = Theme.of(context);
-
-    return MouseRegion(
-      onEnter: (_) => setState(() => isHovering = true),
-      onExit: (_) => setState(() => isHovering = false),
-      child: InkWell(
-        onTap: () {
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (context) => ProductDetailScreen(productId: widget.product.id),
-            ),
-          );
-        },
-        borderRadius: BorderRadius.circular(16),
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 200),
-          decoration: BoxDecoration(
-            color: theme.cardTheme.color ?? theme.colorScheme.surface,
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(
-              color: isHovering ? theme.primaryColor : Colors.transparent,
-              width: 2,
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: theme.brightness == Brightness.light 
-                    ? Colors.grey.withOpacity(0.1) 
-                    : Colors.black.withOpacity(0.3),
-                blurRadius: 10,
-                offset: const Offset(0, 4),
-              ),
-            ],
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(
-                child: Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    Hero(
-                      tag: 'product-${widget.product.id}',
-                      child: ClipRRect(
-                        borderRadius: const BorderRadius.vertical(top: Radius.circular(14)),
-                        child: Image.network(
-                          widget.product.imageUrl,
-                          fit: BoxFit.cover,
-                          // ---> ROBUST FALLBACK FOR BROKEN/BLOCKED URLS <---
-                          errorBuilder: (context, error, stackTrace) {
-                            return Container(
-                              color: theme.scaffoldBackgroundColor.withOpacity(0.5),
-                              child: Center(
-                                child: Icon(
-                                  Icons.image_not_supported_outlined,
-                                  color: theme.textTheme.bodySmall?.color ?? Colors.grey,
-                                  size: 32,
-                                ),
-                              ),
-                            );
-                          },
-                        ),
-                      ),
-                    ),
-                    if (kIsWeb)
-                      AnimatedOpacity(
-                        opacity: isHovering ? 0.1 : 0.0,
-                        duration: const Duration(milliseconds: 200),
-                        child: Container(
-                          decoration: BoxDecoration(
-                            borderRadius: const BorderRadius.vertical(top: Radius.circular(14)),
-                            color: theme.scaffoldBackgroundColor,
-                          ),
-                        ),
-                      ),
-                    Positioned(
-                      top: 12,
-                      left: 12,
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          if (widget.product.discountPercent != null)
-                            _buildTag('-${widget.product.discountPercent}%', theme.scaffoldBackgroundColor, theme.primaryColor),
-                          if (widget.product.isFeatured)
-                            _buildTag('FEATURED', theme.primaryColor, theme.scaffoldBackgroundColor),
-                        ],
-                      ),
-                    ),
-                    if (authProvider.isAdmin) 
-                      Positioned(
-                        top: 8,
-                        right: 8,
-                        child: AnimatedOpacity(
-                          opacity: (kIsWeb && isHovering) || !kIsWeb ? 1.0 : 0.0,
-                          duration: const Duration(milliseconds: 200),
-                          child: Container(
-                            decoration: BoxDecoration(
-                              color: theme.scaffoldBackgroundColor,
-                              shape: BoxShape.circle,
-                              boxShadow: [
-                                BoxShadow(color: Colors.black.withOpacity(0.1), blurRadius: 4)
-                              ]
-                            ),
-                            child: IconButton(
-                              icon: const Icon(Icons.delete_outline, color: Colors.redAccent, size: 20),
-                              onPressed: () {
-                                _showDeleteDialog(context, theme);
-                              },
-                            ),
-                          ),
-                        ),
-                      ),
-                    if (kIsWeb)
-                      AnimatedOpacity(
-                        opacity: isHovering ? 1.0 : 0.0,
-                        duration: const Duration(milliseconds: 200),
-                        child: Align(
-                          alignment: Alignment.bottomCenter,
-                          child: Padding(
-                            padding: const EdgeInsets.all(12.0),
-                            child: ElevatedButton.icon(
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: theme.primaryColor,
-                                foregroundColor: theme.scaffoldBackgroundColor,
-                                minimumSize: const Size(double.infinity, 44),
-                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                              ),
-                              onPressed: () {
-                                Provider.of<CartProvider>(context, listen: false).addToCart(widget.product);
-                                CustomToast.show(context, '${widget.product.name} added to cart!');
-                              },
-                              icon: const Icon(Icons.shopping_bag_outlined, size: 18),
-                              label: const Text("ADD TO CART", style: TextStyle(fontWeight: FontWeight.bold)),
-                            ),
-                          ),
-                        ),
-                      ),
-                  ],
-                ),
-              ),
-              Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      widget.product.category.toUpperCase(),
-                      style: TextStyle(color: theme.textTheme.bodySmall?.color ?? Colors.grey[500], fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1),
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      widget.product.name,
-                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: theme.textTheme.titleMedium?.color),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    const SizedBox(height: 6),
-                    Row(
-                      children: [
-                        Icon(Icons.star, color: theme.primaryColor, size: 16),
-                        const SizedBox(width: 4),
-                        Text("${widget.product.rating}", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: theme.textTheme.bodyMedium?.color)),
-                        Text(" (${widget.product.reviews})", style: TextStyle(color: theme.textTheme.bodySmall?.color ?? Colors.grey[500], fontSize: 12)),
-                      ],
-                    ),
-                    const SizedBox(height: 10),
-                    Text(
-                      '\$${widget.product.price.toStringAsFixed(2)}',
-                      style: TextStyle(fontWeight: FontWeight.w900, fontSize: 18, color: theme.primaryColor),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
+  void _openProduct() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ProductDetailScreen(
+          productId: widget.product.id,
         ),
       ),
     );
   }
 
-  void _showDeleteDialog(BuildContext context, ThemeData theme) {
-    showDialog(
+  void _addToCart() {
+    context.read<CartProvider>().addToCart(widget.product);
+
+    CustomToast.show(
+      context,
+      '${widget.product.name} added to cart!',
+    );
+  }
+
+  Future<void> _deleteProduct() async {
+    final theme = Theme.of(context);
+
+    final confirmed = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: theme.cardTheme.color,
-        title: Text("Delete Product?", style: TextStyle(color: theme.textTheme.titleLarge?.color)),
-        content: Text("Are you sure you want to delete '${widget.product.name}'?", style: TextStyle(color: theme.textTheme.bodyLarge?.color)),
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: theme.colorScheme.surface,
+        title: const Text('Delete Product?'),
+        content: Text(
+          "Are you sure you want to delete '${widget.product.name}'?",
+        ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context), 
-            child: const Text("CANCEL", style: TextStyle(color: Colors.grey)),
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('CANCEL'),
           ),
           TextButton(
-            onPressed: () async {
-              Navigator.pop(context); 
-              bool success = await ProductService().deleteProduct(widget.product.id);
-              if (success) {
-                CustomToast.show(context, 'Product deleted!');
-                widget.onProductDeleted(); 
-              } else {
-                CustomToast.show(context, 'Failed to delete.', isError: true);
-              }
-            },
-            child: const Text("DELETE", style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text(
+              'DELETE',
+              style: TextStyle(
+                color: Colors.redAccent,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
           ),
         ],
       ),
     );
+
+    if (confirmed != true || !mounted || _isDeleting) return;
+
+    setState(() => _isDeleting = true);
+
+    try {
+      final success = await ProductService().deleteProduct(
+        widget.product.id,
+      );
+
+      if (!mounted) return;
+
+      if (success) {
+        CustomToast.show(context, 'Product deleted!');
+        widget.onProductDeleted();
+      } else {
+        CustomToast.show(
+          context,
+          'Failed to delete.',
+          isError: true,
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        CustomToast.show(
+          context,
+          'Failed to delete: $e',
+          isError: true,
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isDeleting = false);
+      }
+    }
   }
 
-  Widget _buildTag(String text, Color bgColor, Color textColor) {
+  Widget _buildBadge(
+    String label,
+    Color backgroundColor,
+    Color textColor,
+  ) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-      margin: const EdgeInsets.only(bottom: 6),
-      decoration: BoxDecoration(color: bgColor, borderRadius: BorderRadius.circular(20)),
-      child: Text(text, style: TextStyle(color: textColor, fontSize: 10, fontWeight: FontWeight.bold)),
+      padding: const EdgeInsets.symmetric(
+        horizontal: 6,
+        vertical: 3,
+      ),
+      decoration: BoxDecoration(
+        color: backgroundColor,
+        borderRadius: BorderRadius.circular(5),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          color: textColor,
+          fontSize: 9,
+          fontWeight: FontWeight.w800,
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+    final isAdmin = context.watch<AuthProvider>().isAdmin;
+    final product = widget.product;
+    final primary = theme.primaryColor;
+
+    final hasDiscount = product.originalPrice != null &&
+        product.originalPrice! > product.price;
+
+    final discount = product.discountPercent ??
+        (hasDiscount
+            ? ((product.originalPrice! - product.price) /
+                    product.originalPrice! *
+                    100)
+                .round()
+            : null);
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final compact = constraints.maxWidth < 180;
+        final veryCompact = constraints.maxWidth < 125;
+
+        return MouseRegion(
+          onEnter: (_) {
+            if (kIsWeb && mounted) {
+              setState(() => _isHovering = true);
+            }
+          },
+          onExit: (_) {
+            if (kIsWeb && mounted) {
+              setState(() => _isHovering = false);
+            }
+          },
+          child: Material(
+            color: theme.colorScheme.surface,
+            borderRadius: BorderRadius.circular(11),
+            child: InkWell(
+              onTap: _openProduct,
+              borderRadius: BorderRadius.circular(11),
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 180),
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.surface,
+                  borderRadius: BorderRadius.circular(11),
+                  border: Border.all(
+                    color: _isHovering
+                        ? primary
+                        : theme.dividerColor.withOpacity(0.18),
+                    width: _isHovering ? 1.4 : 1,
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(
+                        _isHovering ? 0.09 : 0.025,
+                      ),
+                      blurRadius: _isHovering ? 10 : 4,
+                      offset: const Offset(0, 3),
+                    ),
+                  ],
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          Hero(
+                            tag: 'product-${product.id}',
+                            child: ClipRRect(
+                              borderRadius: const BorderRadius.vertical(
+                                top: Radius.circular(10),
+                              ),
+                              child: Image.network(
+                                product.imageUrl,
+                                fit: BoxFit.contain,
+                                errorBuilder: (context, error, stack) {
+                                  return Container(
+                                    color: isDark
+                                        ? Colors.white.withOpacity(0.04)
+                                        : Colors.grey.shade50,
+                                    child: Center(
+                                      child: Icon(
+                                        Icons.image_not_supported_outlined,
+                                        color: theme.colorScheme
+                                            .onSurfaceVariant,
+                                        size: 30,
+                                      ),
+                                    ),
+                                  );
+                                },
+                              ),
+                            ),
+                          ),
+                          Positioned(
+                            left: 6,
+                            top: 6,
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                if (discount != null && discount > 0)
+                                  _buildBadge(
+                                    '-$discount%',
+                                    theme.colorScheme.error,
+                                    Colors.white,
+                                  ),
+                                if (product.isFeatured) ...[
+                                  const SizedBox(height: 4),
+                                  _buildBadge(
+                                    'FEATURED',
+                                    primary,
+                                    Colors.white,
+                                  ),
+                                ],
+                              ],
+                            ),
+                          ),
+                          if (isAdmin)
+                            Positioned(
+                              top: 4,
+                              right: 4,
+                              child: Material(
+                                color: theme.colorScheme.surface
+                                    .withOpacity(0.94),
+                                borderRadius: BorderRadius.circular(20),
+                                child: InkWell(
+                                  borderRadius: BorderRadius.circular(20),
+                                  onTap: _isDeleting ? null : _deleteProduct,
+                                  child: Padding(
+                                    padding: const EdgeInsets.all(7),
+                                    child: _isDeleting
+                                        ? const SizedBox(
+                                            width: 15,
+                                            height: 15,
+                                            child: CircularProgressIndicator(
+                                              strokeWidth: 2,
+                                            ),
+                                          )
+                                        : const Icon(
+                                            Icons.delete_outline_rounded,
+                                            color: Colors.redAccent,
+                                            size: 17,
+                                          ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                    Padding(
+                      padding: EdgeInsets.all(veryCompact ? 5 : 9),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            product.category.toUpperCase(),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              color: theme.colorScheme.onSurfaceVariant,
+                              fontSize: veryCompact ? 8 : 9,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            product.name,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: veryCompact ? 10 : 12,
+                              height: 1.25,
+                              fontWeight: FontWeight.w600,
+                              color: theme.colorScheme.onSurface,
+                            ),
+                          ),
+                          const SizedBox(height: 5),
+                          Row(
+                            children: [
+                              const Icon(
+                                Icons.star_rounded,
+                                color: Color(0xFFFFB300),
+                                size: 14,
+                              ),
+                              const SizedBox(width: 3),
+                              Flexible(
+                                child: Text(
+                                  '${product.rating} (${product.reviews})',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    fontSize: veryCompact ? 9 : 10,
+                                    color: theme.colorScheme
+                                        .onSurfaceVariant,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 6),
+                          if (hasDiscount)
+                            Text(
+                              '\$${product.originalPrice!.toStringAsFixed(2)}',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                color: theme.colorScheme.onSurfaceVariant,
+                                fontSize: veryCompact ? 9 : 10,
+                                decoration: TextDecoration.lineThrough,
+                              ),
+                            ),
+                          Text(
+                            '\$${product.price.toStringAsFixed(2)}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              color: primary,
+                              fontSize: veryCompact ? 12 : 15,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                          const SizedBox(height: 7),
+                          SizedBox(
+                            width: double.infinity,
+                            height: compact ? 30 : 33,
+                            child: ElevatedButton(
+                              onPressed: _addToCart,
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: primary,
+                                foregroundColor: Colors.white,
+                                elevation: 0,
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 4,
+                                ),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(7),
+                                ),
+                              ),
+                              child: Row(
+                                mainAxisAlignment:
+                                    MainAxisAlignment.center,
+                                children: [
+                                  Icon(
+                                    Icons.add_shopping_cart_rounded,
+                                    size: veryCompact ? 13 : 15,
+                                  ),
+                                  const SizedBox(width: 4),
+                                  Flexible(
+                                    child: Text(
+                                      veryCompact ? 'ADD' : 'ADD TO CART',
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(
+                                        fontSize: veryCompact ? 9 : 10,
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 }
