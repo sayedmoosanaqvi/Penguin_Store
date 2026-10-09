@@ -1,6 +1,6 @@
-import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:video_player/video_player.dart';
 
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
@@ -9,54 +9,65 @@ class SplashScreen extends StatefulWidget {
   State<SplashScreen> createState() => _SplashScreenState();
 }
 
-class _SplashScreenState extends State<SplashScreen> with TickerProviderStateMixin {
-  late AnimationController _logoController;
-  late Animation<double> _scaleAnimation;
-  late Animation<double> _fadeAnimation;
+class _SplashScreenState extends State<SplashScreen> {
+  VideoPlayerController? _videoController;
 
-  // Background floating/falling particles controller
-  late AnimationController _particleController;
-
-  final List<_FallingParticle> _particles = List.generate(15, (index) => _FallingParticle());
+  bool _isReady = false;
+  bool _hasNavigated = false;
 
   @override
   void initState() {
     super.initState();
-    
-    // Logo entrance animation
-    _logoController = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 1500),
-    );
+    _initializeSplash();
+  }
 
-    _scaleAnimation = Tween<double>(begin: 0.3, end: 1.0).animate(
-      CurvedAnimation(parent: _logoController, curve: Curves.easeOutBack),
-    );
+  Future<void> _initializeSplash() async {
+    try {
+      final controller = VideoPlayerController.asset(
+        'assets/videos/penguinstore_splash_animation.mp4',
+      );
 
-    _fadeAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
-      CurvedAnimation(parent: _logoController, curve: Curves.easeIn),
-    );
+      _videoController = controller;
 
-    _logoController.forward();
+      await controller.initialize();
 
-    // Continuous motion controller for falling/floating items
-    _particleController = AnimationController(
-      vsync: this,
-      duration: const Duration(seconds: 9),
-    )..repeat();
+      if (!mounted) return;
 
-    // Automatically navigate to home after 3 seconds
-    Future.delayed(const Duration(milliseconds: 3000), () {
-      if (mounted) {
-        context.go('/');
+      await controller.setLooping(false);
+      await controller.setVolume(0);
+
+      setState(() => _isReady = true);
+
+      await controller.play();
+
+      final duration = controller.value.duration;
+
+      if (duration > Duration.zero) {
+        await Future.delayed(duration);
+      } else {
+        await Future.delayed(const Duration(milliseconds: 3500));
       }
-    });
+
+      _navigateHome();
+    } catch (e) {
+      debugPrint('Splash animation error: $e');
+
+      await Future.delayed(const Duration(seconds: 3));
+
+      _navigateHome();
+    }
+  }
+
+  void _navigateHome() {
+    if (!mounted || _hasNavigated) return;
+
+    _hasNavigated = true;
+    context.go('/');
   }
 
   @override
   void dispose() {
-    _logoController.dispose();
-    _particleController.dispose();
+    _videoController?.dispose();
     super.dispose();
   }
 
@@ -65,120 +76,35 @@ class _SplashScreenState extends State<SplashScreen> with TickerProviderStateMix
     final theme = Theme.of(context);
 
     return Scaffold(
-      backgroundColor: theme.scaffoldBackgroundColor,
-      body: Stack(
-        children: [
-          // Dynamic Falling / Floating Background Elements
-          AnimatedBuilder(
-            animation: _particleController,
-            builder: (context, child) {
-              return CustomPaint(
-                painter: _ParticlePainter(
-                  animationValue: _particleController.value,
-                  particles: _particles,
-                  primaryColor: theme.primaryColor,
+      backgroundColor: Colors.white,
+      body: Center(
+        child: _isReady && _videoController != null
+            ? SizedBox.expand(
+                child: FittedBox(
+                  fit: BoxFit.contain,
+                  child: SizedBox(
+                    width: _videoController!.value.size.width,
+                    height: _videoController!.value.size.height,
+                    child: VideoPlayer(_videoController!),
+                  ),
                 ),
-                child: const SizedBox.expand(),
-              );
-            },
-          ),
-          
-          // Centered Branded Logo Entry Animation
-          Center(
-            child: FadeTransition(
-              opacity: _fadeAnimation,
-              child: ScaleTransition(
-                scale: _scaleAnimation,
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.all(22),
-                      decoration: BoxDecoration(
-                        color: theme.primaryColor,
-                        shape: BoxShape.circle,
-                        boxShadow: [
-                          BoxShadow(
-                            color: theme.primaryColor.withOpacity(0.4),
-                            blurRadius: 30,
-                            offset: const Offset(0, 10),
-                          ),
-                        ],
-                      ),
-                      child: Icon(
-                        Icons.storefront,
-                        size: 65,
-                        color: theme.scaffoldBackgroundColor,
-                      ),
+              )
+            : Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.pets_rounded, size: 58, color: theme.primaryColor),
+                  const SizedBox(height: 16),
+                  Text(
+                    'PenguinStore',
+                    style: TextStyle(
+                      fontSize: 25,
+                      fontWeight: FontWeight.w800,
+                      color: theme.primaryColor,
                     ),
-                    const SizedBox(height: 24),
-                    Text(
-                      'PENGUIN STORE',
-                      style: TextStyle(
-                        fontSize: 24,
-                        fontWeight: FontWeight.bold,
-                        letterSpacing: 3.0,
-                        color: theme.textTheme.titleLarge?.color,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      'Next-Gen Commerce Experience',
-                      style: TextStyle(
-                        fontSize: 13,
-                        color: theme.textTheme.bodySmall?.color,
-                        letterSpacing: 1.0,
-                      ),
-                    ),
-                  ],
-                ),
+                  ),
+                ],
               ),
-            ),
-          ),
-        ],
       ),
     );
   }
-}
-
-// Particle model for real falling/floating physics behavior
-class _FallingParticle {
-  double x = Random().nextDouble();
-  double y = Random().nextDouble() * -1.0; // Start above screen
-  double speed = 0.2 + Random().nextDouble() * 0.5;
-  double size = 8.0 + Random().nextDouble() * 16.0;
-  double opacity = 0.1 + Random().nextDouble() * 0.3;
-}
-
-// Custom painter to render falling items smoothly across the screen
-class _ParticlePainter extends CustomPainter {
-  final double animationValue;
-  final List<_FallingParticle> particles;
-  final Color primaryColor;
-
-  _ParticlePainter({
-    required this.animationValue,
-    required this.particles,
-    required this.primaryColor,
-  });
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()..style = PaintingStyle.fill;
-
-    for (var p in particles) {
-      // Calculate real falling movement down the Y axis
-      double currentY = (p.y + (animationValue * p.speed)) % 1.2;
-      double currentX = p.x * size.width;
-      double renderY = currentY * size.height;
-
-      paint.color = primaryColor.withOpacity(p.opacity);
-      
-      // Draw smooth falling circles or shopping item indicators
-      canvas.drawCircle(Offset(currentX, renderY), p.size / 2, paint);
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant _ParticlePainter oldDelegate) => true;
 }
