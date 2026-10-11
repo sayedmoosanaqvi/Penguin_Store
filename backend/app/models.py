@@ -1,3 +1,4 @@
+
 from datetime import datetime
 
 from pgvector.sqlalchemy import VECTOR
@@ -33,10 +34,6 @@ class Product(Base):
     is_featured = Column(Boolean, default=False)
     stock = Column(Integer, default=50)
 
-    # -----------------------------------------------------------------------
-    # Hybrid Inventory & Dropshipping Metadata
-    # -----------------------------------------------------------------------
-
     fulfillment_type = Column(
         String,
         default="IN_HOUSE",
@@ -56,36 +53,27 @@ class Product(Base):
         Float,
         nullable=True,
     )
-    # -----------------------------------------------------------------------
-    # Visual Search Embeddings
-    # -----------------------------------------------------------------------
 
-    # Existing 512-D embedding column.
-    # Kept unchanged for compatibility with the previous pipeline.
     image_embedding = Column(
         VECTOR(512),
         nullable=True,
     )
 
-    # New 2048-D embedding column used by the lightweight
-    # ResNet-based visual search pipeline.
     image_embedding_v2 = Column(
         VECTOR(2048),
         nullable=True,
     )
 
-    # -----------------------------------------------------------------------
-    # Legacy column
-    # -----------------------------------------------------------------------
-    #
-    # Kept because it exists in the database.
-    # VS Code search showed this is not referenced elsewhere in the codebase.
-    # We are deliberately not deleting it from PostgreSQL in this step.
-    #
-
     visual_embedding = Column(
         Text,
         nullable=True,
+    )
+
+    assets_3d = relationship(
+        "Product3DAsset",
+        back_populates="product",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
     )
 
 
@@ -113,6 +101,14 @@ class User(Base):
         default=False,
     )
 
+    premium_subscription = relationship(
+        "PremiumSubscription",
+        back_populates="user",
+        uselist=False,
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
 
 class Order(Base):
     __tablename__ = "orders"
@@ -132,10 +128,6 @@ class Order(Base):
         String,
         nullable=False,
     )
-
-    # -----------------------------------------------------------------------
-    # Geographic / shipping data
-    # -----------------------------------------------------------------------
 
     shipping_address = Column(
         String,
@@ -169,19 +161,11 @@ class Order(Base):
         nullable=False,
     )
 
-    # -----------------------------------------------------------------------
-    # Timestamp
-    # -----------------------------------------------------------------------
-
     created_at = Column(
         DateTime,
         default=datetime.utcnow,
         index=True,
     )
-
-    # -----------------------------------------------------------------------
-    # Relationships
-    # -----------------------------------------------------------------------
 
     items = relationship(
         "OrderItem",
@@ -217,10 +201,6 @@ class OrderItem(Base):
         Float,
         nullable=False,
     )
-
-    # -----------------------------------------------------------------------
-    # Fulfillment tracking
-    # -----------------------------------------------------------------------
 
     fulfillment_type = Column(
         String,
@@ -277,4 +257,158 @@ class Notification(Base):
     created_at = Column(
         DateTime(timezone=True),
         server_default=func.now(),
+    )
+
+
+class Product3DAsset(Base):
+    __tablename__ = "product_3d_assets"
+
+    id = Column(
+        Integer,
+        primary_key=True,
+        index=True,
+    )
+
+    product_id = Column(
+        Integer,
+        ForeignKey(
+            "products.id",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+        index=True,
+    )
+
+    display_name = Column(
+        String(150),
+        nullable=False,
+        default="3D Product View",
+    )
+
+    variant_name = Column(
+        String(100),
+        nullable=True,
+    )
+
+    storage_bucket = Column(
+        String(100),
+        nullable=False,
+        default="penguin-store-3d",
+    )
+
+    storage_path = Column(
+        String(512),
+        unique=True,
+        nullable=False,
+    )
+
+    model_format = Column(
+        String(20),
+        nullable=False,
+        default="glb",
+    )
+
+    file_size_bytes = Column(
+        Integer,
+        nullable=True,
+    )
+
+    is_active = Column(
+        Boolean,
+        nullable=False,
+        default=False,
+    )
+
+    created_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+
+    updated_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    product = relationship(
+        "Product",
+        back_populates="assets_3d",
+    )
+
+
+class PremiumSubscription(Base):
+    __tablename__ = "premium_subscriptions"
+
+    id = Column(
+        Integer,
+        primary_key=True,
+        index=True,
+    )
+
+    user_id = Column(
+        Integer,
+        ForeignKey(
+            "users.id",
+            ondelete="CASCADE",
+        ),
+        unique=True,
+        nullable=False,
+        index=True,
+    )
+
+    stripe_customer_id = Column(
+        String(255),
+        unique=True,
+        nullable=True,
+    )
+
+    stripe_subscription_id = Column(
+        String(255),
+        unique=True,
+        nullable=True,
+    )
+
+    stripe_price_id = Column(
+        String(255),
+        nullable=True,
+    )
+
+    plan_name = Column(
+        String(50),
+        nullable=False,
+        default="premium",
+    )
+
+    status = Column(
+        String(50),
+        nullable=False,
+        default="inactive",
+        index=True,
+    )
+
+    current_period_end = Column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    cancel_at_period_end = Column(
+        Boolean,
+        nullable=False,
+        default=False,
+    )
+
+    created_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+
+    updated_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    user = relationship(
+        "User",
+        back_populates="premium_subscription",
     )

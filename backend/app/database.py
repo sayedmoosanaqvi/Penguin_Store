@@ -1,24 +1,14 @@
+
 import os
+import logging
 
 from dotenv import load_dotenv
 from sqlalchemy import create_engine
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import NullPool
+from sqlalchemy.orm import declarative_base, sessionmaker
 
-
-# ---------------------------------------------------------------------------
-# Environment
-# ---------------------------------------------------------------------------
-
-# Loads .env locally.
-# Render will use its own environment variables in production.
 load_dotenv()
 
-
-# ---------------------------------------------------------------------------
-# Database URL
-# ---------------------------------------------------------------------------
+logger = logging.getLogger(__name__)
 
 SQLALCHEMY_DATABASE_URL = (
     os.getenv("SUPABASE_DATABASE_URL")
@@ -31,62 +21,56 @@ if not SQLALCHEMY_DATABASE_URL:
         "Set SUPABASE_DATABASE_URL or DATABASE_URL."
     )
 
-
-# SQLAlchemy expects the modern postgresql:// dialect.
 if SQLALCHEMY_DATABASE_URL.startswith("postgres://"):
-    SQLALCHEMY_DATABASE_URL = SQLALCHEMY_DATABASE_URL.replace(
-        "postgres://",
-        "postgresql://",
-        1,
+    SQLALCHEMY_DATABASE_URL = (
+        SQLALCHEMY_DATABASE_URL.replace(
+            "postgres://",
+            "postgresql://",
+            1,
+        )
     )
 
-
-# ---------------------------------------------------------------------------
-# Database engine
-# ---------------------------------------------------------------------------
-
-# Your current Supabase connection uses the transaction pooler (6543).
-#
-# NullPool is intentional here:
-# Supabase's external pooler manages the database-side connections,
-# so we avoid maintaining another persistent application-side pool.
-#
-# This is also useful on a memory-constrained Render instance.
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL,
-    poolclass=NullPool,
+
+    # Reuse a small number of connections.
+    pool_size=2,
+    max_overflow=2,
+
+    # Check a connection before reusing it.
+    pool_pre_ping=True,
+
+    # Refresh old connections periodically.
+    pool_recycle=180,
+
+    # Limit waiting for an available pooled connection.
+    pool_timeout=15,
+
+    # Limit PostgreSQL connection establishment time.
     connect_args={
         "sslmode": "require",
+        "connect_timeout": 10,
     },
+
+    # Roll back any unfinished transaction on return.
+    pool_reset_on_return="rollback",
 )
-
-
-# ---------------------------------------------------------------------------
-# Session factory
-# ---------------------------------------------------------------------------
 
 SessionLocal = sessionmaker(
     autocommit=False,
     autoflush=False,
     bind=engine,
+    expire_on_commit=False,
 )
-
-
-# ---------------------------------------------------------------------------
-# SQLAlchemy models base
-# ---------------------------------------------------------------------------
 
 Base = declarative_base()
 
-
-# ---------------------------------------------------------------------------
-# FastAPI database dependency
-# ---------------------------------------------------------------------------
 
 def get_db():
     db = SessionLocal()
 
     try:
         yield db
+
     finally:
         db.close()
