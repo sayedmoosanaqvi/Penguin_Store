@@ -15,6 +15,10 @@ import 'package:penguin_store/features/shop/widgets/product_card_skeleton.dart';
 import 'package:penguin_store/features/shop/widgets/trending_carousel.dart';
 import 'package:penguin_store/features/shop/widgets/personalized_carousel.dart';
 import 'package:penguin_store/features/shop/widgets/premium_interactive_card.dart';
+import 'package:penguin_store/features/shop/widgets/product_filters.dart';
+import 'package:penguin_store/features/shop/services/showcase_3d_service.dart';
+import 'package:penguin_store/features/shop/screens/showcase_3d_screen.dart';
+import 'package:penguin_store/core/widgets/animated_widgets.dart';
 import 'package:penguin_store/features/shop/screens/visual_search_results_screen.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -34,9 +38,12 @@ class _HomeScreenState extends State<HomeScreen> {
   String _selectedCategory = 'All';
   String _searchQuery = '';
   bool _visualSearchLoading = false;
+  ProductFilters _adv = const ProductFilters();
+  List<Product> _lastProducts = const [];
 
   final List<String> _categories = [
     'All',
+    '3D',
     'Shirts',
     'Pants',
     'Men Shoes',
@@ -47,6 +54,7 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     _productsFuture = _productService.fetchProducts();
+    Catalog3D.refresh();
   }
 
   @override
@@ -72,6 +80,10 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _startVisualSearch(ImageSource source) async {
     if (_visualSearchLoading) return;
 
+    final picked =
+        await _visualSearchService.pickImageForSearch(source);
+    if (picked == null || !mounted) return;
+
     setState(() => _visualSearchLoading = true);
 
     bool dialogVisible = true;
@@ -86,18 +98,28 @@ class _HomeScreenState extends State<HomeScreen> {
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(15),
             ),
-            content: const Row(
+            content: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                SizedBox(
-                  width: 24,
-                  height: 24,
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(8),
+                  child: Image.memory(
+                    picked.bytes,
+                    width: 42,
+                    height: 42,
+                    fit: BoxFit.cover,
+                  ),
+                ),
+                const SizedBox(width: 14),
+                const SizedBox(
+                  width: 22,
+                  height: 22,
                   child: CircularProgressIndicator(
                     strokeWidth: 2.5,
                   ),
                 ),
-                SizedBox(width: 16),
-                Flexible(
+                const SizedBox(width: 14),
+                const Flexible(
                   child: Text(
                     'AI is analyzing your image...',
                     style: TextStyle(
@@ -114,8 +136,10 @@ class _HomeScreenState extends State<HomeScreen> {
     ).then((_) => dialogVisible = false);
 
     try {
-      final matches = await _visualSearchService
-          .searchWithCameraOrGallery(source);
+      final result = await _visualSearchService.searchWithImageBytes(
+        picked.bytes,
+        filename: picked.filename,
+      );
 
       if (!mounted) return;
 
@@ -124,24 +148,37 @@ class _HomeScreenState extends State<HomeScreen> {
         dialogVisible = false;
       }
 
-      if (matches.isNotEmpty) {
-        Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (_) => VisualSearchResultsScreen(
-              matches: matches,
-            ),
+      if (result.isError) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(result.message),
+            backgroundColor: Theme.of(context).colorScheme.error,
           ),
         );
-      } else {
+        return;
+      }
+
+      if (result.isNotInDatabase) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text(
-              'No visual matches found. Please try another image.',
+              'Product not found in the Penguin Store database.',
             ),
           ),
         );
       }
+
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => VisualSearchResultsScreen(
+            matches: result.matches,
+            queryImageBytes: result.queryImageBytes,
+            analysis: result.analysis,
+            statusMessage: result.message,
+          ),
+        ),
+      );
     } catch (e) {
       if (!mounted) return;
 
@@ -231,6 +268,8 @@ class _HomeScreenState extends State<HomeScreen> {
                   _buildQuickCategories(theme),
                   _buildWelcomeBanner(theme),
                   _buildAiBanner(theme),
+                  const SizedBox(height: 10),
+                  _build3DBanner(theme),
                   const SizedBox(height: 14),
                   const TrendingCarousel(country: 'Pakistan'),
 
@@ -374,6 +413,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _buildQuickCategories(ThemeData theme) {
     final quickCategories = [
       (Icons.grid_view_rounded, 'All'),
+      (Icons.view_in_ar_rounded, '3D'),
       (Icons.checkroom_outlined, 'Shirts'),
       (Icons.style_outlined, 'Pants'),
       (Icons.directions_run_outlined, 'Men Shoes'),
@@ -540,20 +580,15 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             borderRadius: BorderRadius.circular(12),
           ),
-          child: Row(
+          clipBehavior: Clip.antiAlias,
+          child: SnowfallBackground(
+            flakes: 18,
+            child: Row(
             children: [
-              Container(
-                width: 42,
-                height: 42,
-                decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.17),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: const Icon(
-                  Icons.smart_toy_outlined,
-                  color: Colors.white,
-                  size: 25,
-                ),
+              const PulsingOrb(
+                size: 42,
+                icon: Icons.smart_toy_outlined,
+                colors: [Color(0x55FFFFFF), Color(0x22FFFFFF)],
               ),
               const SizedBox(width: 11),
               const Expanded(
@@ -583,6 +618,59 @@ class _HomeScreenState extends State<HomeScreen> {
               const Icon(
                 Icons.arrow_forward_ios_rounded,
                 color: Colors.white,
+                size: 14,
+              ),
+            ],
+          ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _build3DBanner(ThemeData theme) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      child: PremiumInteractiveCard(
+        onTap: () => context.push('/showcase-3d'),
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+          decoration: BoxDecoration(
+            color: theme.colorScheme.surface,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: theme.primaryColor.withOpacity(0.22)),
+          ),
+          child: Row(
+            children: [
+              const Badge3D(),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '3D Showcase',
+                      style: TextStyle(
+                        color: theme.colorScheme.onSurface,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      'Rotate and inspect products in interactive 3D.',
+                      style: TextStyle(
+                        color: theme.colorScheme.onSurfaceVariant,
+                        fontSize: 10,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Icon(
+                Icons.arrow_forward_ios_rounded,
+                color: theme.primaryColor,
                 size: 14,
               ),
             ],
@@ -619,16 +707,25 @@ class _HomeScreenState extends State<HomeScreen> {
               ],
             ),
           ),
-          TextButton.icon(
-            onPressed: _refreshProducts,
-            icon: const Icon(
-              Icons.refresh_rounded,
-              size: 16,
+          Badge(
+            isLabelVisible: _adv.advancedCount > 0,
+            label: Text('${_adv.advancedCount}'),
+            child: IconButton.filledTonal(
+              tooltip: 'Filter & Sort',
+              visualDensity: VisualDensity.compact,
+              onPressed: _openFilterSheet,
+              icon: const Icon(Icons.tune_rounded, size: 18),
             ),
-            label: const Text(
-              'Refresh',
-              style: TextStyle(fontSize: 11),
-            ),
+          ),
+          const SizedBox(width: 4),
+          IconButton(
+            tooltip: 'Refresh',
+            visualDensity: VisualDensity.compact,
+            onPressed: () {
+              Catalog3D.refresh(force: true);
+              _refreshProducts();
+            },
+            icon: const Icon(Icons.refresh_rounded, size: 20),
           ),
         ],
       ),
@@ -680,7 +777,41 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  // Combines the quick category chips, search box and the advanced sheet.
+  // The "3D" chip is a pseudo-category that filters by active 3D models.
+  ProductFilters get _currentFilters => _adv.copyWith(
+        category: _selectedCategory == '3D' ? 'All' : _selectedCategory,
+        query: _searchQuery,
+        only3D: _selectedCategory == '3D' || _adv.only3D,
+      );
+
+  Future<void> _openFilterSheet() async {
+    final result = await showProductFilterSheet(
+      context,
+      current: _currentFilters,
+      products: _lastProducts,
+    );
+
+    if (result == null || !mounted) return;
+
+    setState(() {
+      _adv = result.copyWith(category: 'All', query: '');
+      if (result.only3D && _selectedCategory != '3D') {
+        _selectedCategory = '3D';
+      } else if (!result.only3D && _selectedCategory == '3D') {
+        _selectedCategory = 'All';
+      }
+    });
+  }
+
   Widget _buildProductsGrid() {
+    return ValueListenableBuilder<Set<int>>(
+      valueListenable: Catalog3D.ids,
+      builder: (context, _, __) => _buildProductsFuture(),
+    );
+  }
+
+  Widget _buildProductsFuture() {
     return FutureBuilder<List<Product>>(
       future: _productsFuture,
       builder: (context, snapshot) {
@@ -738,24 +869,12 @@ class _HomeScreenState extends State<HomeScreen> {
           );
         }
 
-        final filteredProducts = allProducts.where((product) {
-          final databaseCategory =
-              product.category.trim().toLowerCase();
+        _lastProducts = allProducts;
 
-          final buttonCategory =
-              _selectedCategory.trim().toLowerCase();
-
-          final matchesCategory = _selectedCategory == 'All' ||
-              databaseCategory.contains(buttonCategory) ||
-              buttonCategory.contains(databaseCategory);
-
-          final matchesSearch = _searchQuery.isEmpty ||
-              product.name.toLowerCase().contains(_searchQuery) ||
-              product.category.toLowerCase().contains(_searchQuery) ||
-              product.description.toLowerCase().contains(_searchQuery);
-
-          return matchesCategory && matchesSearch;
-        }).toList();
+        final filteredProducts = _currentFilters.apply(
+          allProducts,
+          Catalog3D.ids.value,
+        );
 
         if (filteredProducts.isEmpty) {
           return SliverToBoxAdapter(
@@ -784,6 +903,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       setState(() {
                         _selectedCategory = 'All';
                         _searchQuery = '';
+                        _adv = const ProductFilters();
                       });
                     },
                     child: const Text('Clear Filters'),
@@ -856,9 +976,13 @@ class _HomeScreenState extends State<HomeScreen> {
                   return const ProductCardSkeleton();
                 }
 
-                return ProductCard(
-                  product: products[index],
-                  onProductDeleted: _refreshProducts,
+                return FadeSlideIn.staggered(
+                  key: ValueKey('home-card-${products[index].id}'),
+                  index: index,
+                  child: ProductCard(
+                    product: products[index],
+                    onProductDeleted: _refreshProducts,
+                  ),
                 );
               },
               childCount: isLoading

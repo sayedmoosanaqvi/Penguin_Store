@@ -147,7 +147,7 @@ class _AdminScreenState extends State<AdminScreen> {
           (fileLength <= 0 ||
               fileLength > ProductService.maxModelBytes)) {
         _showMessage(
-          'GLB file must be under 20 MB.',
+          'GLB file must be under 60 MB.',
           error: true,
         );
         return;
@@ -159,7 +159,7 @@ class _AdminScreenState extends State<AdminScreen> {
           bytes.lengthInBytes >
               ProductService.maxModelBytes) {
         _showMessage(
-          'GLB file must be under 20 MB.',
+          'GLB file must be under 60 MB.',
           error: true,
         );
         return;
@@ -843,7 +843,7 @@ class _AdminScreenState extends State<AdminScreen> {
               )
             else
               const Text(
-                'No GLB selected. Maximum file size: 20 MB.',
+                'No GLB selected. Maximum file size: 60 MB.',
                 style: TextStyle(
                   color: Colors.white70,
                   fontSize: 12,

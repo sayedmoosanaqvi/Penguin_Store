@@ -53,9 +53,19 @@ class ThemeProvider extends ChangeNotifier {
   static ThemeData lightTheme() {
     return ThemeData(
       useMaterial3: true,
+      pageTransitionsTheme: const PageTransitionsTheme(
+        builders: {
+          TargetPlatform.android: ZoomPageTransitionsBuilder(),
+          TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
+          TargetPlatform.windows: ZoomPageTransitionsBuilder(),
+          TargetPlatform.macOS: CupertinoPageTransitionsBuilder(),
+          TargetPlatform.linux: ZoomPageTransitionsBuilder(),
+        },
+      ),
       brightness: Brightness.light,
       primaryColor: PRIMARY_BLUE,
-      scaffoldBackgroundColor: WHITE,
+      // Icy-white canvas: white cards now float on a faint snow-blue.
+      scaffoldBackgroundColor: Color(0xFFF5F9FE),
       fontFamily: 'Poppins',
       colorScheme: ColorScheme.light(
         primary: PRIMARY_BLUE,
@@ -149,6 +159,15 @@ class ThemeProvider extends ChangeNotifier {
   static ThemeData darkTheme() {
     return ThemeData(
       useMaterial3: true,
+      pageTransitionsTheme: const PageTransitionsTheme(
+        builders: {
+          TargetPlatform.android: ZoomPageTransitionsBuilder(),
+          TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
+          TargetPlatform.windows: ZoomPageTransitionsBuilder(),
+          TargetPlatform.macOS: CupertinoPageTransitionsBuilder(),
+          TargetPlatform.linux: ZoomPageTransitionsBuilder(),
+        },
+      ),
       brightness: Brightness.dark,
       primaryColor: PRIMARY_BLUE,
       scaffoldBackgroundColor: Color(0xFF121212), // Deep clean dark

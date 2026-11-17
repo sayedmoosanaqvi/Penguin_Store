@@ -38,7 +38,7 @@ class ProductService {
       10 * 1024 * 1024;
 
   static const int maxModelBytes =
-      20 * 1024 * 1024;
+      60 * 1024 * 1024;
 
   Future<String?> _getAccessToken() async {
     final prefs =
@@ -370,7 +370,7 @@ class ProductService {
     if (bytes.isEmpty ||
         bytes.length > maxModelBytes) {
       throw Exception(
-        'GLB must be under 20 MB.',
+        'GLB must be under 60 MB.',
       );
     }
 

@@ -1,21 +1,29 @@
 
 import os
 import re
+import time
 import uuid
 import logging
+from collections import defaultdict, deque
+from pathlib import Path
+from threading import Lock
+from typing import Any
 from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 from supabase import create_client, Client
 
 from fastapi import (
+    BackgroundTasks,
     FastAPI,
     Depends,
     HTTPException,
+    Request,
     UploadFile,
     File,
     status,
 )
+from fastapi.responses import JSONResponse
 
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
@@ -24,6 +32,10 @@ from pydantic import BaseModel
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session, load_only
+
+_BACKEND_ENV_PATH = Path(__file__).resolve().parents[1] / ".env"
+load_dotenv(_BACKEND_ENV_PATH)
+load_dotenv()
 
 from . import models, schemas
 from .database import engine, get_db
@@ -49,9 +61,6 @@ from .routers import (
     visual_search,
     premium_3d,
 )
-
-
-load_dotenv()
 
 logger = logging.getLogger(__name__)
 
@@ -214,6 +223,60 @@ def health_check():
     }
 
 
+# Security Headers & Auth Rate-Limiting Middleware
+_rate_limit_lock = Lock()
+_auth_request_buckets: dict[str, deque[float]] = defaultdict(deque)
+_AUTH_RATE_WINDOW_SECONDS = 60.0
+_AUTH_RATE_MAX_REQUESTS = 20
+
+
+@app.middleware("http")
+async def security_and_rate_limit_middleware(request: Request, call_next):
+    path = request.url.path
+    if request.method == "POST" and path in ("/login", "/signup"):
+        client_ip = (
+            request.client.host if request.client else "unknown"
+        )
+        bucket_key = f"{client_ip}:{path}"
+        now = time.monotonic()
+        with _rate_limit_lock:
+            q = _auth_request_buckets[bucket_key]
+            while q and (now - q[0]) > _AUTH_RATE_WINDOW_SECONDS:
+                q.popleft()
+            if len(q) >= _AUTH_RATE_MAX_REQUESTS:
+                return JSONResponse(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    content={
+                        "detail": "Too many authentication attempts. Please wait a minute and try again."
+                    },
+                )
+            q.append(now)
+
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault(
+        "Referrer-Policy",
+        "strict-origin-when-cross-origin",
+    )
+    return response
+
+
+class TrackEventRequest(BaseModel):
+    action: str
+    details: Any = None
+    timestamp: str | None = None
+    device: str | None = None
+
+
+@app.post("/track")
+def track_user_action(payload: TrackEventRequest):
+    return {
+        "status": "recorded",
+        "action": payload.action[:100],
+    }
+
+
 # Public product fields only
 PRODUCT_PUBLIC_COLUMNS = (
     models.Product.id,
@@ -266,6 +329,7 @@ def _run_product_read(db: Session, operation):
 )
 def create_product(
     product: schemas.ProductCreate,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     admin_user: User = Depends(get_current_admin_user),
 ):
@@ -285,6 +349,12 @@ def create_product(
             status_code=409,
             detail="Product could not be created.",
         )
+
+    # Automatically generate & cache the 2048-D visual search embedding
+    background_tasks.add_task(
+        visual_search.index_single_product_by_id,
+        db_product.id,
+    )
 
     return db_product
 
@@ -384,6 +454,7 @@ def delete_product(
     try:
         db.delete(product)
         db.commit()
+        visual_search.invalidate_visual_cache()
 
     except IntegrityError:
         db.rollback()

@@ -3,6 +3,7 @@ import os
 import hmac
 import secrets
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import bcrypt
 from dotenv import load_dotenv
@@ -18,6 +19,8 @@ from sqlalchemy.orm import Session
 from .database import get_db
 from .models import User
 
+_BACKEND_ENV_PATH = Path(__file__).resolve().parents[1] / ".env"
+load_dotenv(_BACKEND_ENV_PATH)
 load_dotenv()
 
 ALGORITHM = "HS256"
@@ -226,3 +229,59 @@ async def verify_agent(
         )
 
     return api_key
+
+
+def get_optional_current_user(
+    credentials: HTTPAuthorizationCredentials | None = Security(
+        bearer_scheme
+    ),
+    db: Session = Depends(get_db),
+) -> User | None:
+    if credentials is None or not credentials.credentials:
+        return None
+
+    if credentials.scheme.lower() != "bearer":
+        raise _auth_error()
+
+    payload = decode_access_token(credentials.credentials)
+
+    user = db.query(User).filter(
+        User.email == payload["sub"]
+    ).first()
+
+    if user is None:
+        raise _auth_error()
+
+    return user
+
+
+async def verify_admin_or_agent(
+    api_key: str | None = Security(api_key_header),
+    credentials: HTTPAuthorizationCredentials | None = Security(
+        bearer_scheme
+    ),
+    db: Session = Depends(get_db),
+) -> str:
+    if api_key and hmac.compare_digest(
+        api_key,
+        AGENT_API_KEY,
+    ):
+        return "agent"
+
+    if credentials is not None and credentials.scheme.lower() == "bearer":
+        payload = decode_access_token(credentials.credentials)
+        user = db.query(User).filter(
+            User.email == payload["sub"]
+        ).first()
+        if user is not None and user.is_admin:
+            return f"admin:{user.email}"
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Administrator access required.",
+        )
+
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Administrator or CTRL-X agent credentials required.",
+    )
+

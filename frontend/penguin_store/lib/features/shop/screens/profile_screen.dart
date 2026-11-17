@@ -434,6 +434,12 @@ class ProfileScreen extends StatelessWidget {
                         );
                       },
                     ),
+                    _ProfileTile(
+                      icon: Icons.view_in_ar_rounded,
+                      title: '3D Studio',
+                      subtitle: 'Upload GLB models to the 3D filter',
+                      onTap: () => context.push('/admin/3d-studio'),
+                    ),
                   ],
                 ),
               ],

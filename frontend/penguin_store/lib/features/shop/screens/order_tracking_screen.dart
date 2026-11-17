@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:penguin_store/config/api_config.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class OrderTrackingScreen extends StatefulWidget {
   final String customerEmail;
@@ -24,15 +25,37 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
   }
 
   Future<void> _fetchOrderHistory() async {
+    final cleanEmail = widget.customerEmail.trim();
+    if (cleanEmail.isEmpty) {
+      setState(() {
+        _orders = [];
+        _isLoading = false;
+      });
+      return;
+    }
+
     try {
+      final prefs = await SharedPreferences.getInstance();
+      final token = prefs.getString('jwt_token')?.trim();
+      final headers = <String, String>{
+        'Accept': 'application/json',
+        if (token != null && token.isNotEmpty)
+          'Authorization': 'Bearer $token',
+      };
+
       final response = await http.get(
-        Uri.parse('${ApiConfig.baseUrl}/api/orders/history/${widget.customerEmail}'),
+        Uri.parse(
+          '${ApiConfig.baseUrl}/api/orders/history/${Uri.encodeComponent(cleanEmail)}',
+        ),
+        headers: headers,
       );
+
+      if (!mounted) return;
 
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
         setState(() {
-          _orders = data['orders'];
+          _orders = data['orders'] ?? [];
           _isLoading = false;
         });
       } else {
@@ -42,6 +65,7 @@ class _OrderTrackingScreenState extends State<OrderTrackingScreen> {
         });
       }
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _errorMessage = 'Error connecting to server: $e';
         _isLoading = false;

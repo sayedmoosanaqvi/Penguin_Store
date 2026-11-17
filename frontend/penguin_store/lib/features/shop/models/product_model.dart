@@ -1,3 +1,5 @@
+import 'package:penguin_store/config/api_config.dart';
+
 class Product {
   final int id; 
   final String name;
@@ -25,6 +27,17 @@ class Product {
     this.isFeatured = false,
   });
 
+  /// Backend-generated assets (e.g. 3D poster images) are stored as
+  /// relative paths so they keep working when the API domain changes.
+  static String resolveImageUrl(String? raw) {
+    final url = (raw ?? '').trim();
+    if (url.startsWith('/')) {
+      final base = ApiConfig.baseUrl.replaceFirst(RegExp(r'/$'), '');
+      return '$base$url';
+    }
+    return url;
+  }
+
   factory Product.fromJson(Map<String, dynamic> json) {
     return Product(
       id: json['id'],
@@ -34,10 +47,10 @@ class Product {
       originalPrice: json['original_price'] != null 
           ? (json['original_price'] as num).toDouble() 
           : null,
-      imageUrl: json['image_url'],
+      imageUrl: resolveImageUrl(json['image_url']?.toString()),
       category: json['category'],
-      rating: (json['rating'] as num).toDouble(),
-      reviews: json['reviews'],
+      rating: (json['rating'] as num?)?.toDouble() ?? 0.0,
+      reviews: (json['reviews'] as num?)?.toInt() ?? 0,
       discountPercent: json['discount_percent'],
       isFeatured: json['is_featured'] ?? false,
     );

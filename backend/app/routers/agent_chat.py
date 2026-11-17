@@ -195,6 +195,10 @@ def _extract_agent_payload(
         "cart_action"
     )
 
+    order_action = result.get(
+        "order_action"
+    )
+
     data_type = result.get(
         "data_type",
         "text",
@@ -249,6 +253,23 @@ def _extract_agent_payload(
                 continue
 
             # ---------------------------------------------------------------
+            # Order status action
+            # ---------------------------------------------------------------
+
+            if (
+                tool_name == "check_order_status"
+                and isinstance(parsed, dict)
+                and "order" in parsed
+            ):
+                if order_action is None:
+                    order_action = parsed
+
+                if data_type == "text":
+                    data_type = "order_tracker"
+
+                continue
+
+            # ---------------------------------------------------------------
             # Product search
             #
             # IMPORTANT:
@@ -297,6 +318,7 @@ def _extract_agent_payload(
         "data_type": data_type,
         "suggested_products": suggested_products,
         "cart_action": cart_action,
+        "order_action": order_action,
     }
 
 

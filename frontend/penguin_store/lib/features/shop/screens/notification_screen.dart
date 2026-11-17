@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:penguin_store/config/api_config.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class NotificationScreen extends StatefulWidget {
   final String userEmail;
@@ -23,8 +24,18 @@ class _NotificationScreenState extends State<NotificationScreen> {
     _fetchNotifications();
   }
 
+  Future<Map<String, String>> _buildAuthHeaders() async {
+    final prefs = await SharedPreferences.getInstance();
+    final token = prefs.getString('jwt_token')?.trim();
+    return {
+      'Accept': 'application/json',
+      if (token != null && token.isNotEmpty)
+        'Authorization': 'Bearer $token',
+    };
+  }
+
   Future<void> _fetchNotifications() async {
-    if (widget.userEmail.isEmpty) {
+    if (widget.userEmail.trim().isEmpty) {
       setState(() {
         _errorMessage = "Please log in to view notifications.";
         _isLoading = false;
@@ -33,9 +44,15 @@ class _NotificationScreenState extends State<NotificationScreen> {
     }
 
     try {
+      final headers = await _buildAuthHeaders();
       final response = await http.get(
-        Uri.parse('${ApiConfig.baseUrl}/api/notifications/${widget.userEmail}'),
+        Uri.parse(
+          '${ApiConfig.baseUrl}/api/notifications/${Uri.encodeComponent(widget.userEmail.trim())}',
+        ),
+        headers: headers,
       );
+
+      if (!mounted) return;
 
       if (response.statusCode == 200) {
         setState(() {
@@ -49,6 +66,7 @@ class _NotificationScreenState extends State<NotificationScreen> {
         });
       }
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _errorMessage = 'Error connecting to server: $e';
         _isLoading = false;
@@ -60,11 +78,13 @@ class _NotificationScreenState extends State<NotificationScreen> {
     if (_notifications[index]['is_read']) return; // Skip if already read
 
     try {
+      final headers = await _buildAuthHeaders();
       final response = await http.put(
         Uri.parse('${ApiConfig.baseUrl}/api/notifications/$id/read'),
+        headers: headers,
       );
 
-      if (response.statusCode == 200) {
+      if (mounted && response.statusCode == 200) {
         setState(() {
           _notifications[index]['is_read'] = true;
         });

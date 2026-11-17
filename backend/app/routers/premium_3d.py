@@ -23,7 +23,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from supabase import create_client
 
+import io
+import time
+
 from ..database import get_db
+from ..glb_optimizer import GLBError, optimize_glb
 from ..models import PremiumSubscription, Product, Product3DAsset, User
 from ..security import get_current_admin_user, get_current_user
 
@@ -35,8 +39,21 @@ router = APIRouter(
 )
 
 BUCKET = "penguin-store-3d"
-SIGNED_URL_LIFETIME = 300
-MAX_GLB_BYTES = 20 * 1024 * 1024
+PUBLIC_IMAGE_BUCKET = "penguin-store-assets"
+
+# Signed URLs live 15 minutes and are cached server-side for 10 minutes so
+# opening a 3D model does not need a Supabase round-trip every time.
+SIGNED_URL_LIFETIME = 900
+SIGNED_URL_CACHE_SECONDS = 600
+_signed_url_cache: dict[int, tuple[str, float]] = {}
+_signed_url_lock = Lock()
+
+# Raw uploads may be large downloads from the internet; they are optimised
+# (textures capped at 512 px) before being stored. Supabase free tier caps a
+# single object at 50 MB, so the optimised file must fit that limit.
+MAX_GLB_BYTES = 60 * 1024 * 1024
+MAX_STORED_GLB_BYTES = 50 * 1024 * 1024
+MAX_POSTER_BYTES = 10 * 1024 * 1024
 
 DEMO_DURATION = timedelta(hours=1)
 _demo_expires: dict[int, datetime] = {}
@@ -201,6 +218,12 @@ def _sign_asset(
             detail="3D model metadata is invalid.",
         )
 
+    with _signed_url_lock:
+        cached = _signed_url_cache.get(asset.id)
+
+    if cached is not None and cached[1] > time.monotonic():
+        return cached[0]
+
     url, client = _service_client()
 
     try:
@@ -244,6 +267,12 @@ def _sign_asset(
                 "Unexpected signed URL origin."
             )
 
+        with _signed_url_lock:
+            _signed_url_cache[asset.id] = (
+                signed_url,
+                time.monotonic() + SIGNED_URL_CACHE_SECONDS,
+            )
+
         return signed_url
 
     except Exception:
@@ -262,6 +291,27 @@ def _sign_asset(
 
 # Public list of products with active 3D models.
 # Automatically includes newly uploaded 3D shirts.
+def _optimize_for_web(content: bytes) -> bytes:
+    """Validate + cap embedded textures at 512 px. Falls back to original."""
+    try:
+        optimized, stats = optimize_glb(content)
+    except GLBError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    logger.info("GLB optimisation: %s", stats)
+
+    if len(optimized) > MAX_STORED_GLB_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                "Model is still larger than 50 MB after optimisation. "
+                "Compress it (e.g. gltf.report / gltfpack) and retry."
+            ),
+        )
+
+    return optimized
+
+
 @router.get("/catalog")
 def get_3d_catalog(
     db: Session = Depends(get_db),
@@ -610,6 +660,9 @@ def update_model_activation(
     db.commit()
     db.refresh(asset)
 
+    with _signed_url_lock:
+        _signed_url_cache.pop(asset.id, None)
+
     return {
         "id": asset.id,
         "is_active": asset.is_active,
@@ -676,7 +729,7 @@ def upload_product_glb(
             status_code=413,
             detail=(
                 "GLB must be nonempty "
-                "and at most 20 MB."
+                "and at most 60 MB."
             ),
         )
 
@@ -697,6 +750,8 @@ def upload_product_glb(
             status_code=422,
             detail="Invalid GLB 2.0 file.",
         )
+
+    content = _optimize_for_web(content)
 
     _, client = _service_client()
 
@@ -860,3 +915,407 @@ def view_public_3d_showcase(
         ),
     }
 
+
+
+# ---------------------------------------------------------------------------
+# 3D Studio additions: standalone uploads, 3D filter feed, management.
+# Everything below is additive; the endpoints above are unchanged.
+# ---------------------------------------------------------------------------
+
+SHOWCASE_CATEGORY = "3D Models"
+
+_PUBLIC_PRODUCT_FIELDS = (
+    "id",
+    "name",
+    "description",
+    "price",
+    "original_price",
+    "image_url",
+    "category",
+    "rating",
+    "reviews",
+    "discount_percent",
+    "is_featured",
+)
+
+
+def _public_product(product: Product) -> dict:
+    return {
+        field: getattr(product, field, None)
+        for field in _PUBLIC_PRODUCT_FIELDS
+    }
+
+
+def _store_glb(
+    db: Session,
+    product_id: int,
+    content: bytes,
+    display_name: str,
+    variant_name: str | None,
+) -> Product3DAsset:
+    """Upload an (already optimised) GLB to private storage + register it."""
+    _, client = _service_client()
+
+    storage_path = f"products/{product_id}/{uuid.uuid4().hex}.glb"
+    storage = client.storage.from_(BUCKET)
+
+    try:
+        storage.upload(
+            path=storage_path,
+            file=content,
+            file_options={
+                "content-type": "model/gltf-binary",
+                "upsert": "false",
+                "cache-control": "3600",
+            },
+        )
+    except Exception:
+        logger.exception("Private GLB upload failed for product %s", product_id)
+        raise HTTPException(
+            status_code=502,
+            detail="GLB upload to Supabase failed.",
+        )
+
+    asset = Product3DAsset(
+        product_id=product_id,
+        display_name=display_name,
+        variant_name=variant_name or None,
+        storage_bucket=BUCKET,
+        storage_path=storage_path,
+        model_format="glb",
+        file_size_bytes=len(content),
+        is_active=True,
+    )
+
+    try:
+        db.add(asset)
+        db.commit()
+        db.refresh(asset)
+    except Exception:
+        db.rollback()
+        logger.exception("DB registration failed for %s", storage_path)
+        try:
+            storage.remove([storage_path])
+        except Exception:
+            logger.exception("Failed to clean orphan GLB %s", storage_path)
+        raise HTTPException(status_code=500, detail="GLB registration failed.")
+
+    return asset
+
+
+def _read_glb_upload(file: UploadFile) -> bytes:
+    if not file.filename or not file.filename.lower().endswith(".glb"):
+        raise HTTPException(status_code=415, detail="Upload a .glb model file.")
+
+    try:
+        content = file.file.read(MAX_GLB_BYTES + 1)
+    finally:
+        file.file.close()
+
+    if not content or len(content) > MAX_GLB_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail="GLB must be nonempty and at most 60 MB.",
+        )
+
+    if content[:4] != b"glTF":
+        raise HTTPException(status_code=422, detail="Invalid GLB 2.0 file.")
+
+    return _optimize_for_web(content)
+
+
+def _poster_png(name: str, size: int = 640) -> bytes:
+    """Icy-blue placeholder poster for 3D-only products."""
+    from PIL import Image, ImageDraw, ImageFont
+
+    img = Image.new("RGB", (size, size))
+    px = img.load()
+
+    top, bottom = (232, 244, 255), (160, 205, 245)
+    for y in range(size):
+        t = y / (size - 1)
+        row = tuple(round(top[i] + (bottom[i] - top[i]) * t) for i in range(3))
+        for x in range(size):
+            px[x, y] = row
+
+    draw = ImageDraw.Draw(img)
+
+    # Simple cube glyph = "3D model".
+    c, s = size // 2, size // 5
+    ink = (30, 136, 229)
+    draw.polygon([(c, c - s - 40), (c + s, c - s // 2 - 40), (c, c - 40),
+                  (c - s, c - s // 2 - 40)], outline=ink, width=6)
+    draw.polygon([(c - s, c - s // 2 - 40), (c, c - 40), (c, c + s - 40),
+                  (c - s, c + s // 2 - 40)], outline=ink, width=6)
+    draw.polygon([(c + s, c - s // 2 - 40), (c, c - 40), (c, c + s - 40),
+                  (c + s, c + s // 2 - 40)], outline=ink, width=6)
+
+    try:
+        title_font = ImageFont.load_default(size=34)
+        badge_font = ImageFont.load_default(size=28)
+    except TypeError:
+        title_font = badge_font = ImageFont.load_default()
+
+    words, lines, line = name.split(), [], ""
+    for word in words:
+        trial = f"{line} {word}".strip()
+        if draw.textlength(trial, font=title_font) > size - 80 and line:
+            lines.append(line)
+            line = word
+        else:
+            line = trial
+    if line:
+        lines.append(line)
+
+    y = c + s + 10
+    for text in lines[:2]:
+        w = draw.textlength(text, font=title_font)
+        draw.text(((size - w) / 2, y), text, fill=(24, 54, 96), font=title_font)
+        y += 44
+
+    badge = "3D VIEW"
+    bw = draw.textlength(badge, font=badge_font)
+    draw.rounded_rectangle([(size - bw - 56, 24), (size - 24, 72)],
+                           radius=22, fill=ink)
+    draw.text((size - bw - 40, 33), badge, fill="white", font=badge_font)
+
+    out = io.BytesIO()
+    img.save(out, format="PNG", optimize=True)
+    return out.getvalue()
+
+
+@router.get("/poster/{product_id}.png")
+def get_generated_poster(
+    product_id: int,
+    db: Session = Depends(get_db),
+):
+    product = db.query(Product.name).filter(Product.id == product_id).first()
+
+    if product is None:
+        raise HTTPException(status_code=404, detail="Product not found.")
+
+    return Response(
+        content=_poster_png(product.name or "3D Model"),
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
+
+
+@router.get("/showcase")
+def get_3d_showcase(
+    response: Response,
+    db: Session = Depends(get_db),
+):
+    """Public feed for the '3D' filter: products + their active models."""
+    response.headers["Cache-Control"] = "public, max-age=30"
+
+    assets = db.query(Product3DAsset).filter(
+        Product3DAsset.is_active.is_(True),
+        Product3DAsset.storage_bucket == BUCKET,
+        Product3DAsset.model_format == "glb",
+    ).order_by(Product3DAsset.id).all()
+
+    by_product: dict[int, list[Product3DAsset]] = {}
+    for asset in assets:
+        by_product.setdefault(asset.product_id, []).append(asset)
+
+    if not by_product:
+        return {"count": 0, "items": []}
+
+    products = db.query(Product).filter(
+        Product.id.in_(list(by_product))
+    ).all()
+
+    items = []
+    for product in sorted(products, key=lambda p: p.id, reverse=True):
+        item = _public_product(product)
+        item["models"] = [
+            {
+                "id": a.id,
+                "display_name": a.display_name,
+                "variant_name": a.variant_name,
+                "file_size_bytes": a.file_size_bytes,
+            }
+            for a in by_product[product.id]
+        ]
+        items.append(item)
+
+    return {"count": len(items), "items": items}
+
+
+@router.get("/admin/models")
+def list_admin_models(
+    db: Session = Depends(get_db),
+    admin: User = Depends(get_current_admin_user),
+):
+    rows = db.query(Product3DAsset, Product.name).join(
+        Product, Product.id == Product3DAsset.product_id
+    ).order_by(Product3DAsset.id.desc()).all()
+
+    return {
+        "items": [
+            {
+                "id": a.id,
+                "product_id": a.product_id,
+                "product_name": name,
+                "display_name": a.display_name,
+                "variant_name": a.variant_name,
+                "file_size_bytes": a.file_size_bytes,
+                "is_active": bool(a.is_active),
+                "created_at": a.created_at.isoformat() if a.created_at else None,
+            }
+            for a, name in rows
+        ]
+    }
+
+
+@router.delete("/admin/models/{model_id}")
+def delete_admin_model(
+    model_id: int,
+    db: Session = Depends(get_db),
+    admin: User = Depends(get_current_admin_user),
+):
+    asset = db.get(Product3DAsset, model_id)
+
+    if asset is None:
+        raise HTTPException(status_code=404, detail="3D model not found.")
+
+    path, bucket = asset.storage_path, asset.storage_bucket
+
+    db.delete(asset)
+    db.commit()
+
+    with _signed_url_lock:
+        _signed_url_cache.pop(model_id, None)
+
+    try:
+        _, client = _service_client()
+        client.storage.from_(bucket).remove([path])
+    except Exception:
+        logger.exception("Could not remove storage object %s", path)
+
+    return {"id": model_id, "deleted": True}
+
+
+@router.post(
+    "/admin/showcase-upload",
+    status_code=status.HTTP_201_CREATED,
+)
+def upload_standalone_3d_product(
+    file: UploadFile = File(...),
+    name: str = Form(...),
+    price: float = Form(...),
+    category: str = Form(SHOWCASE_CATEGORY),
+    description: str = Form(""),
+    variant_name: str = Form(""),
+    poster: UploadFile | None = File(None),
+    db: Session = Depends(get_db),
+    admin: User = Depends(get_current_admin_user),
+):
+    """
+    One-step 3D upload: creates a store product (so it can be searched,
+    filtered and bought) and attaches the optimised GLB to it.
+    """
+    name = name.strip()
+    category = category.strip() or SHOWCASE_CATEGORY
+
+    if not 1 <= len(name) <= 150:
+        raise HTTPException(status_code=422, detail="Name must be 1-150 characters.")
+    if not 0 < price <= 1_000_000:
+        raise HTTPException(status_code=422, detail="Enter a valid price.")
+    if len(variant_name.strip()) > 100:
+        raise HTTPException(status_code=422, detail="Variant name too long.")
+
+    content = _read_glb_upload(file)
+
+    poster_url: str | None = None
+
+    if poster is not None and poster.filename:
+        try:
+            from PIL import Image
+
+            raw = poster.file.read(MAX_POSTER_BYTES + 1)
+            if not raw or len(raw) > MAX_POSTER_BYTES:
+                raise ValueError("size")
+
+            with Image.open(io.BytesIO(raw)) as im:
+                im = im.convert("RGB")
+                im.thumbnail((1024, 1024))
+                buf = io.BytesIO()
+                im.save(buf, format="JPEG", quality=88, optimize=True)
+
+            _, client = _service_client()
+            poster_path = f"showcase/{uuid.uuid4().hex}.jpg"
+            bucket = client.storage.from_(PUBLIC_IMAGE_BUCKET)
+            bucket.upload(
+                path=poster_path,
+                file=buf.getvalue(),
+                file_options={
+                    "content-type": "image/jpeg",
+                    "upsert": "false",
+                    "cache-control": "31536000",
+                },
+            )
+            poster_url = bucket.get_public_url(poster_path)
+        except HTTPException:
+            raise
+        except Exception:
+            logger.exception("Poster upload failed; using generated poster.")
+            poster_url = None
+        finally:
+            poster.file.close()
+
+    product = Product(
+        name=name,
+        description=description.strip() or f"Interactive 3D model: {name}",
+        price=price,
+        image_url=poster_url or "",
+        category=category,
+        rating=0.0,
+        reviews=0,
+        is_featured=False,
+        stock=50,
+        fulfillment_type="IN_HOUSE",
+        supplier_id="PENGUIN_DIRECT",
+    )
+
+    try:
+        db.add(product)
+        db.flush()
+
+        if not poster_url:
+            product.image_url = f"/api/premium-3d/poster/{product.id}.png"
+
+        db.commit()
+        db.refresh(product)
+    except Exception:
+        db.rollback()
+        logger.exception("Failed creating 3D product")
+        raise HTTPException(status_code=500, detail="Could not create product.")
+
+    try:
+        asset = _store_glb(
+            db,
+            product.id,
+            content,
+            display_name=f"{name} 3D View"[:150],
+            variant_name=variant_name.strip() or None,
+        )
+    except HTTPException:
+        # Do not leave a model-less product behind.
+        try:
+            db.delete(product)
+            db.commit()
+        except Exception:
+            db.rollback()
+        raise
+
+    return {
+        "product_id": product.id,
+        "model_id": asset.id,
+        "name": product.name,
+        "category": product.category,
+        "image_url": product.image_url,
+        "file_size_bytes": asset.file_size_bytes,
+        "is_active": True,
+    }

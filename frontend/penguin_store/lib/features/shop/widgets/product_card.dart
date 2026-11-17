@@ -1,23 +1,28 @@
-
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:shimmer/shimmer.dart';
 
+import 'package:penguin_store/config/api_config.dart';
 import 'package:penguin_store/features/shop/models/product_model.dart';
 import 'package:penguin_store/features/shop/providers/auth_provider.dart';
 import 'package:penguin_store/features/shop/providers/cart_provider.dart';
 import 'package:penguin_store/features/shop/screens/product_details_screen.dart';
 import 'package:penguin_store/features/shop/services/product_service.dart';
+import 'package:penguin_store/features/shop/services/showcase_3d_service.dart';
+import 'package:penguin_store/core/widgets/animated_widgets.dart';
 import 'package:penguin_store/features/shop/widgets/custom_toast.dart';
 
 class ProductCard extends StatefulWidget {
   final Product product;
   final VoidCallback onProductDeleted;
+  final String? heroTag;
 
   const ProductCard({
     super.key,
     required this.product,
     required this.onProductDeleted,
+    this.heroTag,
   });
 
   @override
@@ -33,6 +38,7 @@ class _ProductCardState extends State<ProductCard> {
       context,
       MaterialPageRoute(
         builder: (_) => ProductDetailScreen(
+          product: widget.product,
           productId: widget.product.id,
         ),
       ),
@@ -158,6 +164,9 @@ class _ProductCardState extends State<ProductCard> {
                 .round()
             : null);
 
+    final effectiveHeroTag =
+        widget.heroTag ?? 'product-${product.id}';
+
     return LayoutBuilder(
       builder: (context, constraints) {
         final compact = constraints.maxWidth < 180;
@@ -209,29 +218,15 @@ class _ProductCardState extends State<ProductCard> {
                         fit: StackFit.expand,
                         children: [
                           Hero(
-                            tag: 'product-${product.id}',
+                            tag: effectiveHeroTag,
                             child: ClipRRect(
                               borderRadius: const BorderRadius.vertical(
                                 top: Radius.circular(10),
                               ),
-                              child: Image.network(
-                                product.imageUrl,
-                                fit: BoxFit.contain,
-                                errorBuilder: (context, error, stack) {
-                                  return Container(
-                                    color: isDark
-                                        ? Colors.white.withOpacity(0.04)
-                                        : Colors.grey.shade50,
-                                    child: Center(
-                                      child: Icon(
-                                        Icons.image_not_supported_outlined,
-                                        color: theme.colorScheme
-                                            .onSurfaceVariant,
-                                        size: 30,
-                                      ),
-                                    ),
-                                  );
-                                },
+                              child: _ProductNetworkImage(
+                                productId: product.id,
+                                imageUrl: product.imageUrl,
+                                isDark: isDark,
                               ),
                             ),
                           ),
@@ -255,6 +250,18 @@ class _ProductCardState extends State<ProductCard> {
                                     Colors.white,
                                   ),
                                 ],
+                                ValueListenableBuilder<Set<int>>(
+                                  valueListenable: Catalog3D.ids,
+                                  builder: (context, ids, _) {
+                                    if (!ids.contains(product.id)) {
+                                      return const SizedBox.shrink();
+                                    }
+                                    return const Padding(
+                                      padding: EdgeInsets.only(top: 4),
+                                      child: Badge3D(compact: true),
+                                    );
+                                  },
+                                ),
                               ],
                             ),
                           ),
@@ -414,6 +421,143 @@ class _ProductCardState extends State<ProductCard> {
           ),
         );
       },
+    );
+  }
+}
+
+class _ProductNetworkImage extends StatefulWidget {
+  final int productId;
+  final String imageUrl;
+  final bool isDark;
+
+  const _ProductNetworkImage({
+    required this.productId,
+    required this.imageUrl,
+    required this.isDark,
+  });
+
+  @override
+  State<_ProductNetworkImage> createState() =>
+      _ProductNetworkImageState();
+}
+
+class _ProductNetworkImageState extends State<_ProductNetworkImage> {
+  bool _useProxyFallback = false;
+
+  @override
+  void didUpdateWidget(covariant _ProductNetworkImage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.imageUrl != widget.imageUrl ||
+        oldWidget.productId != widget.productId) {
+      _useProxyFallback = false;
+    }
+  }
+
+  String _resolvedUrl() {
+    final trimmed = widget.imageUrl.trim();
+    final base = ApiConfig.baseUrl.replaceFirst(RegExp(r'/$'), '');
+
+    if (_useProxyFallback || trimmed.isEmpty) {
+      if (widget.productId > 0) {
+        return '$base/api/search/image-proxy?product_id=${widget.productId}'
+            '${trimmed.isNotEmpty ? '&url=${Uri.encodeComponent(trimmed)}' : ''}';
+      }
+      if (trimmed.isNotEmpty) {
+        return '$base/api/search/image-proxy?url=${Uri.encodeComponent(trimmed)}';
+      }
+      return '';
+    }
+
+    // Legacy S3 URLs return application/octet-stream, so route them through proxy on Web
+    if (kIsWeb &&
+        trimmed.contains('penguin-store-assets-v1.s3')) {
+      return '$base/api/search/image-proxy?product_id=${widget.productId}&url=${Uri.encodeComponent(trimmed)}';
+    }
+
+    return trimmed;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final targetUrl = _resolvedUrl();
+
+    if (targetUrl.isEmpty) {
+      return _buildErrorFallback(theme);
+    }
+
+    return Container(
+      width: double.infinity,
+      height: double.infinity,
+      color: widget.isDark
+          ? Colors.white.withOpacity(0.03)
+          : const Color(0xFFF8FAFC),
+      child: Image.network(
+        targetUrl,
+        key: ValueKey(targetUrl),
+        width: double.infinity,
+        height: double.infinity,
+        fit: BoxFit.contain,
+        frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
+          if (wasSynchronouslyLoaded || frame != null) {
+            return child;
+          }
+          return Shimmer.fromColors(
+            baseColor: widget.isDark
+                ? Colors.grey.shade800
+                : Colors.grey.shade200,
+            highlightColor: widget.isDark
+                ? Colors.grey.shade700
+                : Colors.grey.shade50,
+            child: Container(
+              width: double.infinity,
+              height: double.infinity,
+              color: Colors.white,
+            ),
+          );
+        },
+        errorBuilder: (context, error, stack) {
+          if (!_useProxyFallback &&
+              (widget.productId > 0 || widget.imageUrl.trim().isNotEmpty)) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (mounted && !_useProxyFallback) {
+                setState(() {
+                  _useProxyFallback = true;
+                });
+              }
+            });
+            return Shimmer.fromColors(
+              baseColor: widget.isDark
+                  ? Colors.grey.shade800
+                  : Colors.grey.shade200,
+              highlightColor: widget.isDark
+                  ? Colors.grey.shade700
+                  : Colors.grey.shade50,
+              child: Container(
+                width: double.infinity,
+                height: double.infinity,
+                color: Colors.white,
+              ),
+            );
+          }
+          return _buildErrorFallback(theme);
+        },
+      ),
+    );
+  }
+
+  Widget _buildErrorFallback(ThemeData theme) {
+    return Container(
+      color: widget.isDark
+          ? Colors.white.withOpacity(0.04)
+          : Colors.grey.shade50,
+      child: Center(
+        child: Icon(
+          Icons.image_not_supported_outlined,
+          color: theme.colorScheme.onSurfaceVariant,
+          size: 30,
+        ),
+      ),
     );
   }
 }

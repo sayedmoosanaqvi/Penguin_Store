@@ -1,7 +1,11 @@
 import json
 import logging
+import os
+import re
+from pathlib import Path
 from typing import Annotated, Any, Optional, Sequence, TypedDict
 
+from dotenv import load_dotenv
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_groq import ChatGroq
 from langgraph.checkpoint.memory import MemorySaver
@@ -17,19 +21,60 @@ from app.agent.tools import (
     search_knowledge_base,
 )
 
+_BACKEND_ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
+load_dotenv(_BACKEND_ENV_PATH)
+load_dotenv()
 
 logger = logging.getLogger("uvicorn.error")
 
 
 # ===========================================================================
-# SHARED CLOUD LLM
+# SHARED CLOUD LLM & MULTI-MODEL FAILOVER
 # ===========================================================================
 
 llm = ChatGroq(
     model="openai/gpt-oss-20b",
     temperature=0,
     max_retries=1,
+    timeout=25.0,
 )
+
+_FALLBACK_LLMS = [
+    llm,
+    ChatGroq(
+        model="openai/gpt-oss-120b",
+        temperature=0,
+        max_retries=1,
+        timeout=25.0,
+    ),
+    ChatGroq(
+        model="qwen/qwen3.8-27b",
+        temperature=0,
+        max_retries=1,
+        timeout=25.0,
+    ),
+]
+
+
+def _invoke_llm_safe(messages: list[Any]) -> Optional[AIMessage]:
+    """
+    Invoke Groq LLM with automatic multi-model failover across
+    independent rate-limit buckets so CTRL-X never crashes with HTTP 500
+    when a single model hits a 429 TPM rate limit.
+    """
+    for candidate_llm in _FALLBACK_LLMS:
+        try:
+            response = candidate_llm.invoke(messages)
+            if response is not None:
+                return response
+        except Exception as exc:
+            logger.warning(
+                "[CTRL-X LLM FAILOVER] Model %s failed: %s",
+                getattr(candidate_llm, "model_name", "unknown"),
+                exc,
+            )
+            continue
+    return None
 
 
 # ===========================================================================
@@ -52,6 +97,8 @@ class AgentState(TypedDict):
     suggested_products: list[dict[str, Any]]
 
     cart_action: Optional[dict[str, Any]]
+
+    order_action: Optional[dict[str, Any]]
 
 
 # ===========================================================================
@@ -414,12 +461,59 @@ def _normalize_shopping_plan(
     }
 
 
+def _match_product_from_recent(
+    user_query: str,
+    recent_products: list[dict[str, Any]],
+) -> Optional[int]:
+    """
+    Resolve a product ID from recently shown products when the customer
+    says e.g. 'add the pink shirt to my cart' or 'add product 144 to cart'.
+    """
+    q_lower = user_query.lower()
+
+    # Check explicit ID mention like 'id 144' or '#144' or 'product 144'
+    id_match = re.search(r"\b(?:id|product|#)\s*(\d+)\b", q_lower)
+    if id_match:
+        return int(id_match.group(1))
+
+    if not recent_products:
+        return None
+
+    # Check ordinal reference like 'first one'
+    if "first" in q_lower and len(recent_products) >= 1:
+        pid = recent_products[0].get("id")
+        return int(pid) if pid is not None else None
+
+    # Check name token overlap
+    best_id = None
+    best_overlap = 0
+    q_words = set(re.findall(r"[a-z0-9]+", q_lower)) - {
+        "add", "to", "my", "the", "cart", "buy", "purchase", "want", "please", "one"
+    }
+
+    for prod in recent_products:
+        pname = str(prod.get("name") or "").lower()
+        pid = prod.get("id")
+        if pid is None or not pname:
+            continue
+        if pname in q_lower:
+            return int(pid)
+        p_words = set(re.findall(r"[a-z0-9]+", pname))
+        overlap = len(q_words & p_words)
+        if overlap > best_overlap:
+            best_overlap = overlap
+            best_id = int(pid)
+
+    return best_id if best_overlap > 0 else None
+
+
 def _create_initial_shopping_plan(
     state: AgentState,
 ) -> dict[str, Any]:
     """
     Let the Shopping Planner translate natural language into one bounded
-    database action.
+    database action, with automatic multi-model failover and deterministic
+    fallback.
     """
 
     user_query = _latest_user_text(
@@ -431,6 +525,18 @@ def _create_initial_shopping_plan(
             state
         )
     )
+
+    recent_products = state.get("suggested_products") or []
+    recent_products_summary = [
+        {
+            "id": p.get("id"),
+            "name": p.get("name"),
+            "price": p.get("price"),
+            "category": p.get("category"),
+        }
+        for p in recent_products[:5]
+        if isinstance(p, dict)
+    ]
 
     planner_prompt = """
 You are the Shopping Planner inside Penguin Store's autonomous
@@ -461,7 +567,8 @@ prices, styles, categories, gifts, outfits, or shopping help.
 
 "add_to_cart"
 Use only when the customer clearly asks to add/buy a specific product
-and its exact product ID is known from the conversation.
+and its exact product ID is known from the conversation or recently
+suggested products list.
 
 SEARCH RULES:
 
@@ -488,14 +595,14 @@ SEARCH RULES:
 6. Use is_featured=true only when the customer requests featured,
    popular, or trending products.
 
-7. Never invent product IDs.
+7. Never invent product IDs. Use the IDs from Recently Suggested Products when matching a cart request.
 
 8. If unsure, choose a broad safe search rather than guessing taxonomy.
 
 Return JSON only.
 """.strip()
 
-    response = llm.invoke(
+    response = _invoke_llm_safe(
         [
             {
                 "role": "system",
@@ -505,21 +612,56 @@ Return JSON only.
                 "role": "user",
                 "content": (
                     f"Conversation:\n{conversation}\n\n"
+                    f"Recently Suggested Products:\n{json.dumps(recent_products_summary)}\n\n"
                     f"Latest request:\n{user_query}"
                 ),
             },
         ]
     )
 
-    raw_plan = _parse_json_object(
-        _message_text(
-            response
-        )
+    raw_plan = (
+        _parse_json_object(_message_text(response))
+        if response is not None
+        else {}
     )
+
+    if not raw_plan:
+        # Deterministic fallback if LLM is rate-limited
+        q_lower = user_query.lower()
+        price_match = re.search(
+            r"(?:under|below|less than|max|budget)\s*\$?\s*(\d+(?:\.\d+)?)",
+            q_lower,
+        )
+        max_p = float(price_match.group(1)) if price_match else None
+        is_cart = any(
+            phrase in q_lower
+            for phrase in ("add to cart", "add the ", "add this", "buy the ")
+        )
+        raw_plan = {
+            "action": "add_to_cart" if is_cart else "search",
+            "search_term": user_query,
+            "max_price": max_p,
+            "is_featured": True if "featured" in q_lower or "trending" in q_lower else None,
+        }
 
     plan = _normalize_shopping_plan(
         raw_plan
     )
+
+    # If user clearly asked to add a named product to cart, resolve its ID from recent products
+    q_lower = user_query.lower()
+    if (
+        plan["action"] == "add_to_cart"
+        or ("cart" in q_lower and any(w in q_lower for w in ("add", "put", "buy")))
+    ):
+        if plan.get("product_id") is None:
+            resolved_id = _match_product_from_recent(
+                user_query,
+                recent_products,
+            )
+            if resolved_id is not None:
+                plan["action"] = "add_to_cart"
+                plan["product_id"] = resolved_id
 
     logger.info(
         "[SHOPPING PLAN] %s",
@@ -553,7 +695,7 @@ def _create_catalog_fallback_plan(
     catalog_json = json.dumps(
         catalog,
         ensure_ascii=False,
-    )[:14000]
+    )[:6000]
 
     prompt = """
 You are the Catalog Recovery Planner for Penguin Store.
@@ -607,7 +749,7 @@ RULES:
 Return JSON only.
 """.strip()
 
-    response = llm.invoke(
+    response = _invoke_llm_safe(
         [
             {
                 "role": "system",
@@ -626,11 +768,9 @@ Return JSON only.
     )
 
     plan = _normalize_shopping_plan(
-        _parse_json_object(
-            _message_text(
-                response
-            )
-        )
+        _parse_json_object(_message_text(response))
+        if response is not None
+        else {}
     )
 
     # Fallback is always a product search.
@@ -754,6 +894,7 @@ GROUNDING RULES:
 - Keep the response relatively short because Flutter separately displays
   the products as visual product cards.
 - Do not build a large Markdown product table. The UI already renders cards.
+- Never claim that a product has already been added to the cart in this search response.
 - Mention at most a few useful highlights.
 """.strip()
 
@@ -766,7 +907,7 @@ GROUNDING RULES:
     )
 
     try:
-        response = llm.invoke(
+        response = _invoke_llm_safe(
             [
                 {
                     "role": "system",
@@ -783,12 +924,13 @@ GROUNDING RULES:
             ]
         )
 
-        final_text = _message_text(
-            response
-        )
+        if response is not None:
+            final_text = _message_text(
+                response
+            )
 
-        if final_text:
-            return final_text
+            if final_text:
+                return final_text
 
     except Exception:
         logger.exception(
@@ -861,6 +1003,16 @@ def retrieval_agent(
             "product_id"
         )
 
+        # If product_id wasn't resolved yet, try a quick search by the user's terms
+        if product_id is None and plan.get("search_term"):
+            candidates = _execute_inventory_search(plan)
+            if len(candidates) == 1:
+                product_id = candidates[0].get("id")
+            elif len(candidates) > 1:
+                resolved = _match_product_from_recent(user_query, candidates)
+                if resolved is not None:
+                    product_id = resolved
+
         if product_id is None:
             message = (
                 "I can add the product for you, but I need to know exactly "
@@ -877,6 +1029,7 @@ def retrieval_agent(
                 "data_type": "text",
                 "suggested_products": [],
                 "cart_action": None,
+                "order_action": None,
             }
 
         raw_cart_result = add_to_cart.invoke(
@@ -913,10 +1066,10 @@ def retrieval_agent(
             )
 
             final_text = (
-                f"I've prepared "
+                f"I've added "
                 f"{product.get('name', 'the selected product')} "
                 f"(quantity {cart_result.get('quantity', 1)}) "
-                "for the cart."
+                "to your shopping cart."
             )
 
             data_type = "cart_update"
@@ -936,6 +1089,7 @@ def retrieval_agent(
                 )
                 else None
             ),
+            "order_action": None,
         }
 
     # -----------------------------------------------------------------------
@@ -1031,6 +1185,7 @@ def retrieval_agent(
         ),
         "suggested_products": products,
         "cart_action": None,
+        "order_action": None,
     }
 
 
@@ -1145,60 +1300,187 @@ def _only_new_messages(
 
 
 # ===========================================================================
-# KNOWLEDGE NODE
+# KNOWLEDGE NODE (Deterministic RAG + Multi-Model Grounded Synthesis)
 # ===========================================================================
 
 def knowledge_agent(
     state: AgentState,
 ):
-    result = knowledge_react_agent.invoke(
-        {
-            "messages": state["messages"],
-        }
+    user_query = _latest_user_text(state)
+
+    raw_policy = search_knowledge_base.invoke(
+        {"query": user_query or "return refund warranty payment shipping policy"}
+    )
+    policy_context = str(raw_policy or "").strip()
+
+    prompt = (
+        "You are the Store Knowledge Agent for Penguin Store.\n\n"
+        "Answer the customer's question concisely using ONLY the official "
+        "Penguin Store knowledge base context below.\n"
+        "Never invent a policy, refund period, warranty condition, "
+        "payment rule, or store policy."
     )
 
-    new_messages = _only_new_messages(
-        state["messages"],
-        result.get(
-            "messages",
-            [],
-        ),
+    response = _invoke_llm_safe(
+        [
+            {"role": "system", "content": prompt},
+            {
+                "role": "user",
+                "content": (
+                    f"Customer question:\n{user_query}\n\n"
+                    f"OFFICIAL KNOWLEDGE BASE:\n{policy_context}"
+                ),
+            },
+        ]
     )
+
+    final_text = _message_text(response) if response is not None else ""
+    if not final_text:
+        final_text = (
+            policy_context
+            if policy_context
+            else "Our official policy covers 14-day returns for IN_HOUSE items, 30-day returns for DROPSHIP items, 1-year electronic warranties, and encrypted Stripe / Cash-on-Delivery payments."
+        )
 
     return {
-        "messages": new_messages,
+        "messages": [AIMessage(content=final_text)],
         "data_type": "text",
         "suggested_products": [],
         "cart_action": None,
+        "order_action": None,
     }
 
 
 # ===========================================================================
-# LOGISTICS NODE
+# LOGISTICS NODE (Deterministic Order Lookup + Rich Order Tracker Card)
 # ===========================================================================
+
+def _extract_order_id(state: AgentState) -> Optional[int]:
+    user_query = _latest_user_text(state)
+    # Match 'order #12', 'order 12', '#12', or standalone number
+    m = re.search(r"(?:order\s*#?\s*|#\s*)(\d+)\b", user_query, re.IGNORECASE)
+    if m:
+        return int(m.group(1))
+    m_any = re.search(r"\b(\d+)\b", user_query)
+    if m_any:
+        return int(m_any.group(1))
+    return None
+
 
 def logistics_agent(
     state: AgentState,
 ):
-    result = logistics_react_agent.invoke(
-        {
-            "messages": state["messages"],
+    user_query = _latest_user_text(state)
+    order_id = _extract_order_id(state)
+
+    if order_id is None:
+        return {
+            "messages": [
+                AIMessage(
+                    content=(
+                        "I'd be happy to check your order status! Please share "
+                        "your numeric Order ID (for example: `Order #1`) and I'll "
+                        "look up its real-time fulfillment and tracking details."
+                    )
+                )
+            ],
+            "data_type": "text",
+            "suggested_products": [],
+            "cart_action": None,
+            "order_action": None,
         }
+
+    raw_order_json = check_order_status.invoke({"order_id": order_id})
+    parsed_order = _parse_json_dict(raw_order_json)
+
+    if parsed_order.get("error"):
+        error_msg = str(parsed_order["error"])
+        return {
+            "messages": [
+                AIMessage(
+                    content=(
+                        f"I checked our live order system, but {error_msg} "
+                        "Please double-check your Order ID and try again."
+                    )
+                )
+            ],
+            "data_type": "text",
+            "suggested_products": [],
+            "cart_action": None,
+            "order_action": None,
+        }
+
+    order_info = parsed_order.get("order") or {}
+    overall_status = order_info.get("overall_status", "PROCESSING")
+    total = order_info.get("total", 0.0)
+    tracking_list = order_info.get("tracking_numbers") or []
+    items = order_info.get("items") or []
+
+    # Enrich order_info so Flutter's _buildOrderTrackerCard displays all fields cleanly
+    has_dropship = any(
+        i.get("fulfillment_type") == "DROPSHIP" for i in items
+    )
+    has_inhouse = any(
+        i.get("fulfillment_type") == "IN_HOUSE" for i in items
+    )
+    if has_dropship and has_inhouse:
+        est_delivery = "1-2 Days (In-House) / 7-10 Days (Dropship)"
+    elif has_dropship:
+        est_delivery = "7-10 Business Days (International Partner)"
+    else:
+        est_delivery = "1-2 Business Days (Sargodha Warehouse)"
+
+    order_info["status"] = overall_status
+    order_info["estimated_delivery"] = est_delivery
+    order_info["shipping_address"] = (
+        f"Tracking: {', '.join(tracking_list)}"
+        if tracking_list
+        else "Verified Customer Address"
+    )
+    parsed_order["order"] = order_info
+
+    prompt = (
+        "You are the Logistics Agent for Penguin Store.\n\n"
+        "Summarize the real order status below concisely and accurately.\n"
+        "- Mention the Order ID, overall status, items, fulfillment type, and tracking numbers.\n"
+        "- Never invent tracking numbers or delivery claims not present in the JSON."
     )
 
-    new_messages = _only_new_messages(
-        state["messages"],
-        result.get(
-            "messages",
-            [],
-        ),
+    response = _invoke_llm_safe(
+        [
+            {"role": "system", "content": prompt},
+            {
+                "role": "user",
+                "content": (
+                    f"Customer question:\n{user_query}\n\n"
+                    f"REAL ORDER DATA:\n{json.dumps(parsed_order, ensure_ascii=False)}"
+                ),
+            },
+        ]
     )
+
+    final_text = _message_text(response) if response is not None else ""
+    if not final_text:
+        item_names = ", ".join(
+            f"{i.get('product_name', 'Item')} (x{i.get('quantity', 1)})"
+            for i in items
+        )
+        trk_str = (
+            f"Tracking: {', '.join(tracking_list)}."
+            if tracking_list
+            else "No tracking number assigned yet."
+        )
+        final_text = (
+            f"Order #{order_id} is currently **{overall_status}** "
+            f"(Total: ${float(total):.2f}). Items: {item_names}. {trk_str}"
+        )
 
     return {
-        "messages": new_messages,
-        "data_type": "text",
+        "messages": [AIMessage(content=final_text)],
+        "data_type": "order_tracker",
         "suggested_products": [],
         "cart_action": None,
+        "order_action": parsed_order,
     }
 
 
@@ -1209,7 +1491,16 @@ def logistics_agent(
 def general_agent(
     state: AgentState,
 ):
-    response = llm.invoke(
+    clean_history = [
+        {
+            "role": "user" if getattr(m, "type", "") == "human" else "assistant",
+            "content": _message_text(m)[:600],
+        }
+        for m in state["messages"]
+        if getattr(m, "type", "") in {"human", "ai"} and _message_text(m)
+    ][-6:]
+
+    response = _invoke_llm_safe(
         [
             {
                 "role": "system",
@@ -1229,11 +1520,19 @@ def general_agent(
                     "Never invent store data."
                 ),
             },
-            *list(
-                state["messages"]
-            ),
+            *clean_history,
         ]
     )
+
+    if response is None:
+        response = AIMessage(
+            content=(
+                "Hello! I'm CTRL-X, your AI shopping assistant at Penguin Store. "
+                "I can help you discover products, add items to your cart, "
+                "track orders by Order ID, or answer store policy questions. "
+                "How can I help you today?"
+            )
+        )
 
     return {
         "messages": [
@@ -1242,16 +1541,131 @@ def general_agent(
         "data_type": "text",
         "suggested_products": [],
         "cart_action": None,
+        "order_action": None,
     }
 
 
 # ===========================================================================
-# SUPERVISOR AGENT
+# SUPERVISOR AGENT (Fast Hybrid Intent Router + Multi-Model Fallback)
 # ===========================================================================
+
+def _fast_intent_route(user_query: str) -> Optional[str]:
+    """
+    Route unambiguous user requests in <0.1ms without consuming LLM tokens.
+    Returns None only when the query is ambiguous and needs LLM classification.
+    """
+    q = user_query.strip().lower()
+    if not q:
+        return "GeneralAgent"
+
+    # 1. Pure greetings / thanks / capabilities
+    if re.fullmatch(
+        r"(hi|hello|hey|good\s+(morning|afternoon|evening)|thanks|thank\s+you|bye|goodbye|who\s+are\s+you|what\s+can\s+you\s+do)[!?.]*",
+        q,
+    ):
+        return "GeneralAgent"
+
+    # 2. Order status / tracking
+    if any(
+        kw in q
+        for kw in (
+            "where is order",
+            "track order",
+            "track my order",
+            "order status",
+            "status of order",
+            "my order #",
+            "order #",
+            "shipment status",
+            "delivery status",
+        )
+    ) or re.search(r"\border\s+\d+\b", q):
+        return "LogisticsAgent"
+
+    # 3. Store policies / Knowledge Base
+    if any(
+        kw in q
+        for kw in (
+            "return policy",
+            "refund policy",
+            "refund window",
+            "how to return",
+            "can i return",
+            "warranty",
+            "warranties",
+            "payment method",
+            "how can i pay",
+            "what payment",
+            "restocking fee",
+            "shipping policy",
+            "fulfillment policy",
+            "where do you ship from",
+            "warehouse location",
+        )
+    ):
+        return "KnowledgeAgent"
+
+    # 4. Product discovery / Shopping / Cart actions
+    if any(
+        kw in q
+        for kw in (
+            "add to cart",
+            "add the ",
+            "buy ",
+            "do you have",
+            "show me",
+            "find ",
+            "search ",
+            "looking for",
+            "recommend",
+            "suggest",
+            "shirt",
+            "shirts",
+            "shoe",
+            "shoes",
+            "sneaker",
+            "boot",
+            "watch",
+            "watches",
+            "perfume",
+            "fragrance",
+            "laptop",
+            "phone",
+            "iphone",
+            "charger",
+            "airpods",
+            "bag",
+            "handbag",
+            "furniture",
+            "kitchen",
+            "grocery",
+            "groceries",
+            "under $",
+            "in stock",
+            "catalog",
+            "products",
+        )
+    ):
+        return "RetrievalAgent"
+
+    return None
+
 
 def supervisor_node(
     state: AgentState,
 ):
+    user_query = _latest_user_text(state)
+    fast_route = _fast_intent_route(user_query)
+
+    if fast_route is not None:
+        logger.info(
+            "[SUPERVISOR] Fast-routed request to %s",
+            fast_route,
+        )
+        return {
+            "next_agent": fast_route,
+        }
+
     system_prompt = """
 You are the Supervisor Agent for Penguin Store's multi-agent autonomous
 e-commerce system.
@@ -1259,81 +1673,43 @@ e-commerce system.
 Route the customer's latest request to exactly ONE specialist.
 
 RetrievalAgent
-- products
-- inventory
-- prices
-- product recommendations
-- shopping
-- outfits
-- gifts
-- styles
-- categories
-- cart requests
-- buying products
-- occasion-based shopping
+- products, inventory, prices, recommendations, shopping, outfits, gifts, styles, categories, cart requests, buying products
 
 KnowledgeAgent
-- return policy
-- refunds
-- warranties
-- payment methods
-- store rules
-- fulfillment policies
-- general shipping policies
+- return policy, refunds, warranties, payment methods, store rules, fulfillment policies, general shipping policies
 
 LogisticsAgent
-- a specific order
-- order tracking
-- shipment status
-- delivery status
-- questions involving a specific order ID
+- a specific order, order tracking, shipment status, delivery status, questions involving a specific order ID
 
 GeneralAgent
-- hello / hi / hey
-- thanks
-- goodbye
-- casual conversation
-- questions about CTRL-X capabilities
-
-Examples:
-
-"Do you have shirts?" -> RetrievalAgent
-
-"I need something for a party" -> RetrievalAgent
-
-"Find black shoes under 5000" -> RetrievalAgent
-
-"What is your return policy?" -> KnowledgeAgent
-
-"How long is the refund window?" -> KnowledgeAgent
-
-"Where is order 23?" -> LogisticsAgent
-
-"Hey" -> GeneralAgent
+- hello / hi / hey, thanks, goodbye, casual conversation, questions about CTRL-X capabilities
 
 Respond ONLY with one exact route name:
-
 RetrievalAgent
 KnowledgeAgent
 LogisticsAgent
 GeneralAgent
 """.strip()
 
-    response = llm.invoke(
+    conversation = _conversation_excerpt(state, max_messages=6)
+    response = _invoke_llm_safe(
         [
             {
                 "role": "system",
                 "content": system_prompt,
             },
-            *list(
-                state["messages"]
-            ),
+            {
+                "role": "user",
+                "content": f"Conversation:\n{conversation}\n\nLatest message:\n{user_query}",
+            },
         ]
     )
 
-    route = _message_text(
-        response
-    ).lower()
+    route = (
+        _message_text(response).lower()
+        if response is not None
+        else "retrievalagent"
+    )
 
     if "retrievalagent" in route:
         next_agent = "RetrievalAgent"
@@ -1348,8 +1724,7 @@ GeneralAgent
         next_agent = "GeneralAgent"
 
     else:
-        # Safe conversational fallback.
-        next_agent = "GeneralAgent"
+        next_agent = "RetrievalAgent"
 
     logger.info(
         "[SUPERVISOR] Routed request to %s",

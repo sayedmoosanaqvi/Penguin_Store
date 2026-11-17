@@ -13,6 +13,7 @@ import '../models/product_model.dart';
 import '../providers/cart_provider.dart';
 import '../services/product_service.dart';
 import '../services/premium_3d_service.dart';
+import '../services/showcase_3d_service.dart';
 
 import 'premium_subscription_screen.dart';
 import 'product_3d_viewer_screen.dart';
@@ -38,6 +39,25 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
 
   bool _opening3D = false;
   bool _deletingProduct = false;
+
+  // Signed GLB URLs fetched ahead of time so the viewer opens instantly.
+  final Map<int, Future<String>> _urlPrefetch = {};
+  List<Product3DModel> _availabilityModels = const [];
+
+  void _prefetchModels(Product product, Product3DAvailability availability) {
+    _availabilityModels = availability.models;
+    for (final model in availability.models.take(2)) {
+      _urlPrefetch.putIfAbsent(model.id, () {
+        final future = Showcase3DService().fetchModelUrl(product.id, model.id);
+        // A failed prefetch must not poison the real tap.
+        future.catchError((_) {
+          _urlPrefetch.remove(model.id);
+          return '';
+        });
+        return future;
+      });
+    }
+  }
 
   static String get _baseUrl =>
       ApiConfig.baseUrl.replaceFirst(RegExp(r'/$'), '');
@@ -183,58 +203,49 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
     });
 
     try {
-      final endpoint = Uri.parse(
-        '$_baseUrl/api/premium-3d/'
-        'products/${product.id}/'
-        'models/${model.id}/showcase',
-      );
-
-      final response = await http
-          .get(endpoint, headers: {'Accept': 'application/json'})
-          .timeout(const Duration(seconds: 40));
-
-      if (response.statusCode != 200) {
-        String errorMessage = 'Unable to load the 3D showcase.';
-
-        try {
-          final decoded = jsonDecode(response.body);
-
-          if (decoded is Map && decoded['detail'] is String) {
-            errorMessage = decoded['detail'] as String;
-          }
-        } catch (_) {}
-
-        throw Exception(errorMessage);
-      }
-
-      final decoded = jsonDecode(response.body);
-
-      if (decoded is! Map || decoded['model_url'] is! String) {
-        throw Exception('Invalid 3D model response.');
-      }
-
-      final modelUrl = decoded['model_url'] as String;
-
-      final parsedUrl = Uri.tryParse(modelUrl);
-
-      if (parsedUrl == null ||
-          parsedUrl.scheme != 'https' ||
-          parsedUrl.host.isEmpty) {
-        throw Exception('Invalid secure 3D model URL.');
-      }
+      // Re-uses the URL fetched while the page was idle when available.
+      final modelUrl = await (_urlPrefetch[model.id] ??
+          Showcase3DService().fetchModelUrl(product.id, model.id));
 
       if (!mounted) return;
 
+      final models = _availabilityModels;
+
       await Navigator.of(context).push(
-        MaterialPageRoute<void>(
-          builder: (_) {
+        PageRouteBuilder<void>(
+          transitionDuration: const Duration(milliseconds: 380),
+          pageBuilder: (_, __, ___) {
             return Product3DViewerScreen(
               productName: product.name,
               modelUrl: modelUrl,
+              posterUrl: product.imageUrl.isNotEmpty ? product.imageUrl : null,
+              productId: product.id,
+              models: models,
+              currentModelId: model.id,
+            );
+          },
+          transitionsBuilder: (_, animation, __, child) {
+            return FadeTransition(
+              opacity: CurvedAnimation(
+                parent: animation,
+                curve: Curves.easeOutCubic,
+              ),
+              child: ScaleTransition(
+                scale: Tween<double>(begin: 0.96, end: 1).animate(
+                  CurvedAnimation(
+                    parent: animation,
+                    curve: Curves.easeOutCubic,
+                  ),
+                ),
+                child: child,
+              ),
             );
           },
         ),
       );
+
+      // Signed URLs expire; drop the cached one after use.
+      _urlPrefetch.remove(model.id);
     } catch (e) {
       debugPrint('3D showcase error: $e');
 
@@ -597,6 +608,8 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
             availability.models.isEmpty) {
           return _buildComingSoonCard(product, theme);
         }
+
+        _prefetchModels(product, availability);
 
         return _buildAvailable3DCard(product, availability, theme);
       },

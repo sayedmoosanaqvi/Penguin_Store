@@ -197,6 +197,12 @@ class RightDrawer extends StatelessWidget {
                 ),
                 _drawerTile(
                   context,
+                  icon: Icons.view_in_ar_rounded,
+                  title: '3D Showcase',
+                  onTap: () => _openPage(context, '/showcase-3d'),
+                ),
+                _drawerTile(
+                  context,
                   icon: Icons.shopping_bag_outlined,
                   title: 'My Cart',
                   onTap: () => _navigate(context, '/cart'),
@@ -294,6 +300,15 @@ class RightDrawer extends StatelessWidget {
                           builder: (_) => const AdminScreen(),
                         ),
                       );
+                    },
+                  ),
+                  _drawerTile(
+                    context,
+                    icon: Icons.view_in_ar_rounded,
+                    title: '3D Studio',
+                    onTap: () {
+                      Navigator.of(context).pop();
+                      context.push('/admin/3d-studio');
                     },
                   ),
                 ],

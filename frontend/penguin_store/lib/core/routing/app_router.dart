@@ -12,6 +12,8 @@ import 'package:penguin_store/features/shop/screens/cart_screen.dart';
 import 'package:penguin_store/features/shop/screens/discover_screen.dart';
 import 'package:penguin_store/features/shop/screens/support_screen.dart';
 import 'package:penguin_store/features/shop/screens/profile_screen.dart';
+import 'package:penguin_store/features/shop/screens/showcase_3d_screen.dart';
+import 'package:penguin_store/features/shop/screens/admin_3d_studio_screen.dart';
 import 'package:penguin_store/features/shop/services/notification_service.dart';
 import 'package:penguin_store/features/shop/widgets/bottom_nav_bar.dart';
 
@@ -78,6 +80,14 @@ final GoRouter appRouter = GoRouter(
     GoRoute(
       path: '/ctrlx',
       builder: (context, state) => const CtrlXScreen(),
+    ),
+    GoRoute(
+      path: '/showcase-3d',
+      builder: (context, state) => const Showcase3DScreen(),
+    ),
+    GoRoute(
+      path: '/admin/3d-studio',
+      builder: (context, state) => const Admin3DStudioScreen(),
     ),
     GoRoute(
       path: '/orders',

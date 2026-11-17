@@ -4,6 +4,9 @@ import 'package:go_router/go_router.dart';
 import 'package:penguin_store/features/shop/models/product_model.dart';
 import 'package:penguin_store/features/shop/services/product_service.dart';
 import 'package:penguin_store/features/shop/widgets/product_card.dart';
+import 'package:penguin_store/features/shop/widgets/product_filters.dart';
+import 'package:penguin_store/features/shop/services/showcase_3d_service.dart';
+import 'package:penguin_store/core/widgets/animated_widgets.dart';
 
 class DiscoverScreen extends StatefulWidget {
   const DiscoverScreen({super.key});
@@ -19,11 +22,14 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
   late Future<List<Product>> _productsFuture;
   String _selectedCategory = 'All';
   String _searchQuery = '';
+  ProductFilters _adv = const ProductFilters();
+  List<Product> _lastProducts = const [];
 
   @override
   void initState() {
     super.initState();
     _productsFuture = _service.fetchProducts();
+    Catalog3D.refresh();
   }
 
   @override
@@ -39,9 +45,27 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
     await _productsFuture;
   }
 
+  Future<void> _openFilterSheet() async {
+    final result = await showProductFilterSheet(
+      context,
+      current: _adv.copyWith(query: _searchQuery, category: _selectedCategory),
+      products: _lastProducts,
+    );
+    if (result == null || !mounted) return;
+    setState(() {
+      _adv = result.copyWith(category: 'All', query: '');
+      if (result.only3D) {
+        _selectedCategory = '3D';
+      } else if (_selectedCategory == '3D') {
+        _selectedCategory = 'All';
+      }
+    });
+  }
+
   IconData _categoryIcon(String category) {
     final value = category.toLowerCase();
 
+    if (value == '3d') return Icons.view_in_ar_rounded;
     if (value.contains('shirt')) return Icons.checkroom_outlined;
     if (value.contains('pant')) return Icons.style_outlined;
     if (value.contains('shoe')) return Icons.directions_run_outlined;
@@ -80,7 +104,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
         children: [
           Padding(
             padding: const EdgeInsets.fromLTRB(14, 8, 14, 12),
-            child: TextField(
+            child: Row(children: [Expanded(child: TextField(
               controller: _searchController,
               onChanged: (value) {
                 setState(() => _searchQuery = value.toLowerCase().trim());
@@ -122,7 +146,18 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
                   ),
                 ),
               ),
+            )),
+            const SizedBox(width: 8),
+            Badge(
+              isLabelVisible: _adv.advancedCount > 0,
+              label: Text('${_adv.advancedCount}'),
+              child: IconButton.filledTonal(
+                tooltip: 'Filter & Sort',
+                onPressed: _openFilterSheet,
+                icon: const Icon(Icons.tune_rounded),
+              ),
             ),
+            ]),
           ),
           Expanded(
             child: FutureBuilder<List<Product>>(
@@ -155,8 +190,11 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
 
                 final allProducts = snapshot.data ?? [];
 
+                _lastProducts = allProducts;
+
                 final categories = [
                   'All',
+                  if (Catalog3D.ids.value.isNotEmpty) '3D',
                   ...{
                     for (final product in allProducts)
                       if (product.category.trim().isNotEmpty)
@@ -168,17 +206,15 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
                     ? _selectedCategory
                     : 'All';
 
-                final products = allProducts.where((product) {
-                  final matchesCategory = selected == 'All' ||
-                      product.category == selected;
-
-                  final matchesSearch = _searchQuery.isEmpty ||
-                      product.name.toLowerCase().contains(_searchQuery) ||
-                      product.category.toLowerCase().contains(_searchQuery) ||
-                      product.description.toLowerCase().contains(_searchQuery);
-
-                  return matchesCategory && matchesSearch;
-                }).toList();
+                final products = ProductFilters(
+                  category: selected == '3D' ? 'All' : selected,
+                  query: _searchQuery,
+                  sort: _adv.sort,
+                  price: _adv.price,
+                  minRating: _adv.minRating,
+                  onSale: _adv.onSale,
+                  only3D: selected == '3D' || _adv.only3D,
+                ).apply(allProducts, Catalog3D.ids.value);
 
                 return LayoutBuilder(
                   builder: (context, constraints) {
@@ -363,9 +399,14 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
                                       ),
                                       delegate: SliverChildBuilderDelegate(
                                         (context, index) {
-                                          return ProductCard(
-                                            product: products[index],
-                                            onProductDeleted: _refresh,
+                                          return FadeSlideIn.staggered(
+                                            key: ValueKey('discover-card-${products[index].id}'),
+                                            index: index,
+                                            child: ProductCard(
+                                              product: products[index],
+                                              onProductDeleted: _refresh,
+                                              heroTag: 'discover-product-${products[index].id}',
+                                            ),
                                           );
                                         },
                                         childCount: products.length,
