@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
+import 'package:penguin_store/core/widgets/animated_widgets.dart';
 import 'package:penguin_store/features/shop/providers/auth_provider.dart';
 import 'package:penguin_store/features/shop/screens/auth_screen.dart';
 import 'package:penguin_store/features/shop/screens/admin_screen.dart';
@@ -109,75 +110,116 @@ class ProfileScreen extends StatelessWidget {
           child: ListView(
             padding: const EdgeInsets.fromLTRB(14, 12, 14, 30),
             children: [
-              Container(
-                padding: const EdgeInsets.all(17),
-                decoration: BoxDecoration(
-                  color: theme.colorScheme.surface,
-                  borderRadius: BorderRadius.circular(15),
-                  border: Border.all(
-                    color: theme.dividerColor.withOpacity(0.16),
-                  ),
-                ),
-                child: Row(
-                  children: [
-                    CircleAvatar(
-                      radius: 30,
-                      backgroundColor: color.withOpacity(0.10),
-                      child: Icon(
-                        auth.isAuthenticated
-                            ? Icons.person_rounded
-                            : Icons.person_outline_rounded,
-                        size: 30,
-                        color: color,
-                      ),
+              FadeSlideIn(
+                child: Container(
+                  padding: const EdgeInsets.all(18),
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      colors: isDark
+                          ? [
+                              color.withValues(alpha: 0.16),
+                              theme.colorScheme.surface,
+                            ]
+                          : [
+                              const Color(0xFFEAF4FF),
+                              theme.colorScheme.surface,
+                            ],
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
                     ),
-                    const SizedBox(width: 14),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            auth.isAuthenticated
-                                ? 'Welcome Back!'
-                                : 'Welcome to Penguin Store',
-                            style: const TextStyle(
-                              fontSize: 15,
-                              fontWeight: FontWeight.w700,
-                            ),
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            auth.isAuthenticated
-                                ? (email ?? 'Signed in')
-                                : 'Sign in to manage your account',
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              fontSize: 11,
-                              color: theme.colorScheme.onSurfaceVariant,
-                            ),
-                          ),
-                          if (auth.isAdmin) ...[
-                            const SizedBox(height: 5),
+                    borderRadius: BorderRadius.circular(18),
+                    border: Border.all(
+                      color: color.withValues(alpha: 0.18),
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: color.withValues(alpha: 0.06),
+                        blurRadius: 12,
+                        offset: const Offset(0, 4),
+                      ),
+                    ],
+                  ),
+                  child: Row(
+                    children: [
+                      PenguinAccountAvatar(
+                        size: 62,
+                        isAuthenticated: auth.isAuthenticated,
+                        isAdmin: auth.isAdmin,
+                        email: email,
+                      ),
+                      const SizedBox(width: 15),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
                             Text(
-                              'Administrator',
-                              style: TextStyle(
-                                color: color,
-                                fontSize: 11,
-                                fontWeight: FontWeight.w700,
+                              auth.isAuthenticated
+                                  ? 'Welcome Back!'
+                                  : 'Welcome to Penguin Store',
+                              style: const TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w800,
                               ),
                             ),
+                            const SizedBox(height: 4),
+                            Text(
+                              auth.isAuthenticated
+                                  ? (email ?? 'Signed in')
+                                  : 'Sign in to manage orders, 3D & cart',
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 11.5,
+                                color: theme.colorScheme.onSurfaceVariant,
+                              ),
+                            ),
+                            if (auth.isAuthenticated) ...[
+                              const SizedBox(height: 6),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 9,
+                                  vertical: 3,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: color.withValues(alpha: 0.12),
+                                  borderRadius: BorderRadius.circular(20),
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(
+                                      auth.isAdmin
+                                          ? Icons.verified_user_rounded
+                                          : Icons.check_circle_outline_rounded,
+                                      size: 12,
+                                      color: color,
+                                    ),
+                                    const SizedBox(width: 4),
+                                    Text(
+                                      auth.isAdmin
+                                          ? 'Verified Administrator'
+                                          : 'Verified Member',
+                                      style: TextStyle(
+                                        color: color,
+                                        fontSize: 10.5,
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
                           ],
-                        ],
+                        ),
                       ),
-                    ),
-                    if (!auth.isAuthenticated)
-                      IconButton.filledTonal(
-                        tooltip: 'Log In or Register',
-                        onPressed: () => _openLogin(context),
-                        icon: const Icon(Icons.login_rounded),
-                      ),
-                  ],
+                      if (!auth.isAuthenticated)
+                        IconButton.filledTonal(
+                          tooltip: 'Log In or Register',
+                          onPressed: () => _openLogin(context),
+                          icon: const Icon(Icons.login_rounded),
+                        ),
+                    ],
+                  ),
                 ),
               ),
               if (!auth.isAuthenticated) ...[

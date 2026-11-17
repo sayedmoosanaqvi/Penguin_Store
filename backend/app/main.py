@@ -714,3 +714,136 @@ async def upload_file_to_supabase(
 
     finally:
         await file.close()
+
+
+# ===========================================================================
+# /api/v1 COMPATIBILITY ROUTES
+# Provides standardized REST paths alongside the original endpoints
+# ===========================================================================
+
+_USER_CART_STORE: dict[str, dict[int, int]] = {}
+_USER_CART_LOCK = Lock()
+
+
+class CartSyncItem(BaseModel):
+    product_id: int
+    quantity: int = 1
+
+
+app.add_api_route(
+    "/api/v1/auth/register",
+    create_user,
+    methods=["POST"],
+    status_code=status.HTTP_201_CREATED,
+    tags=["API v1"],
+)
+app.add_api_route(
+    "/api/v1/auth/login",
+    login,
+    methods=["POST"],
+    tags=["API v1"],
+)
+app.add_api_route(
+    "/api/v1/products/",
+    get_products,
+    methods=["GET"],
+    response_model=list[schemas.Product],
+    tags=["API v1"],
+)
+app.add_api_route(
+    "/api/v1/products/",
+    create_product,
+    methods=["POST"],
+    response_model=schemas.Product,
+    status_code=status.HTTP_201_CREATED,
+    tags=["API v1"],
+)
+app.add_api_route(
+    "/api/v1/orders/",
+    orders.process_checkout,
+    methods=["POST"],
+    tags=["API v1"],
+)
+app.add_api_route(
+    "/api/v1/orders/history/{customer_email}",
+    orders.get_order_history,
+    methods=["GET"],
+    tags=["API v1"],
+)
+
+
+@app.get("/api/v1/cart/", tags=["API v1"])
+def get_v1_cart(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    key = current_user.email.strip().lower()
+    with _USER_CART_LOCK:
+        saved = dict(_USER_CART_STORE.get(key, {}))
+
+    if not saved:
+        return {"user_email": key, "items": [], "subtotal": 0.0}
+
+    products = (
+        db.query(models.Product)
+        .options(load_only(*PRODUCT_PUBLIC_COLUMNS))
+        .filter(models.Product.id.in_(list(saved.keys())))
+        .all()
+    )
+    by_id = {p.id: p for p in products}
+    items_out = []
+    subtotal = 0.0
+    for pid, qty in saved.items():
+        p = by_id.get(pid)
+        if not p:
+            continue
+        line_total = round(float(p.price) * qty, 2)
+        subtotal += line_total
+        items_out.append(
+            {
+                "product_id": p.id,
+                "name": p.name,
+                "price": float(p.price),
+                "image_url": p.image_url,
+                "category": p.category,
+                "quantity": qty,
+                "line_total": line_total,
+            }
+        )
+
+    return {
+        "user_email": key,
+        "items": items_out,
+        "subtotal": round(subtotal, 2),
+    }
+
+
+@app.post("/api/v1/cart/", tags=["API v1"])
+def add_to_v1_cart(
+    item: CartSyncItem,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if item.quantity < 1 or item.quantity > 100:
+        raise HTTPException(status_code=422, detail="Quantity must be between 1 and 100.")
+
+    product = (
+        db.query(models.Product)
+        .options(load_only(models.Product.id, models.Product.name, models.Product.stock))
+        .filter(models.Product.id == item.product_id)
+        .first()
+    )
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found.")
+
+    key = current_user.email.strip().lower()
+    with _USER_CART_LOCK:
+        bucket = _USER_CART_STORE.setdefault(key, {})
+        new_qty = min(100, bucket.get(item.product_id, 0) + item.quantity)
+        bucket[item.product_id] = new_qty
+
+    return {
+        "status": "added",
+        "product_id": item.product_id,
+        "quantity": new_qty,
+    }

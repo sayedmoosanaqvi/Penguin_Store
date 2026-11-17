@@ -204,3 +204,21 @@ async def execute_admin_command(
         "status": "success",
         "response": text_reply,
     }
+
+
+# ---------------------------------------------------------
+# TOOL 4: CTRL-X EXECUTION AUDIT LOGS
+# Lets admins and evaluators inspect routed agents, tool calls, and latency
+# ---------------------------------------------------------
+@router.get("/audit-logs")
+async def read_agent_audit_logs(
+    limit: int = 50,
+    caller: str = Depends(verify_admin_or_agent),
+):
+    from app.routers.agent_chat import get_audit_logs
+
+    logs = get_audit_logs(limit=limit)
+    return {
+        "count": len(logs),
+        "logs": logs,
+    }

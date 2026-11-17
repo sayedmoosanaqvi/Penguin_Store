@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
+import 'package:penguin_store/core/widgets/animated_widgets.dart';
 import 'package:penguin_store/features/shop/providers/auth_provider.dart';
 import 'package:penguin_store/features/shop/screens/auth_screen.dart';
 import 'package:penguin_store/features/shop/screens/admin_screen.dart';
@@ -83,19 +84,7 @@ class RightDrawer extends StatelessWidget {
               children: [
                 Row(
                   children: [
-                    Container(
-                      width: 43,
-                      height: 43,
-                      decoration: BoxDecoration(
-                        color: Colors.white.withOpacity(0.17),
-                        borderRadius: BorderRadius.circular(11),
-                      ),
-                      child: const Icon(
-                        Icons.storefront_rounded,
-                        color: Colors.white,
-                        size: 25,
-                      ),
-                    ),
+                    const PenguinBrandLogo(size: 42),
                     const SizedBox(width: 10),
                     const Expanded(
                       child: Text(
@@ -121,14 +110,12 @@ class RightDrawer extends StatelessWidget {
                 const SizedBox(height: 20),
                 Row(
                   children: [
-                    CircleAvatar(
-                      radius: 23,
-                      backgroundColor: Colors.white,
-                      child: Icon(
-                        Icons.person_rounded,
-                        color: primary,
-                        size: 27,
-                      ),
+                    PenguinAccountAvatar(
+                      size: 46,
+                      isAuthenticated: auth.isAuthenticated,
+                      isAdmin: auth.isAdmin,
+                      email: email,
+                      lightRingOnPrimaryBar: true,
                     ),
                     const SizedBox(width: 12),
                     Expanded(

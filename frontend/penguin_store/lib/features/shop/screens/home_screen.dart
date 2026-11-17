@@ -1,4 +1,6 @@
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
@@ -17,7 +19,6 @@ import 'package:penguin_store/features/shop/widgets/personalized_carousel.dart';
 import 'package:penguin_store/features/shop/widgets/premium_interactive_card.dart';
 import 'package:penguin_store/features/shop/widgets/product_filters.dart';
 import 'package:penguin_store/features/shop/services/showcase_3d_service.dart';
-import 'package:penguin_store/features/shop/screens/showcase_3d_screen.dart';
 import 'package:penguin_store/core/widgets/animated_widgets.dart';
 import 'package:penguin_store/features/shop/screens/visual_search_results_screen.dart';
 
@@ -38,6 +39,8 @@ class _HomeScreenState extends State<HomeScreen> {
   String _selectedCategory = 'All';
   String _searchQuery = '';
   bool _visualSearchLoading = false;
+  bool _showColdStartBanner = false;
+  Timer? _warmupTimer;
   ProductFilters _adv = const ProductFilters();
   List<Product> _lastProducts = const [];
 
@@ -53,18 +56,37 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
-    _productsFuture = _productService.fetchProducts();
+    _productsFuture = _loadProductsWithWarmupHint();
     Catalog3D.refresh();
+  }
+
+  Future<List<Product>> _loadProductsWithWarmupHint() {
+    _warmupTimer?.cancel();
+    if (_showColdStartBanner && mounted) {
+      setState(() => _showColdStartBanner = false);
+    }
+    _warmupTimer = Timer(const Duration(seconds: 3), () {
+      if (mounted) {
+        setState(() => _showColdStartBanner = true);
+      }
+    });
+    return _productService.fetchProducts().whenComplete(() {
+      _warmupTimer?.cancel();
+      if (_showColdStartBanner && mounted) {
+        setState(() => _showColdStartBanner = false);
+      }
+    });
   }
 
   @override
   void dispose() {
+    _warmupTimer?.cancel();
     _searchController.dispose();
     super.dispose();
   }
 
   Future<void> _refreshProducts() async {
-    final future = _productService.fetchProducts();
+    final future = _loadProductsWithWarmupHint();
 
     setState(() {
       _productsFuture = future;
@@ -296,6 +318,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   const SizedBox(height: 12),
                   _buildSectionHeader(theme),
                   _buildCategoryFilter(theme),
+                  if (_showColdStartBanner) _buildWarmupBanner(theme),
                   const SizedBox(height: 12),
                 ],
               ),
@@ -802,6 +825,47 @@ class _HomeScreenState extends State<HomeScreen> {
         _selectedCategory = 'All';
       }
     });
+  }
+
+  Widget _buildWarmupBanner(ThemeData theme) {
+    return FadeSlideIn(
+      child: Container(
+        margin: const EdgeInsets.fromLTRB(12, 10, 12, 0),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        decoration: BoxDecoration(
+          gradient: const LinearGradient(
+            colors: [Color(0xFFEAF4FF), Color(0xFFD9EEFC)],
+          ),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: theme.primaryColor.withValues(alpha: 0.25),
+          ),
+        ),
+        child: Row(
+          children: [
+            SizedBox(
+              width: 16,
+              height: 16,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: theme.primaryColor,
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                'Waking up Penguin Cloud Server… (free-tier cold start takes ~15–25s)',
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                  color: theme.primaryColor,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Widget _buildProductsGrid() {

@@ -40,6 +40,7 @@ class _ProductCardState extends State<ProductCard> {
         builder: (_) => ProductDetailScreen(
           product: widget.product,
           productId: widget.product.id,
+          heroTag: widget.heroTag ?? 'product-${widget.product.id}',
         ),
       ),
     );

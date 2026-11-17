@@ -878,8 +878,8 @@ def view_public_3d_showcase(
     showcase_enabled = (
         os.getenv(
             "ENABLE_PUBLIC_3D_SHOWCASE",
-            "false",
-        ).lower() == "true"
+            "true",
+        ).strip().lower() not in ("false", "0", "no")
     )
 
     if not showcase_enabled:

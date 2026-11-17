@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:penguin_store/config/api_config.dart';
 import 'package:penguin_store/features/shop/models/product_model.dart';
@@ -107,18 +108,59 @@ class Showcase3DService {
         )
         .timeout(const Duration(seconds: 40));
 
-    if (response.statusCode != 200) {
-      String message = 'Unable to load the 3D model.';
-      try {
-        final body = jsonDecode(response.body);
-        if (body is Map && body['detail'] is String) {
-          message = body['detail'] as String;
-        }
-      } catch (_) {}
-      throw Exception(message);
+    if (response.statusCode == 200) {
+      return _extractSecureUrl(response.body);
     }
 
-    final decoded = jsonDecode(response.body);
+    String message = 'Unable to load the 3D model.';
+    try {
+      final body = jsonDecode(response.body);
+      if (body is Map && body['detail'] is String) {
+        message = body['detail'] as String;
+      }
+    } catch (_) {}
+
+    // Fallback: if /showcase returned 404/403 (e.g. backend pending redeploy or
+    // restricted mode) and user has a valid JWT token, try admin/customer endpoints.
+    if (response.statusCode == 404 || response.statusCode == 403) {
+      final prefs = await SharedPreferences.getInstance();
+      final token = prefs.getString('jwt_token')?.trim() ?? '';
+
+      if (token.isNotEmpty) {
+        final authHeaders = {
+          'Authorization': 'Bearer $token',
+          'Accept': 'application/json',
+        };
+
+        for (final fallbackPath in [
+          '$_base/api/premium-3d/admin/models/$modelId/preview',
+          '$_base/api/premium-3d/products/$productId/models/$modelId/view',
+        ]) {
+          try {
+            final fallbackRes = await http
+                .get(Uri.parse(fallbackPath), headers: authHeaders)
+                .timeout(const Duration(seconds: 25));
+            if (fallbackRes.statusCode == 200) {
+              return _extractSecureUrl(fallbackRes.body);
+            }
+          } catch (_) {}
+        }
+      }
+
+      if (message.toLowerCase().contains('public 3d showcase is unavailable')) {
+        throw Exception(
+          'Public 3D showcase is disabled on the backend server. '
+          'Set ENABLE_PUBLIC_3D_SHOWCASE=true in Render environment variables '
+          'or push the latest backend update.',
+        );
+      }
+    }
+
+    throw Exception(message);
+  }
+
+  String _extractSecureUrl(String body) {
+    final decoded = jsonDecode(body);
     final url = decoded is Map ? decoded['model_url'] : null;
     final uri = url is String ? Uri.tryParse(url) : null;
 

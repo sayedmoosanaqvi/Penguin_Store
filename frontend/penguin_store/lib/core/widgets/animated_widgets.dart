@@ -414,3 +414,234 @@ class _Badge3DState extends State<Badge3D>
     );
   }
 }
+
+/// Crisp, icy-blue squircle brand emblem for Penguin Store.
+class PenguinBrandLogo extends StatelessWidget {
+  final double size;
+  final bool onLightBackground;
+
+  const PenguinBrandLogo({
+    super.key,
+    this.size = 34,
+    this.onLightBackground = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(size * 0.28),
+        gradient: LinearGradient(
+          colors: onLightBackground
+              ? const [Color(0xFF1E88E5), Color(0xFF00ACC1)]
+              : [
+                  Colors.white.withValues(alpha: 0.26),
+                  Colors.white.withValues(alpha: 0.12),
+                ],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        border: Border.all(
+          color: Colors.white.withValues(alpha: onLightBackground ? 0.2 : 0.45),
+          width: 1.2,
+        ),
+        boxShadow: onLightBackground
+            ? [
+                BoxShadow(
+                  color: const Color(0xFF1E88E5).withValues(alpha: 0.28),
+                  blurRadius: 10,
+                  offset: const Offset(0, 3),
+                ),
+              ]
+            : null,
+      ),
+      child: Center(
+        child: CustomPaint(
+          size: Size.square(size * 0.62),
+          painter: const _PenguinCrestPainter(),
+        ),
+      ),
+    );
+  }
+}
+
+class _PenguinCrestPainter extends CustomPainter {
+  const _PenguinCrestPainter();
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final w = size.width;
+    final h = size.height;
+
+    final darkBody = Paint()
+      ..color = const Color(0xFF0F172A)
+      ..style = PaintingStyle.fill;
+    final whiteBelly = Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.fill;
+    final beakPaint = Paint()
+      ..color = const Color(0xFFFFB300)
+      ..style = PaintingStyle.fill;
+
+    // Outer penguin silhouette
+    final body = Path()
+      ..moveTo(w * 0.5, h * 0.06)
+      ..cubicTo(w * 0.78, h * 0.06, w * 0.88, h * 0.42, w * 0.88, h * 0.72)
+      ..quadraticBezierTo(w * 0.88, h * 0.94, w * 0.5, h * 0.94)
+      ..quadraticBezierTo(w * 0.12, h * 0.94, w * 0.12, h * 0.72)
+      ..cubicTo(w * 0.12, h * 0.42, w * 0.22, h * 0.06, w * 0.5, h * 0.06)
+      ..close();
+    canvas.drawPath(body, darkBody);
+
+    // Snow-white belly & cheek arch
+    final belly = Path()
+      ..moveTo(w * 0.5, h * 0.34)
+      ..cubicTo(w * 0.72, h * 0.34, w * 0.76, h * 0.62, w * 0.72, h * 0.84)
+      ..quadraticBezierTo(w * 0.5, h * 0.92, w * 0.28, h * 0.84)
+      ..cubicTo(w * 0.24, h * 0.62, w * 0.28, h * 0.34, w * 0.5, h * 0.34)
+      ..close();
+    canvas.drawPath(belly, whiteBelly);
+
+    // Eyes
+    canvas.drawCircle(Offset(w * 0.39, h * 0.26), w * 0.055, whiteBelly);
+    canvas.drawCircle(Offset(w * 0.61, h * 0.26), w * 0.055, whiteBelly);
+
+    // Golden beak
+    final beak = Path()
+      ..moveTo(w * 0.42, h * 0.32)
+      ..lineTo(w * 0.58, h * 0.32)
+      ..lineTo(w * 0.50, h * 0.44)
+      ..close();
+    canvas.drawPath(beak, beakPaint);
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
+
+/// Modern, crisp circular account avatar with icy-blue gradient ring,
+/// user initial (or sharp person glyph for guests), online indicator dot,
+/// and admin shield badge.
+class PenguinAccountAvatar extends StatelessWidget {
+  final double size;
+  final bool isAuthenticated;
+  final bool isAdmin;
+  final String? email;
+  final bool lightRingOnPrimaryBar;
+
+  const PenguinAccountAvatar({
+    super.key,
+    this.size = 36,
+    this.isAuthenticated = false,
+    this.isAdmin = false,
+    this.email,
+    this.lightRingOnPrimaryBar = false,
+  });
+
+  String? get _initial {
+    final trimmed = email?.trim() ?? '';
+    if (trimmed.isEmpty) return null;
+    final ch = trimmed.characters.first.toUpperCase();
+    return RegExp(r'[A-Z0-9]').hasMatch(ch) ? ch : null;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final initial = isAuthenticated ? _initial : null;
+
+    return SizedBox(
+      width: size + 4,
+      height: size + 4,
+      child: Stack(
+        clipBehavior: Clip.none,
+        alignment: Alignment.center,
+        children: [
+          Container(
+            width: size,
+            height: size,
+            padding: const EdgeInsets.all(2),
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              gradient: LinearGradient(
+                colors: lightRingOnPrimaryBar
+                    ? const [Color(0xFFFFFFFF), Color(0xFFB3E5FC)]
+                    : const [Color(0xFF1E88E5), Color(0xFF00ACC1)],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: const Color(0xFF1E88E5).withValues(alpha: 0.25),
+                  blurRadius: 8,
+                  offset: const Offset(0, 2),
+                ),
+              ],
+            ),
+            child: Container(
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                gradient: isAuthenticated
+                    ? const LinearGradient(
+                        colors: [Color(0xFF1565C0), Color(0xFF0097A7)],
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                      )
+                    : const LinearGradient(
+                        colors: [Color(0xFFEAF5FF), Color(0xFFD6EBFC)],
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                      ),
+              ),
+              child: Center(
+                child: initial != null
+                    ? Text(
+                        initial,
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: size * 0.42,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: 0.2,
+                        ),
+                      )
+                    : Icon(
+                        isAuthenticated
+                            ? Icons.person_rounded
+                            : Icons.account_circle_outlined,
+                        size: size * 0.56,
+                        color: isAuthenticated
+                            ? Colors.white
+                            : const Color(0xFF1E88E5),
+                      ),
+              ),
+            ),
+          ),
+          if (isAuthenticated)
+            Positioned(
+              right: 0,
+              bottom: 0,
+              child: Container(
+                width: (size * 0.34).clamp(9.0, 18.0),
+                height: (size * 0.34).clamp(9.0, 18.0),
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: isAdmin
+                      ? const Color(0xFF00ACC1)
+                      : const Color(0xFF22C55E),
+                  border: Border.all(color: Colors.white, width: 1.6),
+                ),
+                child: isAdmin
+                    ? Icon(
+                        Icons.verified_rounded,
+                        size: (size * 0.21).clamp(6.0, 12.0),
+                        color: Colors.white,
+                      )
+                    : null,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}

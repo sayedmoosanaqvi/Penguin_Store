@@ -7,6 +7,7 @@ import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 
 import 'package:penguin_store/config/api_config.dart';
+import 'package:penguin_store/core/widgets/animated_widgets.dart';
 import 'package:penguin_store/features/shop/providers/auth_provider.dart';
 import 'package:penguin_store/features/shop/providers/cart_provider.dart';
 import 'package:penguin_store/features/shop/services/stripe_payment_service.dart';
@@ -166,24 +167,33 @@ class _CartScreenState extends State<CartScreen> {
     ThemeData theme,
   ) {
     final product = item.product;
+    final cart = context.read<CartProvider>();
 
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
         color: theme.colorScheme.surface,
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(14),
         border: Border.all(
           color: theme.dividerColor.withValues(alpha: 0.16),
         ),
+        boxShadow: [
+          BoxShadow(
+            color: theme.primaryColor.withValues(alpha: 0.04),
+            blurRadius: 8,
+            offset: const Offset(0, 3),
+          ),
+        ],
       ),
       child: InkWell(
+        borderRadius: BorderRadius.circular(12),
         onTap: () => context.push('/product/${product.id}'),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
             ClipRRect(
-              borderRadius: BorderRadius.circular(9),
+              borderRadius: BorderRadius.circular(10),
               child: Image.network(
                 product.imageUrl,
                 width: 78,
@@ -206,24 +216,50 @@ class _CartScreenState extends State<CartScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    product.name,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w700,
-                    ),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(
+                        child: Text(
+                          product.name,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: 'Remove item',
+                        visualDensity: VisualDensity.compact,
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(
+                          minWidth: 28,
+                          minHeight: 28,
+                        ),
+                        onPressed: _isCheckingOut
+                            ? null
+                            : () => cart.removeItem(product.id),
+                        icon: Icon(
+                          Icons.delete_outline_rounded,
+                          size: 18,
+                          color: theme.colorScheme.error,
+                        ),
+                      ),
+                    ],
                   ),
-                  const SizedBox(height: 5),
+                  const SizedBox(height: 3),
                   Text(
-                    product.category,
+                    item.selectedVariant != null
+                        ? '${product.category}  •  ${item.selectedVariant}'
+                        : product.category,
                     style: TextStyle(
                       fontSize: 10,
                       color: theme.colorScheme.onSurfaceVariant,
                     ),
                   ),
-                  const SizedBox(height: 7),
+                  const SizedBox(height: 6),
                   Text(
                     '\$${product.price.toStringAsFixed(2)}',
                     style: TextStyle(
@@ -232,35 +268,78 @@ class _CartScreenState extends State<CartScreen> {
                       fontWeight: FontWeight.w800,
                     ),
                   ),
-                  const SizedBox(height: 6),
+                  const SizedBox(height: 8),
                   Row(
                     children: [
                       Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 9,
-                          vertical: 5,
-                        ),
                         decoration: BoxDecoration(
-                          color: theme.primaryColor.withValues(
-                            alpha: 0.09,
+                          color: theme.primaryColor.withValues(alpha: 0.08),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(
+                            color: theme.primaryColor.withValues(alpha: 0.16),
                           ),
-                          borderRadius: BorderRadius.circular(6),
                         ),
-                        child: Text(
-                          'Qty: ${item.quantity}',
-                          style: TextStyle(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w700,
-                            color: theme.primaryColor,
-                          ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            InkWell(
+                              borderRadius: const BorderRadius.horizontal(
+                                left: Radius.circular(9),
+                              ),
+                              onTap: _isCheckingOut
+                                  ? null
+                                  : () => cart.decrementQuantity(product.id),
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 9,
+                                  vertical: 5,
+                                ),
+                                child: Icon(
+                                  Icons.remove_rounded,
+                                  size: 15,
+                                  color: theme.primaryColor,
+                                ),
+                              ),
+                            ),
+                            Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 6),
+                              child: Text(
+                                '${item.quantity}',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w800,
+                                  color: theme.primaryColor,
+                                ),
+                              ),
+                            ),
+                            InkWell(
+                              borderRadius: const BorderRadius.horizontal(
+                                right: Radius.circular(9),
+                              ),
+                              onTap: _isCheckingOut
+                                  ? null
+                                  : () => cart.incrementQuantity(product.id),
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 9,
+                                  vertical: 5,
+                                ),
+                                child: Icon(
+                                  Icons.add_rounded,
+                                  size: 15,
+                                  color: theme.primaryColor,
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
                       ),
                       const Spacer(),
                       Text(
                         '\$${(product.price * item.quantity).toStringAsFixed(2)}',
                         style: const TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w700,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w800,
                         ),
                       ),
                     ],
@@ -400,8 +479,12 @@ class _CartScreenState extends State<CartScreen> {
                       ),
                     ),
                     const SizedBox(height: 12),
-                    for (final item in items)
-                      _buildCartItem(item, theme),
+                    for (var i = 0; i < items.length; i++)
+                      FadeSlideIn.staggered(
+                        key: ValueKey('cart-item-${items[i].product.id}'),
+                        index: i,
+                        child: _buildCartItem(items[i], theme),
+                      ),
                     const SizedBox(height: 10),
                     Container(
                       padding: const EdgeInsets.all(14),

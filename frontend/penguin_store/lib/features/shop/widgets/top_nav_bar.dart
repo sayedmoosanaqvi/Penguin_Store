@@ -2,6 +2,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
+import 'package:penguin_store/core/widgets/animated_widgets.dart';
 import 'package:penguin_store/features/shop/providers/auth_provider.dart';
 
 class TopNavBar extends StatelessWidget implements PreferredSizeWidget {
@@ -42,20 +43,8 @@ class TopNavBar extends StatelessWidget implements PreferredSizeWidget {
       title: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Container(
-            width: 32,
-            height: 32,
-            decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.16),
-              borderRadius: BorderRadius.circular(9),
-            ),
-            child: const Icon(
-              Icons.storefront_rounded,
-              color: Colors.white,
-              size: 21,
-            ),
-          ),
-          const SizedBox(width: 8),
+          const PenguinBrandLogo(size: 33),
+          const SizedBox(width: 9),
           const Flexible(
             child: Text(
               'PenguinStore',
@@ -64,7 +53,7 @@ class TopNavBar extends StatelessWidget implements PreferredSizeWidget {
               style: TextStyle(
                 color: Colors.white,
                 fontSize: 18,
-                fontWeight: FontWeight.w700,
+                fontWeight: FontWeight.w800,
                 letterSpacing: -0.4,
               ),
             ),
@@ -75,7 +64,7 @@ class TopNavBar extends StatelessWidget implements PreferredSizeWidget {
         IconButton(
           icon: const Icon(
             Icons.local_shipping_outlined,
-            size: 22,
+            size: 21,
           ),
           tooltip: 'My Orders',
           onPressed: () {
@@ -91,7 +80,7 @@ class TopNavBar extends StatelessWidget implements PreferredSizeWidget {
         IconButton(
           icon: const Icon(
             Icons.notifications_none_rounded,
-            size: 24,
+            size: 22,
           ),
           tooltip: 'Notifications',
           onPressed: () {
@@ -104,7 +93,25 @@ class TopNavBar extends StatelessWidget implements PreferredSizeWidget {
             );
           },
         ),
-        const SizedBox(width: 6),
+        Padding(
+          padding: const EdgeInsets.only(right: 10, left: 2),
+          child: Tooltip(
+            message: auth.isAuthenticated
+                ? (auth.userEmail ?? 'My Account')
+                : 'Account & Sign In',
+            child: InkWell(
+              borderRadius: BorderRadius.circular(24),
+              onTap: () => context.go('/profile'),
+              child: PenguinAccountAvatar(
+                size: 32,
+                isAuthenticated: auth.isAuthenticated,
+                isAdmin: auth.isAdmin,
+                email: auth.userEmail,
+                lightRingOnPrimaryBar: true,
+              ),
+            ),
+          ),
+        ),
       ],
     );
   }

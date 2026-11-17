@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Any, Optional, Sequence, TypedDict
 
@@ -16,7 +17,9 @@ from langgraph.prebuilt import create_react_agent
 from app.agent.tools import (
     add_to_cart,
     check_order_status,
+    compare_products,
     inspect_catalog,
+    operations_overview,
     search_inventory,
     search_knowledge_base,
 )
@@ -92,6 +95,8 @@ class AgentState(TypedDict):
 
     next_agent: str
 
+    routed_agent: Optional[str]
+
     data_type: str
 
     suggested_products: list[dict[str, Any]]
@@ -99,6 +104,25 @@ class AgentState(TypedDict):
     cart_action: Optional[dict[str, Any]]
 
     order_action: Optional[dict[str, Any]]
+
+    action_logs: Optional[list[dict[str, Any]]]
+
+
+def _make_action_log(
+    agent_name: str,
+    tools_called: list[str],
+    status: str = "success",
+    detail: str = "",
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "agent": agent_name,
+            "tools": tools_called,
+            "status": status,
+            "detail": detail[:250],
+        }
+    ]
 
 
 # ===========================================================================
@@ -990,6 +1014,89 @@ def retrieval_agent(
         user_query,
     )
 
+    # -----------------------------------------------------------------------
+    # PRODUCT COMPARISON WORKFLOW
+    # -----------------------------------------------------------------------
+    q_cmp = user_query.lower()
+    if any(
+        kw in q_cmp
+        for kw in (
+            "compare",
+            "comparison",
+            "difference between",
+            " vs ",
+            "which is better",
+            "side by side",
+        )
+    ):
+        recent = state.get("suggested_products") or []
+        use_recent_ids = (
+            len(recent) >= 2
+            and any(w in q_cmp for w in ("these", "them", "above", "shown", "suggested"))
+        )
+        clean_query = re.sub(
+            r"\b(compare|comparison|difference|between|which|is|better|side|by|vs|products|items|please|the|and)\b",
+            " ",
+            q_cmp,
+        )
+        clean_query = " ".join(clean_query.split())
+        raw_cmp = compare_products.invoke(
+            {
+                "product_ids": [p["id"] for p in recent[:4] if isinstance(p, dict) and p.get("id")]
+                if use_recent_ids
+                else None,
+                "query": None if use_recent_ids else (clean_query or user_query),
+                "limit": 4,
+            }
+        )
+        cmp_data = _parse_json_dict(raw_cmp)
+        compared_products = cmp_data.get("products") or []
+
+        if compared_products:
+            cmp_prompt = (
+                "You are the Shopping Agent for Penguin Store. Compare the real database products below "
+                "concisely on price, discount, rating, stock, fulfillment (IN_HOUSE vs DROPSHIP), and 3D availability. "
+                "Recommend the best-value choice using only facts in the JSON."
+            )
+            cmp_reply = _invoke_llm_safe(
+                [
+                    {"role": "system", "content": cmp_prompt},
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Customer comparison request:\n{user_query}\n\n"
+                            f"REAL PRODUCTS:\n{json.dumps(compared_products, ensure_ascii=False)}"
+                        ),
+                    },
+                ]
+            )
+            final_cmp_text = _message_text(cmp_reply) if cmp_reply is not None else ""
+            if not final_cmp_text:
+                lines = ["Here is a side-by-side comparison from our catalog:"]
+                for p in compared_products:
+                    view_3d = "3D Available" if p.get("has_3d_model") else "Standard View"
+                    lines.append(
+                        f"- **{p.get('name')}**: ${float(p.get('price', 0)):.2f} "
+                        f"| Rating {p.get('rating', 0)} ({p.get('reviews', 0)} reviews) "
+                        f"| Stock: {p.get('stock', 0)} | {p.get('fulfillment_type', 'IN_HOUSE')} | {view_3d}"
+                    )
+                final_cmp_text = "\n".join(lines)
+
+            return {
+                "messages": [AIMessage(content=final_cmp_text)],
+                "routed_agent": "ShoppingAgent",
+                "data_type": "product_list",
+                "suggested_products": compared_products,
+                "cart_action": None,
+                "order_action": None,
+                "action_logs": _make_action_log(
+                    "ShoppingAgent",
+                    ["compare_products"],
+                    "success",
+                    f"Compared {len(compared_products)} products",
+                ),
+            }
+
     plan = _create_initial_shopping_plan(
         state
     )
@@ -1026,10 +1133,17 @@ def retrieval_agent(
                         content=message
                     )
                 ],
+                "routed_agent": "ShoppingAgent",
                 "data_type": "text",
                 "suggested_products": [],
                 "cart_action": None,
                 "order_action": None,
+                "action_logs": _make_action_log(
+                    "ShoppingAgent",
+                    ["add_to_cart"],
+                    "needs_clarification",
+                    "Requested clarification for ambiguous cart item",
+                ),
             }
 
         raw_cart_result = add_to_cart.invoke(
@@ -1080,6 +1194,7 @@ def retrieval_agent(
                     content=final_text
                 )
             ],
+            "routed_agent": "ShoppingAgent",
             "data_type": data_type,
             "suggested_products": [],
             "cart_action": (
@@ -1090,6 +1205,12 @@ def retrieval_agent(
                 else None
             ),
             "order_action": None,
+            "action_logs": _make_action_log(
+                "ShoppingAgent",
+                ["add_to_cart"],
+                "error" if cart_result.get("error") else "success",
+                f"product_id={product_id}",
+            ),
         }
 
     # -----------------------------------------------------------------------
@@ -1178,6 +1299,7 @@ def retrieval_agent(
                 content=final_text
             )
         ],
+        "routed_agent": "ShoppingAgent",
         "data_type": (
             "product_list"
             if products
@@ -1186,6 +1308,12 @@ def retrieval_agent(
         "suggested_products": products,
         "cart_action": None,
         "order_action": None,
+        "action_logs": _make_action_log(
+            "ShoppingAgent",
+            ["search_inventory", "inspect_catalog"] if used_catalog_fallback else ["search_inventory"],
+            "success" if products else "no_matches",
+            f"Returned {len(products)} products",
+        ),
     }
 
 
@@ -1344,10 +1472,17 @@ def knowledge_agent(
 
     return {
         "messages": [AIMessage(content=final_text)],
+        "routed_agent": "CustomerAgent (Knowledge)",
         "data_type": "text",
         "suggested_products": [],
         "cart_action": None,
         "order_action": None,
+        "action_logs": _make_action_log(
+            "CustomerAgent",
+            ["search_knowledge_base"],
+            "success",
+            f"RAG policy response ({len(policy_context)} chars context)",
+        ),
     }
 
 
@@ -1384,10 +1519,17 @@ def logistics_agent(
                     )
                 )
             ],
+            "routed_agent": "CustomerAgent (Logistics)",
             "data_type": "text",
             "suggested_products": [],
             "cart_action": None,
             "order_action": None,
+            "action_logs": _make_action_log(
+                "CustomerAgent",
+                [],
+                "needs_clarification",
+                "Asked customer for numeric order ID",
+            ),
         }
 
     raw_order_json = check_order_status.invoke({"order_id": order_id})
@@ -1404,10 +1546,17 @@ def logistics_agent(
                     )
                 )
             ],
+            "routed_agent": "CustomerAgent (Logistics)",
             "data_type": "text",
             "suggested_products": [],
             "cart_action": None,
             "order_action": None,
+            "action_logs": _make_action_log(
+                "CustomerAgent",
+                ["check_order_status"],
+                "not_found",
+                f"order_id={order_id}",
+            ),
         }
 
     order_info = parsed_order.get("order") or {}
@@ -1477,10 +1626,99 @@ def logistics_agent(
 
     return {
         "messages": [AIMessage(content=final_text)],
+        "routed_agent": "CustomerAgent (Logistics)",
         "data_type": "order_tracker",
         "suggested_products": [],
         "cart_action": None,
         "order_action": parsed_order,
+        "action_logs": _make_action_log(
+            "CustomerAgent",
+            ["check_order_status"],
+            "success",
+            f"Retrieved order #{order_id} ({overall_status})",
+        ),
+    }
+
+
+# ===========================================================================
+# OPERATIONS NODE (Store Inventory, Telemetry & Admin Diagnostics)
+# ===========================================================================
+
+def operations_agent(
+    state: AgentState,
+):
+    user_query = _latest_user_text(state)
+    raw_ops = operations_overview.invoke({})
+    ops_data = _parse_json_dict(raw_ops)
+
+    if ops_data.get("error"):
+        return {
+            "messages": [
+                AIMessage(
+                    content="I was unable to retrieve live store telemetry right now. Please try again."
+                )
+            ],
+            "routed_agent": "OperationsAgent",
+            "data_type": "text",
+            "suggested_products": [],
+            "cart_action": None,
+            "order_action": None,
+            "action_logs": _make_action_log(
+                "OperationsAgent",
+                ["operations_overview"],
+                "error",
+                str(ops_data["error"]),
+            ),
+        }
+
+    prompt = (
+        "You are the Operations Agent for Penguin Store.\n"
+        "Answer the user or administrator accurately using ONLY the live PostgreSQL telemetry below.\n"
+        "Never invent numbers or products."
+    )
+    response = _invoke_llm_safe(
+        [
+            {"role": "system", "content": prompt},
+            {
+                "role": "user",
+                "content": (
+                    f"Request:\n{user_query}\n\n"
+                    f"LIVE STORE TELEMETRY:\n{json.dumps(ops_data, ensure_ascii=False)}"
+                ),
+            },
+        ]
+    )
+
+    final_text = _message_text(response) if response is not None else ""
+    if not final_text:
+        low_items = ops_data.get("low_stock_items") or []
+        low_str = (
+            ", ".join(f"{x['name']} ({x['stock']} left)" for x in low_items[:5])
+            if low_items
+            else "None (all stocked >= 10 units)"
+        )
+        final_text = (
+            f"**Penguin Store Operations Overview**\n"
+            f"- Total Products: {ops_data.get('total_products', 0)} "
+            f"({ops_data.get('in_house_count', 0)} In-House, {ops_data.get('dropship_count', 0)} Dropship)\n"
+            f"- Active 3D Models: {ops_data.get('active_3d_models', 0)}\n"
+            f"- Total Orders: {ops_data.get('total_orders', 0)}\n"
+            f"- Low Stock Alerts: {low_str}"
+        )
+
+    return {
+        "messages": [AIMessage(content=final_text)],
+        "routed_agent": "OperationsAgent",
+        "data_type": "text",
+        "suggested_products": [],
+        "cart_action": None,
+        "order_action": None,
+        "action_logs": _make_action_log(
+            "OperationsAgent",
+            ["operations_overview"],
+            "success",
+            f"products={ops_data.get('total_products', 0)}, 3d={ops_data.get('active_3d_models', 0)}",
+        ),
     }
 
 
@@ -1538,10 +1776,17 @@ def general_agent(
         "messages": [
             response
         ],
+        "routed_agent": "GeneralAgent",
         "data_type": "text",
         "suggested_products": [],
         "cart_action": None,
         "order_action": None,
+        "action_logs": _make_action_log(
+            "GeneralAgent",
+            [],
+            "success",
+            "Conversational reply",
+        ),
     }
 
 
@@ -1605,10 +1850,35 @@ def _fast_intent_route(user_query: str) -> Optional[str]:
     ):
         return "KnowledgeAgent"
 
-    # 4. Product discovery / Shopping / Cart actions
+    # 4. Operations / Inventory Telemetry / Store Overview
     if any(
         kw in q
         for kw in (
+            "inventory report",
+            "inventory status",
+            "store overview",
+            "store summary",
+            "store stats",
+            "low stock",
+            "how many products",
+            "how many 3d",
+            "active 3d",
+            "3d model count",
+            "total orders",
+            "category breakdown",
+            "operations report",
+        )
+    ):
+        return "OperationsAgent"
+
+    # 5. Product discovery / Comparison / Shopping / Cart actions
+    if any(
+        kw in q
+        for kw in (
+            "compare",
+            "comparison",
+            "difference between",
+            "which is better",
             "add to cart",
             "add the ",
             "buy ",
@@ -1673,7 +1943,10 @@ e-commerce system.
 Route the customer's latest request to exactly ONE specialist.
 
 RetrievalAgent
-- products, inventory, prices, recommendations, shopping, outfits, gifts, styles, categories, cart requests, buying products
+- products, comparisons, prices, recommendations, shopping, outfits, gifts, styles, categories, cart requests, buying products
+
+OperationsAgent
+- store inventory overview, low stock alerts, total products, active 3D model counts, category breakdown, store operational diagnostics
 
 KnowledgeAgent
 - return policy, refunds, warranties, payment methods, store rules, fulfillment policies, general shipping policies
@@ -1686,6 +1959,7 @@ GeneralAgent
 
 Respond ONLY with one exact route name:
 RetrievalAgent
+OperationsAgent
 KnowledgeAgent
 LogisticsAgent
 GeneralAgent
@@ -1713,6 +1987,9 @@ GeneralAgent
 
     if "retrievalagent" in route:
         next_agent = "RetrievalAgent"
+
+    elif "operationsagent" in route:
+        next_agent = "OperationsAgent"
 
     elif "knowledgeagent" in route:
         next_agent = "KnowledgeAgent"
@@ -1755,6 +2032,11 @@ workflow.add_node(
 )
 
 workflow.add_node(
+    "OperationsAgent",
+    operations_agent,
+)
+
+workflow.add_node(
     "KnowledgeAgent",
     knowledge_agent,
 )
@@ -1780,6 +2062,7 @@ workflow.add_conditional_edges(
     lambda state: state["next_agent"],
     {
         "RetrievalAgent": "RetrievalAgent",
+        "OperationsAgent": "OperationsAgent",
         "KnowledgeAgent": "KnowledgeAgent",
         "LogisticsAgent": "LogisticsAgent",
         "GeneralAgent": "GeneralAgent",
@@ -1789,6 +2072,11 @@ workflow.add_conditional_edges(
 
 workflow.add_edge(
     "RetrievalAgent",
+    END,
+)
+
+workflow.add_edge(
+    "OperationsAgent",
     END,
 )
 

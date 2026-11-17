@@ -2,6 +2,8 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
+import 'package:penguin_store/core/widgets/animated_widgets.dart';
+import 'package:penguin_store/features/shop/providers/auth_provider.dart';
 import 'package:penguin_store/features/shop/providers/cart_provider.dart';
 
 class BottomNavBar extends StatelessWidget {
@@ -25,6 +27,7 @@ class BottomNavBar extends StatelessWidget {
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
     final cartCount = context.watch<CartProvider>().itemCount;
+    final auth = context.watch<AuthProvider>();
 
     return Container(
       decoration: BoxDecoration(
@@ -96,9 +99,21 @@ class BottomNavBar extends StatelessWidget {
               selectedIcon: Icon(Icons.headset_mic_rounded),
               label: 'Support',
             ),
-            const NavigationDestination(
-              icon: Icon(Icons.person_outline_rounded),
-              selectedIcon: Icon(Icons.person_rounded),
+            NavigationDestination(
+              icon: auth.isAuthenticated
+                  ? PenguinAccountAvatar(
+                      size: 24,
+                      isAuthenticated: true,
+                      isAdmin: auth.isAdmin,
+                      email: auth.userEmail,
+                    )
+                  : const Icon(Icons.account_circle_outlined),
+              selectedIcon: PenguinAccountAvatar(
+                size: 26,
+                isAuthenticated: auth.isAuthenticated,
+                isAdmin: auth.isAdmin,
+                email: auth.userEmail,
+              ),
               label: 'Profile',
             ),
           ],

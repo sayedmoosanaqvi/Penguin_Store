@@ -1,6 +1,10 @@
 import json
 import logging
+import time
+from collections import deque
+from datetime import datetime, timezone
 from functools import partial
+from threading import Lock
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -12,6 +16,24 @@ from app.agent.multi_agent_orchestrator import (
     multi_agent_app as agent_app,
     
 )
+
+
+# ===========================================================================
+# BOUNDED AUDIT LOG RING BUFFER
+# ===========================================================================
+
+_AUDIT_LOGS: deque[dict[str, Any]] = deque(maxlen=200)
+_AUDIT_LOCK = Lock()
+
+
+def append_audit_log(entry: dict[str, Any]) -> None:
+    with _AUDIT_LOCK:
+        _AUDIT_LOGS.appendleft(entry)
+
+
+def get_audit_logs(limit: int = 50) -> list[dict[str, Any]]:
+    with _AUDIT_LOCK:
+        return list(_AUDIT_LOGS)[: max(1, min(limit, 200))]
 
 
 # ===========================================================================
@@ -312,6 +334,12 @@ def _extract_agent_payload(
             if data_type == "text":
                 data_type = "product_list"
 
+    action_logs = result.get("action_logs")
+    if not isinstance(action_logs, list):
+        action_logs = []
+
+    routed_agent = result.get("routed_agent") or result.get("next_agent") or "CTRL-X"
+
     return {
         "status": "success",
         "response": final_text,
@@ -319,6 +347,8 @@ def _extract_agent_payload(
         "suggested_products": suggested_products,
         "cart_action": cart_action,
         "order_action": order_action,
+        "routed_agent": routed_agent,
+        "action_logs": action_logs,
     }
 
 
@@ -372,6 +402,8 @@ async def chat_with_agent(
         # does not block the server's async event loop.
         # ---------------------------------------------------------------
 
+        started_at = time.perf_counter()
+
         invoke_agent = partial(
             agent_app.invoke,
             inputs,
@@ -404,17 +436,38 @@ async def chat_with_agent(
         payload = _extract_agent_payload(
             result
         )
+        latency_ms = round((time.perf_counter() - started_at) * 1000.0, 2)
+        payload["latency_ms"] = latency_ms
+
+        append_audit_log(
+            {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "thread_id": request.thread_id,
+                "user_input": request.user_input[:200],
+                "routed_agent": payload["routed_agent"],
+                "tools_called": [
+                    t
+                    for entry in payload.get("action_logs", [])
+                    for t in entry.get("tools", [])
+                ],
+                "data_type": payload["data_type"],
+                "latency_ms": latency_ms,
+                "status": "success",
+            }
+        )
 
         logger.info(
             "Agent completed | "
-            "Data Type: %s | "
-            "Suggested Products: %s",
+            "Routed: %s | Data Type: %s | "
+            "Suggested Products: %s | Latency: %sms",
+            payload["routed_agent"],
             payload["data_type"],
             len(
                 payload[
                     "suggested_products"
                 ]
             ),
+            latency_ms,
         )
 
         return payload
@@ -425,6 +478,18 @@ async def chat_with_agent(
     except Exception:
         logger.exception(
             "AGENT EXECUTION FAILED"
+        )
+        append_audit_log(
+            {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "thread_id": request.thread_id,
+                "user_input": request.user_input[:200],
+                "routed_agent": "CTRL-X",
+                "tools_called": [],
+                "data_type": "error",
+                "latency_ms": 0.0,
+                "status": "error",
+            }
         )
 
         # Do not expose internal stack traces, database details,

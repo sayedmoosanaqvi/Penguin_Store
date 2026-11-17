@@ -55,4 +55,20 @@ class Product {
       isFeatured: json['is_featured'] ?? false,
     );
   }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'name': name,
+      'description': description,
+      'price': price,
+      'original_price': originalPrice,
+      'image_url': imageUrl,
+      'category': category,
+      'rating': rating,
+      'reviews': reviews,
+      'discount_percent': discountPercent,
+      'is_featured': isFeatured,
+    };
+  }
 }

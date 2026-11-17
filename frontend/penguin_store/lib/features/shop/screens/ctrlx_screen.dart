@@ -5,7 +5,6 @@ import 'package:penguin_store/config/api_config.dart';
 import 'package:uuid/uuid.dart';
 import '../models/product_model.dart';
 import 'package:penguin_store/features/shop/widgets/product_card.dart';
-import 'package:penguin_store/features/shop/services/product_service.dart';
 import 'package:provider/provider.dart';
 import 'package:penguin_store/features/shop/providers/cart_provider.dart';
 import 'package:penguin_store/core/widgets/animated_widgets.dart';
@@ -43,7 +42,6 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
 
   // Unique session thread ID for LangGraph memory persistence
   final String _threadId = const Uuid().v4();
-  final ProductService _productService = ProductService();
 
   static const List<String> _quickPrompts = [
     'Do you have shirts?',

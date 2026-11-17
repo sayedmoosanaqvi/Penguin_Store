@@ -9,7 +9,7 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session, load_only
 
 from app.database import SessionLocal
-from app.models import Product, Order, OrderItem
+from app.models import Product, Product3DAsset, Order, OrderItem
 from app.agent.rag import retrieve_store_knowledge
 
 
@@ -1071,3 +1071,203 @@ def search_knowledge_base(
             "Unable to retrieve Penguin Store "
             "policy information."
         )
+
+
+# ===========================================================================
+# PRODUCT COMPARISON TOOL (Shopping Agent)
+# ===========================================================================
+
+class CompareProductsInput(BaseModel):
+    product_ids: Optional[list[int]] = Field(
+        default=None,
+        description="Optional list of specific product IDs to compare.",
+    )
+    query: Optional[str] = Field(
+        default=None,
+        description="Search keyword or product category to find top products to compare.",
+    )
+    limit: int = Field(
+        default=4,
+        ge=2,
+        le=6,
+        description="Maximum number of products to compare side-by-side.",
+    )
+
+
+@tool(
+    "compare_products",
+    args_schema=CompareProductsInput,
+)
+def compare_products(
+    product_ids: Optional[list[int]] = None,
+    query: Optional[str] = None,
+    limit: int = 4,
+) -> str:
+    """
+    Compare products side-by-side using real PostgreSQL catalog and 3D asset data.
+    """
+    logger.info(
+        "[TOOL CALLED] compare_products | ids=%s | query=%s",
+        product_ids,
+        query,
+    )
+
+    db: Session = SessionLocal()
+    try:
+        cols = (
+            Product.id,
+            Product.name,
+            Product.description,
+            Product.price,
+            Product.original_price,
+            Product.image_url,
+            Product.category,
+            Product.rating,
+            Product.reviews,
+            Product.discount_percent,
+            Product.is_featured,
+            Product.stock,
+            Product.fulfillment_type,
+        )
+
+        candidates: list[Product] = []
+        if product_ids:
+            clean_ids = [int(pid) for pid in product_ids if isinstance(pid, (int, str)) and str(pid).isdigit()]
+            if clean_ids:
+                candidates = (
+                    db.query(Product)
+                    .options(load_only(*cols))
+                    .filter(Product.id.in_(clean_ids))
+                    .all()
+                )
+
+        if not candidates and query:
+            all_rows = (
+                db.query(Product)
+                .options(load_only(*cols))
+                .all()
+            )
+            tokens = _search_tokens(query)
+            scored = []
+            for p in all_rows:
+                s = _score_product(p, query, None)
+                if s <= 0 and tokens:
+                    hay = _normalize_text(f"{p.name} {p.category} {p.description}")
+                    if any(t in hay for t in tokens):
+                        s = 5.0
+                if s > 0:
+                    scored.append((s, p))
+            scored.sort(key=lambda pair: (-pair[0], -(pair[1].rating or 0.0)))
+            candidates = [pair[1] for pair in scored[:limit]]
+
+        if not candidates:
+            candidates = (
+                db.query(Product)
+                .options(load_only(*cols))
+                .filter(Product.stock > 0)
+                .order_by(Product.rating.desc(), Product.id.desc())
+                .limit(limit)
+                .all()
+            )
+
+        selected_ids = [p.id for p in candidates]
+        active_3d_ids: set[int] = set()
+        if selected_ids:
+            rows_3d = (
+                db.query(Product3DAsset.product_id)
+                .filter(
+                    Product3DAsset.product_id.in_(selected_ids),
+                    Product3DAsset.is_active.is_(True),
+                )
+                .distinct()
+                .all()
+            )
+            active_3d_ids = {r[0] for r in rows_3d}
+
+        comparison = []
+        for p in candidates[:limit]:
+            item = _product_to_public_dict(p)
+            item["has_3d_model"] = p.id in active_3d_ids
+            comparison.append(item)
+
+        return json.dumps({"products": comparison}, ensure_ascii=False)
+    except Exception:
+        logger.exception("[TOOL ERROR] compare_products failed")
+        return json.dumps({"products": [], "error": "Unable to compare products."})
+    finally:
+        db.close()
+
+
+# ===========================================================================
+# OPERATIONS OVERVIEW TOOL (Operations Agent)
+# ===========================================================================
+
+@tool("operations_overview")
+def operations_overview() -> str:
+    """
+    Retrieve live store operational telemetry from PostgreSQL (inventory counts,
+    low-stock alerts, active 3D models, fulfillment split, and total orders).
+    """
+    logger.info("[TOOL CALLED] operations_overview")
+
+    db: Session = SessionLocal()
+    try:
+        total_products = db.query(Product.id).count()
+        in_house_count = (
+            db.query(Product.id)
+            .filter(Product.fulfillment_type == "IN_HOUSE")
+            .count()
+        )
+        dropship_count = (
+            db.query(Product.id)
+            .filter(Product.fulfillment_type == "DROPSHIP")
+            .count()
+        )
+        active_3d_models = (
+            db.query(Product3DAsset.product_id)
+            .filter(Product3DAsset.is_active.is_(True))
+            .distinct()
+            .count()
+        )
+        total_orders = db.query(Order.id).count()
+
+        low_stock_rows = (
+            db.query(Product.id, Product.name, Product.stock, Product.category)
+            .filter(Product.stock < 10)
+            .order_by(Product.stock.asc())
+            .limit(10)
+            .all()
+        )
+
+        cat_rows = (
+            db.query(Product.category)
+            .all()
+        )
+        category_breakdown: dict[str, int] = {}
+        for (cat,) in cat_rows:
+            key = (cat or "OTHER").strip()
+            category_breakdown[key] = category_breakdown.get(key, 0) + 1
+
+        payload = {
+            "total_products": total_products,
+            "in_house_count": in_house_count,
+            "dropship_count": dropship_count,
+            "active_3d_models": active_3d_models,
+            "total_orders": total_orders,
+            "low_stock_items": [
+                {
+                    "id": r.id,
+                    "name": r.name,
+                    "stock": int(r.stock or 0),
+                    "category": r.category,
+                }
+                for r in low_stock_rows
+            ],
+            "category_breakdown": category_breakdown,
+        }
+        return json.dumps(payload, ensure_ascii=False)
+    except Exception:
+        logger.exception("[TOOL ERROR] operations_overview failed")
+        return json.dumps({"error": "Unable to fetch operational overview."})
+    finally:
+        db.close()
