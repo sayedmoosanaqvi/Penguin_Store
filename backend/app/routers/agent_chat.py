@@ -16,24 +16,18 @@ from app.agent.multi_agent_orchestrator import (
     multi_agent_app as agent_app,
     
 )
-
-
-# ===========================================================================
-# BOUNDED AUDIT LOG RING BUFFER
-# ===========================================================================
-
-_AUDIT_LOGS: deque[dict[str, Any]] = deque(maxlen=200)
-_AUDIT_LOCK = Lock()
+from app.services.audit_service import (
+    fetch_ctrlx_audit_logs,
+    record_ctrlx_audit,
+)
 
 
 def append_audit_log(entry: dict[str, Any]) -> None:
-    with _AUDIT_LOCK:
-        _AUDIT_LOGS.appendleft(entry)
+    record_ctrlx_audit(entry)
 
 
 def get_audit_logs(limit: int = 50) -> list[dict[str, Any]]:
-    with _AUDIT_LOCK:
-        return list(_AUDIT_LOGS)[: max(1, min(limit, 200))]
+    return fetch_ctrlx_audit_logs(limit=limit)
 
 
 # ===========================================================================

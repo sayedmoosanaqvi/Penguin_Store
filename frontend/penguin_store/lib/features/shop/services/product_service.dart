@@ -1,13 +1,14 @@
 
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:penguin_store/config/api_config.dart';
+import 'package:penguin_store/core/services/api_error_handler.dart';
+import 'package:penguin_store/core/services/secure_storage_service.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../models/product_model.dart';
 
 class Uploaded3DModel {
@@ -41,10 +42,7 @@ class ProductService {
       60 * 1024 * 1024;
 
   Future<String?> _getAccessToken() async {
-    final prefs =
-        await SharedPreferences.getInstance();
-
-    final token = prefs.getString('jwt_token');
+    final token = await SecureStorageService.getToken();
 
     if (token == null || token.trim().isEmpty) {
       debugPrint(
@@ -83,44 +81,128 @@ class ProductService {
     return 'Server returned HTTP ${response.statusCode}.';
   }
 
-  // Public product catalog
-  Future<List<Product>> fetchProducts() async {
+  static List<Product>? _cachedProducts;
+  static DateTime? _cachedAt;
+  static const String _diskCacheKey = 'penguin_products_cache_v1';
+
+  static List<Product>? get cachedProducts => _cachedProducts;
+
+  /// Stale-while-revalidate catalog loader: returns cached data right away
+  /// on back-navigation and refreshes quietly in the background when stale.
+  Future<List<Product>> fetchProducts({bool forceRefresh = false}) async {
+    final hasFreshMemoryCache = !forceRefresh &&
+        _cachedProducts != null &&
+        _cachedAt != null &&
+        DateTime.now().difference(_cachedAt!) < const Duration(minutes: 5);
+
+    if (hasFreshMemoryCache) {
+      return _cachedProducts!;
+    }
+
+    if (!forceRefresh && _cachedProducts == null) {
+      final disk = await _loadDiskCache();
+      if (disk != null && disk.isNotEmpty) {
+        _cachedProducts = disk;
+        _cachedAt = DateTime.now().subtract(const Duration(minutes: 4));
+        // Trigger background refresh without blocking initial UI render
+        fetchProducts(forceRefresh: true).catchError((_) => disk);
+        return disk;
+      }
+    }
+
     try {
       final response = await http
-          .get(
-            Uri.parse('$baseUrl/products/'),
-          )
+          .get(Uri.parse('$baseUrl/products/'))
           .timeout(_requestTimeout);
 
       if (response.statusCode != 200) {
         throw Exception(
-          'Failed to fetch products: '
-          '${response.statusCode}',
+          ApiErrorHandler.fromStatus(
+            response.statusCode,
+            response.body,
+            fallback: 'Failed to load products.',
+          ),
         );
       }
 
       final decoded = jsonDecode(response.body);
-
       if (decoded is! List) {
-        throw const FormatException(
-          'Invalid product list response.',
-        );
+        throw const FormatException('Invalid product list response.');
       }
 
-      return decoded
+      final list = decoded
           .map(
             (item) => Product.fromJson(
-              Map<String, dynamic>.from(
-                item as Map,
-              ),
+              Map<String, dynamic>.from(item as Map),
             ),
           )
           .toList();
 
+      _cachedProducts = list;
+      _cachedAt = DateTime.now();
+      _saveDiskCache(list);
+      return list;
     } catch (e) {
       debugPrint('Fetch products error: $e');
+      if (_cachedProducts != null) return _cachedProducts!;
       rethrow;
     }
+  }
+
+  /// Paginated v1 catalog fetch for incremental scrolling/filtering.
+  Future<List<Product>> fetchProductsPage({
+    int limit = 40,
+    int offset = 0,
+    String? category,
+    String? search,
+  }) async {
+    final uri = Uri.parse('$baseUrl/api/v1/products/').replace(
+      queryParameters: {
+        'limit': '$limit',
+        'offset': '$offset',
+        if (category != null && category.isNotEmpty && category != 'All')
+          'category': category,
+        if (search != null && search.isNotEmpty) 'search': search,
+      },
+    );
+    final response = await http.get(uri).timeout(_requestTimeout);
+    if (response.statusCode != 200) {
+      throw Exception(
+        ApiErrorHandler.fromStatus(response.statusCode, response.body),
+      );
+    }
+    final decoded = jsonDecode(response.body) as List;
+    return decoded
+        .map((item) => Product.fromJson(Map<String, dynamic>.from(item as Map)))
+        .toList();
+  }
+
+  Future<List<Product>?> _loadDiskCache() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_diskCacheKey);
+      if (raw == null || raw.isEmpty) return null;
+      final decoded = jsonDecode(raw);
+      if (decoded is! List) return null;
+      return decoded
+          .whereType<Map>()
+          .map((m) => Product.fromJson(Map<String, dynamic>.from(m)))
+          .toList();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _saveDiskCache(List<Product> products) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final payload = jsonEncode(products.map((p) => p.toJson()).toList());
+      await prefs.setString(_diskCacheKey, payload);
+    } catch (_) {}
+  }
+
+  static void invalidateCache() {
+    _cachedAt = null;
   }
 
   // Public product details

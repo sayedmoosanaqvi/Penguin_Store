@@ -1,7 +1,7 @@
 import math
 from datetime import datetime
 from typing import List, Dict, Any
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 from sqlalchemy import func
 from app.models import Order, OrderItem, Product
 
@@ -79,6 +79,17 @@ def compute_regional_top_products(
     if not ranked_products:
         fallback_products = (
             db.query(Product)
+            .options(
+                load_only(
+                    Product.id,
+                    Product.name,
+                    Product.price,
+                    Product.image_url,
+                    Product.category,
+                    Product.rating,
+                    Product.is_featured,
+                )
+            )
             .order_by(Product.is_featured.desc(), Product.rating.desc())
             .limit(limit)
             .all()

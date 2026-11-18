@@ -1,26 +1,47 @@
-from typing import Dict, Any
-from fastapi import APIRouter, Depends, Query
+from typing import Any, Dict
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
-from app.database import get_db
+from app.core.database import get_db
+from app.core.security import get_optional_current_user, resolve_user_role
 from app.ml.collaborative_engine import compute_collaborative_recommendations
+from app.models import User
 
 router = APIRouter(prefix="/api/recommendations", tags=["Collaborative ML"])
 
+
 @router.get("/for-user")
 def get_user_recommendations(
-    email: str = Query(..., description="Customer email for personalized filtering"),
+    email: str = Query(..., min_length=3, max_length=254, description="Customer email"),
     limit: int = Query(default=5, ge=1, le=10, description="Number of items to return"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User | None = Depends(get_optional_current_user),
 ) -> Dict[str, Any]:
     """
-    Retrieves personalized collaborative recommendations for a user based on purchase similarity.
+    Retrieves personalized collaborative recommendations.
+    If authenticated, enforces that non-admin callers query only their own email.
     """
-    products = compute_collaborative_recommendations(db=db, user_email=email, limit=limit)
-    
+    clean_email = email.strip().lower()
+    if (
+        current_user is not None
+        and resolve_user_role(current_user) != "admin"
+        and current_user.email.strip().lower() != clean_email
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only request personalized recommendations for your own account.",
+        )
+
+    products = compute_collaborative_recommendations(
+        db=db,
+        user_email=clean_email,
+        limit=limit,
+    )
+
     return {
         "status": "success",
-        "user_email": email,
+        "user_email": clean_email,
         "count": len(products),
-        "products": products
+        "products": products,
     }

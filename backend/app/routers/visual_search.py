@@ -24,11 +24,13 @@ from sqlalchemy import text
 from starlette.concurrency import run_in_threadpool
 from supabase import Client, create_client
 
+from app.core.config import settings
 from app.database import SessionLocal, engine
 from app.models import Product, User
 from app.security import (
     AGENT_API_KEY,
     get_optional_current_user,
+    resolve_user_role,
 )
 from app.vector_service import (
     analyze_and_embed_query,
@@ -815,6 +817,7 @@ async def visual_product_search(
 
 @router.get("/image-proxy")
 async def proxy_product_image(
+    request: Request,
     product_id: int | None = Query(default=None, ge=1),
     url: str | None = Query(default=None, max_length=1024),
 ):
@@ -868,12 +871,20 @@ async def proxy_product_image(
         ) from exc
 
     media_type = _sniff_image_media_type(image_bytes)
+    origin = request.headers.get("origin", "").strip().rstrip("/")
+    allowed = set(settings.allowed_origins)
+    cors_header = (
+        origin
+        if origin in allowed or (not settings.IS_PRODUCTION and origin)
+        else (settings.allowed_origins[0] if settings.allowed_origins else "https://penguin-store.github.io")
+    )
     return Response(
         content=image_bytes,
         media_type=media_type,
         headers={
             "Cache-Control": "public, max-age=86400",
-            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Origin": cors_header,
+            "Vary": "Origin",
         },
     )
 
@@ -899,7 +910,7 @@ def index_existing_products(
         and request.client.host in ("127.0.0.1", "::1", "localhost")
     )
     has_agent_key = bool(api_key and api_key == AGENT_API_KEY)
-    has_admin_jwt = bool(current_user and current_user.is_admin)
+    has_admin_jwt = bool(current_user and resolve_user_role(current_user) == "admin")
 
     if not (is_local_dev or has_agent_key or has_admin_jwt):
         raise HTTPException(

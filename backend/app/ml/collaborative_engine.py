@@ -1,6 +1,36 @@
 from typing import List, Dict, Any
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 from app.models import Order, OrderItem, Product
+
+_RECO_PRODUCT_COLUMNS = (
+    Product.id,
+    Product.name,
+    Product.price,
+    Product.image_url,
+    Product.category,
+    Product.rating,
+)
+
+
+def _fallback_top_products(db: Session, limit: int) -> List[Dict[str, Any]]:
+    fallback = (
+        db.query(Product)
+        .options(load_only(*_RECO_PRODUCT_COLUMNS))
+        .order_by(Product.rating.desc())
+        .limit(limit)
+        .all()
+    )
+    return [
+        {
+            "id": p.id,
+            "name": p.name,
+            "price": p.price,
+            "image_url": p.image_url,
+            "category": p.category,
+            "rating": p.rating,
+        }
+        for p in fallback
+    ]
 
 def compute_collaborative_recommendations(
     db: Session,
@@ -22,17 +52,7 @@ def compute_collaborative_recommendations(
                 user_product_ids.add(item.product_id)
 
         if not user_product_ids:
-            fallback = db.query(Product).order_by(Product.rating.desc()).limit(limit).all()
-            return [
-                {
-                    "id": p.id,
-                    "name": p.name,
-                    "price": p.price,
-                    "image_url": p.image_url,
-                    "category": p.category,
-                    "rating": p.rating
-                } for p in fallback
-            ]
+            return _fallback_top_products(db, limit)
 
         # 2. Find other orders by different users
         other_orders = db.query(Order).filter(Order.customer_email != user_email).all()
@@ -72,31 +92,11 @@ def compute_collaborative_recommendations(
                 })
 
         if not recommended_products:
-            fallback = db.query(Product).order_by(Product.rating.desc()).limit(limit).all()
-            return [
-                {
-                    "id": p.id,
-                    "name": p.name,
-                    "price": p.price,
-                    "image_url": p.image_url,
-                    "category": p.category,
-                    "rating": p.rating
-                } for p in fallback
-            ]
+            return _fallback_top_products(db, limit)
 
         return recommended_products
 
     except Exception as e:
         print(f"🔥 COLLABORATIVE ENGINE ERROR: {e}")
         # Graceful fallback so API never throws 500
-        fallback = db.query(Product).order_by(Product.rating.desc()).limit(limit).all()
-        return [
-            {
-                "id": p.id,
-                "name": p.name,
-                "price": p.price,
-                "image_url": p.image_url,
-                "category": p.category,
-                "rating": p.rating
-            } for p in fallback
-        ]
+        return _fallback_top_products(db, limit)

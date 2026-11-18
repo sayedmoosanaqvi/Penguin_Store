@@ -3,10 +3,13 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
+import 'package:penguin_store/core/services/api_error_handler.dart';
 import 'package:penguin_store/core/widgets/animated_widgets.dart';
 import 'package:penguin_store/features/shop/providers/auth_provider.dart';
+import 'package:penguin_store/features/shop/providers/cart_provider.dart';
 import 'package:penguin_store/features/shop/screens/auth_screen.dart';
 import 'package:penguin_store/features/shop/screens/admin_screen.dart';
+import 'package:penguin_store/features/shop/screens/legal_screens.dart';
 import 'package:penguin_store/helpers/theme_provider.dart';
 
 class ProfileScreen extends StatelessWidget {
@@ -68,6 +71,80 @@ class ProfileScreen extends StatelessWidget {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Successfully logged out'),
+        ),
+      );
+    }
+  }
+
+  Future<void> _confirmDeleteAccount(BuildContext context) async {
+    final auth = context.read<AuthProvider>();
+    final cart = context.read<CartProvider>();
+    final passController = TextEditingController();
+    bool obscure = true;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (ctx, setModalState) => AlertDialog(
+          title: const Text('Delete Account Permanently?'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'This permanently removes your Penguin Store account, saved addresses, '
+                'wishlist, cart items, and reviews. Enter your password to confirm.',
+                style: TextStyle(fontSize: 12.5, height: 1.4),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: passController,
+                obscureText: obscure,
+                decoration: InputDecoration(
+                  labelText: 'Confirm Password',
+                  suffixIcon: IconButton(
+                    icon: Icon(obscure ? Icons.visibility : Icons.visibility_off),
+                    onPressed: () => setModalState(() => obscure = !obscure),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: Colors.redAccent),
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('Delete Forever'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    final password = passController.text;
+    passController.dispose();
+
+    if (confirmed != true || password.isEmpty || !context.mounted) return;
+
+    final err = await auth.deleteAccount(password);
+    if (!context.mounted) return;
+
+    if (err == null) {
+      cart.clear();
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Your Penguin Store account has been permanently deleted.'),
+        ),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(ApiErrorHandler.sanitize(err, fallback: err)),
+          backgroundColor: Theme.of(context).colorScheme.error,
         ),
       );
     }
@@ -302,6 +379,18 @@ class ProfileScreen extends StatelessWidget {
                     onTap: () => _openOrders(context, email),
                   ),
                   _ProfileTile(
+                    icon: Icons.favorite_border_rounded,
+                    title: 'My Wishlist',
+                    subtitle: 'Saved products synced across your account',
+                    onTap: () => context.push('/wishlist'),
+                  ),
+                  _ProfileTile(
+                    icon: Icons.location_on_outlined,
+                    title: 'Saved Addresses',
+                    subtitle: 'Manage shipping addresses for fast checkout',
+                    onTap: () => context.push('/addresses'),
+                  ),
+                  _ProfileTile(
                     icon: Icons.auto_awesome_outlined,
                     title: 'Ask CTRL-X About Your Order',
                     subtitle: 'Get AI assistance with order details',
@@ -486,6 +575,44 @@ class ProfileScreen extends StatelessWidget {
                 ),
               ],
 
+              const SizedBox(height: 18),
+              Text(
+                'Legal & Privacy',
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w700,
+                  color: theme.colorScheme.onSurface,
+                ),
+              ),
+              const SizedBox(height: 10),
+              _SectionCard(
+                theme: theme,
+                children: [
+                  _ProfileTile(
+                    icon: Icons.privacy_tip_outlined,
+                    title: 'Privacy Policy',
+                    subtitle: 'How Penguin Store protects & secures your data',
+                    onTap: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => const LegalDocumentScreen(isPrivacyPolicy: true),
+                      ),
+                    ),
+                  ),
+                  _ProfileTile(
+                    icon: Icons.gavel_outlined,
+                    title: 'Terms of Service',
+                    subtitle: 'Storefront usage, returns, and 3D showcase terms',
+                    onTap: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => const LegalDocumentScreen(isPrivacyPolicy: false),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+
               if (auth.isAuthenticated) ...[
                 const SizedBox(height: 20),
                 OutlinedButton.icon(
@@ -500,6 +627,17 @@ class ProfileScreen extends StatelessWidget {
                     ),
                   ),
                 ),
+                if (!auth.isAdmin) ...[
+                  const SizedBox(height: 10),
+                  TextButton.icon(
+                    onPressed: () => _confirmDeleteAccount(context),
+                    icon: const Icon(Icons.delete_forever_outlined, size: 18),
+                    label: const Text('Delete My Account'),
+                    style: TextButton.styleFrom(
+                      foregroundColor: theme.colorScheme.error,
+                    ),
+                  ),
+                ],
               ],
 
               const SizedBox(height: 20),

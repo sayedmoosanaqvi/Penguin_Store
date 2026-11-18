@@ -2,8 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import 'package:penguin_store/config/api_config.dart';
+import 'package:penguin_store/core/services/api_error_handler.dart';
 import 'package:penguin_store/core/widgets/animated_widgets.dart';
 import 'package:penguin_store/features/shop/providers/auth_provider.dart';
+import 'package:penguin_store/features/shop/providers/shop_state_provider.dart';
+import 'package:penguin_store/features/shop/services/commerce_service.dart';
 import 'package:penguin_store/features/shop/widgets/custom_toast.dart';
 import 'package:penguin_store/features/shop/widgets/premium_interactive_card.dart';
 
@@ -35,6 +38,7 @@ class ProductDetailScreen extends StatefulWidget {
 class _ProductDetailScreenState extends State<ProductDetailScreen> {
   final ProductService _productService = ProductService();
   final Premium3DService _premiumService = Premium3DService();
+  final CommerceService _commerceService = CommerceService();
 
   late Future<Product?> _productFuture;
 
@@ -46,6 +50,10 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
   bool _useProxyImage = false;
   int _selectedQuantity = 1;
   String? _selectedVariant;
+
+  ProductReviewsBundle? _reviewsBundle;
+  bool _loadingReviews = false;
+  int? _lastSyncedProductId;
 
   // Signed GLB URLs fetched ahead of time so the viewer opens instantly.
   final Map<int, Future<String>> _urlPrefetch = {};
@@ -128,6 +136,180 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
     } catch (e) {
       debugPrint('Product fetch failed: $e');
       return null;
+    }
+  }
+
+  void _syncViewedAndReviews(Product product) {
+    if (_lastSyncedProductId == product.id) return;
+    _lastSyncedProductId = product.id;
+    Future.microtask(() {
+      if (!mounted) return;
+      context.read<ShopStateProvider>().recordViewed(product);
+      _loadReviews(product.id);
+    });
+  }
+
+  Future<void> _loadReviews(int productId) async {
+    if (!mounted) return;
+    setState(() => _loadingReviews = true);
+    try {
+      final bundle = await _commerceService.fetchReviews(productId);
+      if (mounted) setState(() => _reviewsBundle = bundle);
+    } catch (_) {
+    } finally {
+      if (mounted) setState(() => _loadingReviews = false);
+    }
+  }
+
+  Future<void> _openWriteReviewModal(Product product) async {
+    final auth = context.read<AuthProvider>();
+    if (!auth.isAuthenticated) {
+      CustomToast.show(
+        context,
+        'Please log in to write a customer review.',
+        isError: true,
+      );
+      return;
+    }
+
+    final titleCtrl = TextEditingController();
+    final commentCtrl = TextEditingController();
+    int chosenRating = 5;
+    bool submitting = false;
+
+    final published = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetCtx) {
+        final theme = Theme.of(sheetCtx);
+        return StatefulBuilder(
+          builder: (ctx, setSheetState) {
+            return Padding(
+              padding: EdgeInsets.only(
+                bottom: MediaQuery.of(ctx).viewInsets.bottom,
+              ),
+              child: Container(
+                padding: const EdgeInsets.fromLTRB(20, 18, 20, 24),
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.surface,
+                  borderRadius:
+                      const BorderRadius.vertical(top: Radius.circular(22)),
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          'Write a Review',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.close),
+                          onPressed: () => Navigator.pop(ctx, false),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: List.generate(5, (index) {
+                        final star = index + 1;
+                        return IconButton(
+                          iconSize: 34,
+                          onPressed: () =>
+                              setSheetState(() => chosenRating = star),
+                          icon: Icon(
+                            star <= chosenRating
+                                ? Icons.star_rounded
+                                : Icons.star_outline_rounded,
+                            color: Colors.amber,
+                          ),
+                        );
+                      }),
+                    ),
+                    const SizedBox(height: 10),
+                    TextField(
+                      controller: titleCtrl,
+                      decoration: const InputDecoration(
+                        labelText: 'Headline (optional)',
+                        hintText: 'Summarize your experience',
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    TextField(
+                      controller: commentCtrl,
+                      maxLines: 3,
+                      decoration: const InputDecoration(
+                        labelText: 'Your Review',
+                        hintText: 'Share build quality, fit, or performance...',
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    ElevatedButton(
+                      onPressed: submitting
+                          ? null
+                          : () async {
+                              if (commentCtrl.text.trim().length < 5) {
+                                CustomToast.show(
+                                  ctx,
+                                  'Please enter at least 5 characters.',
+                                  isError: true,
+                                );
+                                return;
+                              }
+                              setSheetState(() => submitting = true);
+                              try {
+                                await _commerceService.submitReview(
+                                  productId: product.id,
+                                  rating: chosenRating,
+                                  title: titleCtrl.text,
+                                  comment: commentCtrl.text,
+                                );
+                                if (ctx.mounted) Navigator.pop(ctx, true);
+                              } catch (e) {
+                                if (ctx.mounted) {
+                                  CustomToast.show(
+                                    ctx,
+                                    ApiErrorHandler.sanitize(e),
+                                    isError: true,
+                                  );
+                                }
+                              } finally {
+                                if (ctx.mounted) {
+                                  setSheetState(() => submitting = false);
+                                }
+                              }
+                            },
+                      child: submitting
+                          ? const SizedBox(
+                              height: 18,
+                              width: 18,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Text('Submit Review'),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+
+    titleCtrl.dispose();
+    commentCtrl.dispose();
+
+    if (published == true && mounted) {
+      CustomToast.show(context, 'Thank you! Your review is live.');
+      await _loadReviews(product.id);
     }
   }
 
@@ -661,22 +843,43 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
         ),
         child: Row(
           children: [
-            PremiumInteractiveCard(
-              onTap: () {
-                CustomToast.show(context, 'Added to favorites!');
-              },
-              child: Container(
-                width: 56,
-                height: 56,
-                alignment: Alignment.center,
-                decoration: BoxDecoration(
-                  border: Border.all(
-                    color: colors.outline.withValues(alpha: 0.22),
+            Consumer<ShopStateProvider>(
+              builder: (context, shopState, _) {
+                final isWished = shopState.isWishlisted(product.id);
+                return PremiumInteractiveCard(
+                  onTap: () {
+                    shopState.toggleWishlist(product);
+                    CustomToast.show(
+                      context,
+                      isWished
+                          ? 'Removed from wishlist'
+                          : 'Saved to your wishlist!',
+                    );
+                  },
+                  child: Container(
+                    width: 56,
+                    height: 56,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: isWished
+                          ? Colors.redAccent.withValues(alpha: 0.1)
+                          : null,
+                      border: Border.all(
+                        color: isWished
+                            ? Colors.redAccent
+                            : colors.outline.withValues(alpha: 0.22),
+                      ),
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    child: Icon(
+                      isWished
+                          ? Icons.favorite_rounded
+                          : Icons.favorite_border_rounded,
+                      color: isWished ? Colors.redAccent : colors.onSurface,
+                    ),
                   ),
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                child: Icon(Icons.favorite_border, color: colors.onSurface),
-              ),
+                );
+              },
             ),
 
             const SizedBox(width: 16),
@@ -758,6 +961,8 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
             body: const Center(child: Text('Product not found.')),
           );
         }
+
+        _syncViewedAndReviews(product);
 
         return Scaffold(
           backgroundColor: theme.scaffoldBackgroundColor,
@@ -1186,8 +1391,20 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
 
   Widget _buildReviewsSummaryCard(Product product, ThemeData theme) {
     final colors = theme.colorScheme;
-    final rating = product.rating > 0 ? product.rating : 4.8;
-    final reviews = product.reviews > 0 ? product.reviews : 12;
+    final bundle = _reviewsBundle;
+    final hasLiveReviews = bundle != null && bundle.totalReviews > 0;
+    final rating = hasLiveReviews
+        ? bundle.averageRating
+        : (product.rating > 0 ? product.rating : 4.8);
+    final totalCount =
+        bundle != null ? bundle.totalReviews : product.reviews;
+
+    double barFraction(int star) {
+      if (bundle == null || bundle.totalReviews == 0) {
+        return const {5: 0.78, 4: 0.16, 3: 0.04, 2: 0.02, 1: 0.0}[star] ?? 0.0;
+      }
+      return (bundle.distribution[star] ?? 0) / bundle.totalReviews;
+    }
 
     return Container(
       padding: const EdgeInsets.all(18),
@@ -1205,13 +1422,10 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
                   style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800),
                 ),
               ),
-              Text(
-                '${rating.toStringAsFixed(1)} / 5.0',
-                style: TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w800,
-                  color: colors.primary,
-                ),
+              TextButton.icon(
+                onPressed: () => _openWriteReviewModal(product),
+                icon: const Icon(Icons.rate_review_outlined, size: 16),
+                label: const Text('Write Review'),
               ),
             ],
           ),
@@ -1241,7 +1455,7 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    '$reviews verified ratings',
+                    '$totalCount customer ${totalCount == 1 ? 'review' : 'reviews'}',
                     style: TextStyle(
                       fontSize: 10.5,
                       color: colors.onSurfaceVariant,
@@ -1253,15 +1467,110 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
               Expanded(
                 child: Column(
                   children: [
-                    _ratingBar('5★', 0.78, colors.primary),
-                    _ratingBar('4★', 0.16, colors.primary),
-                    _ratingBar('3★', 0.04, colors.primary),
-                    _ratingBar('2★', 0.02, colors.primary),
+                    _ratingBar('5★', barFraction(5), colors.primary),
+                    _ratingBar('4★', barFraction(4), colors.primary),
+                    _ratingBar('3★', barFraction(3), colors.primary),
+                    _ratingBar('2★', barFraction(2), colors.primary),
+                    _ratingBar('1★', barFraction(1), colors.primary),
                   ],
                 ),
               ),
             ],
           ),
+          if (_loadingReviews && bundle == null) ...[
+            const SizedBox(height: 14),
+            const LinearProgressIndicator(minHeight: 2),
+          ] else if (bundle != null && bundle.reviews.isEmpty) ...[
+            const SizedBox(height: 14),
+            Text(
+              'No written reviews yet. Be the first to review ${product.name}!',
+              style: TextStyle(
+                fontSize: 12.5,
+                color: colors.onSurfaceVariant,
+              ),
+            ),
+          ] else if (bundle != null && bundle.reviews.isNotEmpty) ...[
+            const SizedBox(height: 16),
+            const Divider(height: 1),
+            const SizedBox(height: 12),
+            ...bundle.reviews.take(6).map((rev) {
+              return Container(
+                margin: const EdgeInsets.only(bottom: 12),
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: colors.surfaceContainerHighest.withValues(alpha: 0.35),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Text(
+                          rev.author,
+                          style: const TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        if (rev.verifiedPurchase) ...[
+                          const SizedBox(width: 8),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 7, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: Colors.green.withValues(alpha: 0.14),
+                              borderRadius: BorderRadius.circular(99),
+                            ),
+                            child: const Text(
+                              'Verified Buyer',
+                              style: TextStyle(
+                                fontSize: 9.5,
+                                fontWeight: FontWeight.w800,
+                                color: Colors.green,
+                              ),
+                            ),
+                          ),
+                        ],
+                        const Spacer(),
+                        Row(
+                          children: List.generate(
+                            5,
+                            (i) => Icon(
+                              i < rev.rating
+                                  ? Icons.star_rounded
+                                  : Icons.star_outline_rounded,
+                              color: Colors.amber,
+                              size: 13,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    if (rev.title.isNotEmpty) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        rev.title,
+                        style: const TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ],
+                    const SizedBox(height: 4),
+                    Text(
+                      rev.comment,
+                      style: TextStyle(
+                        fontSize: 12.5,
+                        height: 1.45,
+                        color: colors.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            }),
+          ],
         ],
       ),
     );

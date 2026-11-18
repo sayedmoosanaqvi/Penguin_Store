@@ -14,6 +14,8 @@ import 'package:penguin_store/features/shop/screens/support_screen.dart';
 import 'package:penguin_store/features/shop/screens/profile_screen.dart';
 import 'package:penguin_store/features/shop/screens/showcase_3d_screen.dart';
 import 'package:penguin_store/features/shop/screens/admin_3d_studio_screen.dart';
+import 'package:penguin_store/features/shop/screens/wishlist_screen.dart';
+import 'package:penguin_store/features/shop/screens/addresses_screen.dart';
 import 'package:penguin_store/features/shop/services/notification_service.dart';
 import 'package:penguin_store/features/shop/widgets/bottom_nav_bar.dart';
 
@@ -110,6 +112,14 @@ final GoRouter appRouter = GoRouter(
         final email = state.uri.queryParameters['email'] ?? '';
         return NotificationScreen(userEmail: email);
       },
+    ),
+    GoRoute(
+      path: '/wishlist',
+      builder: (context, state) => const WishlistScreen(),
+    ),
+    GoRoute(
+      path: '/addresses',
+      builder: (context, state) => const AddressesScreen(),
     ),
     GoRoute(
       path: '/success',

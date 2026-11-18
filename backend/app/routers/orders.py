@@ -11,7 +11,7 @@ from app.database import SessionLocal
 from app.email_utils import send_order_confirmation
 from app.models import Notification, Order, OrderItem, Product, User
 from app.push_utils import send_push_notification
-from app.security import get_optional_current_user
+from app.security import get_current_user, resolve_user_role
 
 logger = logging.getLogger(__name__)
 
@@ -209,19 +209,18 @@ async def process_checkout(
 def get_order_history(
     customer_email: str,
     db: Session = Depends(get_db),
-    current_user: User | None = Depends(get_optional_current_user),
+    current_user: User = Depends(get_current_user),
 ):
     """
-    Retrieves all past orders, line items, and tracking/fulfillment status for a given customer email.
+    Retrieves past orders, line items, and tracking/fulfillment status.
+    Strictly requires JWT authentication and verifies ownership or admin role.
     """
     clean_email = customer_email.strip().lower()
     if not clean_email:
         return {"customer_email": customer_email, "orders": []}
 
-    # If a non-admin user provides a JWT token, enforce ownership of the email
     if (
-        current_user is not None
-        and not current_user.is_admin
+        resolve_user_role(current_user) != "admin"
         and current_user.email.strip().lower() != clean_email
     ):
         raise HTTPException(

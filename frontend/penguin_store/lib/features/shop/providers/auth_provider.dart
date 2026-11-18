@@ -5,11 +5,13 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:jwt_decoder/jwt_decoder.dart';
 import 'package:penguin_store/config/api_config.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:penguin_store/core/services/api_error_handler.dart';
+import 'package:penguin_store/core/services/secure_storage_service.dart';
 
 class AuthProvider with ChangeNotifier {
   bool _isAuthenticated = false;
   bool _isAdmin = false;
+  String _role = 'customer';
   bool _isInitializing = true;
   bool _isLoading = false;
 
@@ -19,11 +21,11 @@ class AuthProvider with ChangeNotifier {
 
   int _authRevision = 0;
 
-  static const String _tokenStorageKey = 'jwt_token';
-  static const Duration _timeout = Duration(seconds: 20);
+  static const Duration _timeout = Duration(seconds: 25);
 
   bool get isAuthenticated => _isAuthenticated;
   bool get isAdmin => _isAdmin;
+  String get role => _role;
   bool get isInitializing => _isInitializing;
   bool get isLoading => _isLoading;
 
@@ -34,21 +36,21 @@ class AuthProvider with ChangeNotifier {
   String get _baseUrl =>
       ApiConfig.baseUrl.replaceFirst(RegExp(r'/$'), '');
 
-  // Clear the local authentication state.
   void _clearSession() {
     _isAuthenticated = false;
     _isAdmin = false;
+    _role = 'customer';
     _token = null;
     _userEmail = null;
   }
 
-  // Validate the authenticated profile returned by FastAPI.
   bool _applyVerifiedSession(
     String token,
     Map<String, dynamic> profile,
   ) {
     final email = profile['email'];
     final isAdmin = profile['is_admin'];
+    final rawRole = profile['role']?.toString().trim().toLowerCase();
 
     if (email is! String ||
         email.trim().isEmpty ||
@@ -58,7 +60,10 @@ class AuthProvider with ChangeNotifier {
 
     _token = token;
     _userEmail = email;
-    _isAdmin = isAdmin;
+    _isAdmin = isAdmin || rawRole == 'admin';
+    _role = (rawRole != null && rawRole.isNotEmpty)
+        ? rawRole
+        : (_isAdmin ? 'admin' : 'customer');
     _isAuthenticated = true;
 
     notifyListeners();
@@ -121,13 +126,9 @@ class AuthProvider with ChangeNotifier {
     _errorMessage = null;
 
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final savedToken = await SecureStorageService.getToken();
 
       if (revision != _authRevision) return;
-
-      final savedToken = prefs.getString(
-        _tokenStorageKey,
-      );
 
       if (savedToken == null || savedToken.isEmpty) {
         _clearSession();
@@ -143,7 +144,7 @@ class AuthProvider with ChangeNotifier {
       }
 
       if (expired) {
-        await prefs.remove(_tokenStorageKey);
+        await SecureStorageService.deleteToken();
 
         if (revision == _authRevision) {
           _clearSession();
@@ -169,14 +170,14 @@ class AuthProvider with ChangeNotifier {
           return;
         }
 
-        await prefs.remove(_tokenStorageKey);
+        await SecureStorageService.deleteToken();
         _clearSession();
         return;
       }
 
       if (response.statusCode == 401 ||
           response.statusCode == 403) {
-        await prefs.remove(_tokenStorageKey);
+        await SecureStorageService.deleteToken();
         _clearSession();
 
         _errorMessage =
@@ -191,8 +192,10 @@ class AuthProvider with ChangeNotifier {
       if (revision != _authRevision) return;
 
       _clearSession();
-      _errorMessage =
-          'Unable to connect to the server. Please try again.';
+      _errorMessage = ApiErrorHandler.sanitize(
+        e,
+        fallback: 'Unable to connect to the server. Please try again.',
+      );
 
       debugPrint('Auto-login verification error: $e');
     } finally {
@@ -308,27 +311,26 @@ class AuthProvider with ChangeNotifier {
         profileResponse.body,
       );
 
-      if (profile == null ||
-          !_applyVerifiedSession(
-            accessToken,
-            profile,
-          )) {
+      if (profile == null) {
         _errorMessage =
             'The server returned an invalid user profile.';
         return false;
       }
 
-      final prefs = await SharedPreferences.getInstance();
-
-      if (revision != _authRevision) return false;
-
-      await prefs.setString(
-        _tokenStorageKey,
-        accessToken,
-      );
+      await SecureStorageService.setToken(accessToken);
 
       if (revision != _authRevision) {
-        await prefs.remove(_tokenStorageKey);
+        await SecureStorageService.deleteToken();
+        return false;
+      }
+
+      if (!_applyVerifiedSession(
+        accessToken,
+        profile,
+      )) {
+        await SecureStorageService.deleteToken();
+        _errorMessage =
+            'The server returned an invalid user profile.';
         return false;
       }
 
@@ -337,8 +339,10 @@ class AuthProvider with ChangeNotifier {
     } catch (e) {
       if (revision != _authRevision) return false;
 
-      _errorMessage =
-          'Unable to connect to the server. Please try again.';
+      _errorMessage = ApiErrorHandler.sanitize(
+        e,
+        fallback: 'Unable to connect to the server. Please try again.',
+      );
 
       debugPrint('Login error: $e');
       return false;
@@ -361,11 +365,40 @@ class AuthProvider with ChangeNotifier {
 
     notifyListeners();
 
-    final prefs = await SharedPreferences.getInstance();
+    await SecureStorageService.deleteToken();
+  }
 
-    await prefs.remove(
-      _tokenStorageKey,
-    );
+  /// Google Play Store compliance: permanently delete user account after password check.
+  Future<String?> deleteAccount(String password) async {
+    final token = _token ?? await SecureStorageService.getToken();
+    if (token == null || token.isEmpty) {
+      return 'You must be logged in to delete your account.';
+    }
+    try {
+      final response = await http
+          .delete(
+            Uri.parse('$_baseUrl/api/v1/auth/me'),
+            headers: {
+              'Authorization': 'Bearer $token',
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+            },
+            body: jsonEncode({'password': password}),
+          )
+          .timeout(_timeout);
+
+      if (response.statusCode == 200) {
+        await logout();
+        return null;
+      }
+      return ApiErrorHandler.fromStatus(
+        response.statusCode,
+        response.body,
+        fallback: 'Unable to delete account.',
+      );
+    } catch (e) {
+      return ApiErrorHandler.sanitize(e);
+    }
   }
 
   // Manually revalidate the current saved session.

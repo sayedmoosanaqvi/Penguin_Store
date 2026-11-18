@@ -1,6 +1,7 @@
 
 import 'dart:async';
 
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
@@ -8,6 +9,7 @@ import 'package:provider/provider.dart';
 
 import 'package:penguin_store/features/shop/models/product_model.dart';
 import 'package:penguin_store/features/shop/providers/auth_provider.dart';
+import 'package:penguin_store/features/shop/providers/shop_state_provider.dart';
 import 'package:penguin_store/features/shop/services/product_service.dart';
 import 'package:penguin_store/features/shop/services/visual_search_service.dart';
 import 'package:penguin_store/features/shop/widgets/top_nav_bar.dart';
@@ -33,6 +35,7 @@ class _HomeScreenState extends State<HomeScreen> {
   final ProductService _productService = ProductService();
   final VisualSearchService _visualSearchService = VisualSearchService();
   final TextEditingController _searchController = TextEditingController();
+  final FocusNode _searchFocusNode = FocusNode();
 
   late Future<List<Product>> _productsFuture;
 
@@ -56,8 +59,24 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
+    final savedCat = context.read<ShopStateProvider>().savedCategory;
+    if (_categories.contains(savedCat)) {
+      _selectedCategory = savedCat;
+    }
+    _searchFocusNode.addListener(_onSearchFocusChanged);
     _productsFuture = _loadProductsWithWarmupHint();
     Catalog3D.refresh();
+  }
+
+  void _onSearchFocusChanged() {
+    if (mounted) setState(() {});
+  }
+
+  void _selectCategory(String category) {
+    setState(() {
+      _selectedCategory = category;
+    });
+    context.read<ShopStateProvider>().setSavedCategory(category);
   }
 
   Future<List<Product>> _loadProductsWithWarmupHint() {
@@ -81,6 +100,8 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void dispose() {
     _warmupTimer?.cancel();
+    _searchFocusNode.removeListener(_onSearchFocusChanged);
+    _searchFocusNode.dispose();
     _searchController.dispose();
     super.dispose();
   }
@@ -316,6 +337,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
 
                   const SizedBox(height: 12),
+                  _buildRecentlyViewedStrip(theme),
                   _buildSectionHeader(theme),
                   _buildCategoryFilter(theme),
                   if (_showColdStartBanner) _buildWarmupBanner(theme),
@@ -341,94 +363,300 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildSearchBar(ThemeData theme) {
-    final isDark = theme.brightness == Brightness.dark;
+  Widget _buildRecentlyViewedStrip(ThemeData theme) {
+    final recent = context.watch<ShopStateProvider>().recentlyViewed;
+    if (recent.isEmpty) return const SizedBox.shrink();
 
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
-      child: Container(
-        height: 46,
-        decoration: BoxDecoration(
-          color: theme.colorScheme.surface,
-          borderRadius: BorderRadius.circular(11),
-          border: Border.all(
-            color: theme.primaryColor.withOpacity(0.18),
-          ),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(
-                isDark ? 0.08 : 0.025,
-              ),
-              blurRadius: 6,
-              offset: const Offset(0, 2),
-            ),
-          ],
-        ),
-        child: TextField(
-          controller: _searchController,
-          textInputAction: TextInputAction.search,
-          onChanged: (value) {
-            setState(() {
-              _searchQuery = value.trim().toLowerCase();
-            });
-          },
-          decoration: InputDecoration(
-            hintText: 'Search products in Penguin Store',
-            hintStyle: TextStyle(
-              fontSize: 12,
-              color: theme.colorScheme.onSurfaceVariant,
-            ),
-            prefixIcon: Icon(
-              Icons.search_rounded,
-              color: theme.primaryColor,
-              size: 21,
-            ),
-            suffixIcon: Row(
-              mainAxisSize: MainAxisSize.min,
+    return FadeSlideIn(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(14, 0, 14, 8),
+            child: Row(
               children: [
-                if (_searchQuery.isNotEmpty)
-                  IconButton(
-                    tooltip: 'Clear Search',
-                    icon: const Icon(
-                      Icons.close,
-                      size: 18,
-                    ),
-                    onPressed: () {
-                      _searchController.clear();
-
-                      setState(() {
-                        _searchQuery = '';
-                      });
-                    },
+                Icon(Icons.history_rounded, size: 17, color: theme.primaryColor),
+                const SizedBox(width: 6),
+                Text(
+                  'Recently Viewed',
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w800,
+                    color: theme.colorScheme.onSurface,
                   ),
-                Container(
-                  height: 25,
-                  width: 1,
-                  color: theme.dividerColor.withOpacity(0.3),
-                ),
-                IconButton(
-                  tooltip: 'AI Visual Search',
-                  icon: Icon(
-                    Icons.camera_alt_outlined,
-                    color: theme.primaryColor,
-                    size: 21,
-                  ),
-                  onPressed: _visualSearchLoading
-                      ? null
-                      : _showVisualSearchOptions,
                 ),
               ],
             ),
-            contentPadding: const EdgeInsets.symmetric(
-              horizontal: 8,
-              vertical: 11,
-            ),
-            border: InputBorder.none,
-            enabledBorder: InputBorder.none,
-            focusedBorder: InputBorder.none,
-            filled: false,
           ),
-        ),
+          SizedBox(
+            height: 132,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              itemCount: recent.length,
+              separatorBuilder: (_, __) => const SizedBox(width: 10),
+              itemBuilder: (context, index) {
+                final item = recent[index];
+                return InkWell(
+                  borderRadius: BorderRadius.circular(12),
+                  onTap: () => context.push('/product/${item.id}'),
+                  child: Container(
+                    width: 102,
+                    padding: const EdgeInsets.all(6),
+                    decoration: BoxDecoration(
+                      color: theme.colorScheme.surface,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: theme.dividerColor.withValues(alpha: 0.2),
+                      ),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(8),
+                            child: CachedNetworkImage(
+                              imageUrl: item.imageUrl,
+                              width: double.infinity,
+                              fit: BoxFit.contain,
+                              errorWidget: (_, __, ___) => const Icon(
+                                Icons.image_not_supported_outlined,
+                                size: 22,
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 5),
+                        Text(
+                          item.name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 10.5,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        Text(
+                          '\$${item.price.toStringAsFixed(2)}',
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w800,
+                            color: theme.primaryColor,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+          const SizedBox(height: 14),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSearchBar(ThemeData theme) {
+    final isDark = theme.brightness == Brightness.dark;
+    final shopState = context.watch<ShopStateProvider>();
+    final recentTerms = shopState.recentSearches;
+    final matchingProducts = _searchQuery.isEmpty
+        ? const <Product>[]
+        : _lastProducts
+            .where((p) =>
+                p.name.toLowerCase().contains(_searchQuery) ||
+                p.category.toLowerCase().contains(_searchQuery))
+            .take(5)
+            .toList();
+    final showSuggestions = _searchFocusNode.hasFocus &&
+        (recentTerms.isNotEmpty || matchingProducts.isNotEmpty);
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Container(
+            height: 46,
+            decoration: BoxDecoration(
+              color: theme.colorScheme.surface,
+              borderRadius: BorderRadius.circular(11),
+              border: Border.all(
+                color: theme.primaryColor.withOpacity(0.18),
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(
+                    isDark ? 0.08 : 0.025,
+                  ),
+                  blurRadius: 6,
+                  offset: const Offset(0, 2),
+                ),
+              ],
+            ),
+            child: TextField(
+              controller: _searchController,
+              focusNode: _searchFocusNode,
+              textInputAction: TextInputAction.search,
+              onChanged: (value) {
+                setState(() {
+                  _searchQuery = value.trim().toLowerCase();
+                });
+              },
+              onSubmitted: (value) {
+                if (value.trim().length >= 2) {
+                  shopState.addSearchTerm(value);
+                }
+                _searchFocusNode.unfocus();
+              },
+              decoration: InputDecoration(
+                hintText: 'Search products in Penguin Store',
+                hintStyle: TextStyle(
+                  fontSize: 12,
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+                prefixIcon: Icon(
+                  Icons.search_rounded,
+                  color: theme.primaryColor,
+                  size: 21,
+                ),
+                suffixIcon: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (_searchQuery.isNotEmpty)
+                      IconButton(
+                        tooltip: 'Clear Search',
+                        icon: const Icon(
+                          Icons.close,
+                          size: 18,
+                        ),
+                        onPressed: () {
+                          _searchController.clear();
+                          setState(() {
+                            _searchQuery = '';
+                          });
+                        },
+                      ),
+                    Container(
+                      height: 25,
+                      width: 1,
+                      color: theme.dividerColor.withOpacity(0.3),
+                    ),
+                    IconButton(
+                      tooltip: 'AI Visual Search',
+                      icon: Icon(
+                        Icons.camera_alt_outlined,
+                        color: theme.primaryColor,
+                        size: 21,
+                      ),
+                      onPressed: _visualSearchLoading
+                          ? null
+                          : _showVisualSearchOptions,
+                    ),
+                  ],
+                ),
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 8,
+                  vertical: 11,
+                ),
+                border: InputBorder.none,
+                enabledBorder: InputBorder.none,
+                focusedBorder: InputBorder.none,
+                filled: false,
+              ),
+            ),
+          ),
+          if (showSuggestions)
+            Container(
+              margin: const EdgeInsets.only(top: 6),
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: theme.colorScheme.surface,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: theme.dividerColor.withValues(alpha: 0.25),
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.06),
+                    blurRadius: 10,
+                    offset: const Offset(0, 4),
+                  ),
+                ],
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (recentTerms.isNotEmpty) ...[
+                    Text(
+                      'Recent Searches',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 4,
+                      children: recentTerms.map((term) {
+                        return InputChip(
+                          label: Text(term, style: const TextStyle(fontSize: 11)),
+                          visualDensity: VisualDensity.compact,
+                          onPressed: () {
+                            _searchController.text = term;
+                            setState(() => _searchQuery = term.toLowerCase());
+                            _searchFocusNode.unfocus();
+                          },
+                          onDeleted: () => shopState.removeSearchTerm(term),
+                        );
+                      }).toList(),
+                    ),
+                  ],
+                  if (matchingProducts.isNotEmpty) ...[
+                    if (recentTerms.isNotEmpty) const Divider(height: 14),
+                    Text(
+                      'Suggestions',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                    ...matchingProducts.map((p) {
+                      return ListTile(
+                        dense: true,
+                        contentPadding: EdgeInsets.zero,
+                        leading: const Icon(Icons.search_rounded, size: 17),
+                        title: Text(
+                          p.name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 12.5),
+                        ),
+                        trailing: Text(
+                          '\$${p.price.toStringAsFixed(2)}',
+                          style: TextStyle(
+                            fontSize: 11.5,
+                            fontWeight: FontWeight.w700,
+                            color: theme.primaryColor,
+                          ),
+                        ),
+                        onTap: () {
+                          shopState.addSearchTerm(p.name);
+                          _searchFocusNode.unfocus();
+                          context.push('/product/${p.id}');
+                        },
+                      );
+                    }),
+                  ],
+                ],
+              ),
+            ),
+        ],
       ),
     );
   }
@@ -459,11 +687,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
           return InkWell(
             borderRadius: BorderRadius.circular(11),
-            onTap: () {
-              setState(() {
-                _selectedCategory = item.$2;
-              });
-            },
+            onTap: () => _selectCategory(item.$2),
             child: SizedBox(
               width: 76,
               child: Column(
@@ -789,11 +1013,7 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             padding: const EdgeInsets.symmetric(horizontal: 3),
             visualDensity: VisualDensity.compact,
-            onSelected: (_) {
-              setState(() {
-                _selectedCategory = category;
-              });
-            },
+            onSelected: (_) => _selectCategory(category),
           );
         },
       ),
@@ -963,9 +1183,8 @@ class _HomeScreenState extends State<HomeScreen> {
                   TextButton(
                     onPressed: () {
                       _searchController.clear();
-
+                      _selectCategory('All');
                       setState(() {
-                        _selectedCategory = 'All';
                         _searchQuery = '';
                         _adv = const ProductFilters();
                       });

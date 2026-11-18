@@ -21,7 +21,9 @@ No transformers.
 
 from __future__ import annotations
 
+import hashlib
 import os
+from collections import OrderedDict
 from io import BytesIO
 from threading import Lock
 from typing import Any
@@ -157,6 +159,12 @@ class ImageVectorService:
         self._model: ImageEmbedding | None = None
         self._model_lock = Lock()
         self._inference_lock = Lock()
+        self._query_cache: OrderedDict[str, dict[str, Any]] = OrderedDict()
+        self._query_cache_lock = Lock()
+
+    def warmup(self) -> None:
+        """Pre-load the ONNX ResNet-50 model once at server startup."""
+        self._get_model()
 
     def _get_model(self) -> ImageEmbedding:
         if self._model is not None:
@@ -244,6 +252,13 @@ class ImageVectorService:
         if not image_bytes:
             raise ValueError("Image data is empty.")
 
+        digest = hashlib.sha256(image_bytes).hexdigest()
+        with self._query_cache_lock:
+            cached = self._query_cache.get(digest)
+            if cached is not None:
+                self._query_cache.move_to_end(digest)
+                return cached
+
         model = self._get_model()
 
         raw_image = None
@@ -295,7 +310,7 @@ class ImageVectorService:
                 ensemble += arr * float(weight)
             ensemble = _l2_normalize(ensemble)
 
-            return {
+            result = {
                 "primary_vector": [float(x) for x in ensemble],
                 "base_vector": [float(x) for x in norm_vectors[0]],
                 "variant_vectors": [
@@ -310,6 +325,12 @@ class ImageVectorService:
                 "was_deblurred": bool(metrics["is_blurry"]),
                 "is_blank_or_noise": metrics["is_blank_or_noise"],
             }
+            with self._query_cache_lock:
+                self._query_cache[digest] = result
+                self._query_cache.move_to_end(digest)
+                if len(self._query_cache) > 48:
+                    self._query_cache.popitem(last=False)
+            return result
 
         except ValueError:
             raise
@@ -345,3 +366,7 @@ def generate_image_vector(image_bytes: bytes) -> list[float]:
 
 def analyze_and_embed_query(image_bytes: bytes) -> dict[str, Any]:
     return image_service.analyze_and_embed_query(image_bytes)
+
+
+def warmup_vision_model() -> None:
+    image_service.warmup()

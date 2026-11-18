@@ -1,3 +1,4 @@
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -7,6 +8,7 @@ import 'package:penguin_store/config/api_config.dart';
 import 'package:penguin_store/features/shop/models/product_model.dart';
 import 'package:penguin_store/features/shop/providers/auth_provider.dart';
 import 'package:penguin_store/features/shop/providers/cart_provider.dart';
+import 'package:penguin_store/features/shop/providers/shop_state_provider.dart';
 import 'package:penguin_store/features/shop/screens/product_details_screen.dart';
 import 'package:penguin_store/features/shop/services/product_service.dart';
 import 'package:penguin_store/features/shop/services/showcase_3d_service.dart';
@@ -266,6 +268,45 @@ class _ProductCardState extends State<ProductCard> {
                               ],
                             ),
                           ),
+                          Positioned(
+                            top: 4,
+                            right: isAdmin ? 40 : 4,
+                            child: Consumer<ShopStateProvider>(
+                              builder: (context, shopState, _) {
+                                final wished =
+                                    shopState.isWishlisted(product.id);
+                                return Material(
+                                  color: theme.colorScheme.surface
+                                      .withOpacity(0.92),
+                                  borderRadius: BorderRadius.circular(20),
+                                  child: InkWell(
+                                    borderRadius: BorderRadius.circular(20),
+                                    onTap: () {
+                                      shopState.toggleWishlist(product);
+                                      CustomToast.show(
+                                        context,
+                                        wished
+                                            ? 'Removed from wishlist'
+                                            : 'Saved to wishlist',
+                                      );
+                                    },
+                                    child: Padding(
+                                      padding: const EdgeInsets.all(6),
+                                      child: Icon(
+                                        wished
+                                            ? Icons.favorite_rounded
+                                            : Icons.favorite_border_rounded,
+                                        color: wished
+                                            ? Colors.redAccent
+                                            : theme.colorScheme.onSurfaceVariant,
+                                        size: 16,
+                                      ),
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
+                          ),
                           if (isAdmin)
                             Positioned(
                               top: 4,
@@ -493,31 +534,27 @@ class _ProductNetworkImageState extends State<_ProductNetworkImage> {
       color: widget.isDark
           ? Colors.white.withOpacity(0.03)
           : const Color(0xFFF8FAFC),
-      child: Image.network(
-        targetUrl,
+      child: CachedNetworkImage(
+        imageUrl: targetUrl,
         key: ValueKey(targetUrl),
         width: double.infinity,
         height: double.infinity,
         fit: BoxFit.contain,
-        frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
-          if (wasSynchronouslyLoaded || frame != null) {
-            return child;
-          }
-          return Shimmer.fromColors(
-            baseColor: widget.isDark
-                ? Colors.grey.shade800
-                : Colors.grey.shade200,
-            highlightColor: widget.isDark
-                ? Colors.grey.shade700
-                : Colors.grey.shade50,
-            child: Container(
-              width: double.infinity,
-              height: double.infinity,
-              color: Colors.white,
-            ),
-          );
-        },
-        errorBuilder: (context, error, stack) {
+        fadeInDuration: const Duration(milliseconds: 180),
+        placeholder: (context, url) => Shimmer.fromColors(
+          baseColor: widget.isDark
+              ? Colors.grey.shade800
+              : Colors.grey.shade200,
+          highlightColor: widget.isDark
+              ? Colors.grey.shade700
+              : Colors.grey.shade50,
+          child: Container(
+            width: double.infinity,
+            height: double.infinity,
+            color: Colors.white,
+          ),
+        ),
+        errorWidget: (context, url, error) {
           if (!_useProxyFallback &&
               (widget.productId > 0 || widget.imageUrl.trim().isNotEmpty)) {
             WidgetsBinding.instance.addPostFrameCallback((_) {

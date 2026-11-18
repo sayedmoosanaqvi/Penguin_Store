@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 import 'package:penguin_store/core/widgets/animated_widgets.dart';
 import 'package:penguin_store/features/shop/providers/auth_provider.dart';
+import 'package:penguin_store/features/shop/providers/shop_state_provider.dart';
 
 class TopNavBar extends StatelessWidget implements PreferredSizeWidget {
   const TopNavBar({super.key});
@@ -15,6 +16,7 @@ class TopNavBar extends StatelessWidget implements PreferredSizeWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final auth = context.watch<AuthProvider>();
+    final unreadNotifs = context.watch<ShopStateProvider>().unreadNotifications;
     final primaryColor = theme.primaryColor;
 
     return AppBar(
@@ -78,9 +80,17 @@ class TopNavBar extends StatelessWidget implements PreferredSizeWidget {
           },
         ),
         IconButton(
-          icon: const Icon(
-            Icons.notifications_none_rounded,
-            size: 22,
+          icon: Badge(
+            isLabelVisible: unreadNotifs > 0,
+            label: Text(
+              unreadNotifs > 9 ? '9+' : '$unreadNotifs',
+              style: const TextStyle(fontSize: 9.5),
+            ),
+            backgroundColor: theme.colorScheme.error,
+            child: const Icon(
+              Icons.notifications_none_rounded,
+              size: 22,
+            ),
           ),
           tooltip: 'Notifications',
           onPressed: () {

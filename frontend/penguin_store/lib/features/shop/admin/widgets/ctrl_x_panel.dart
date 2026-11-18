@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:penguin_store/config/api_config.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:penguin_store/core/services/secure_storage_service.dart';
 
 class CtrlXPanel extends StatefulWidget {
   const CtrlXPanel({super.key});
@@ -43,8 +43,7 @@ class _CtrlXPanelState extends State<CtrlXPanel> {
     _commandController.clear();
 
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final token = prefs.getString('jwt_token')?.trim();
+      final token = (await SecureStorageService.getToken())?.trim();
       final base = ApiConfig.baseUrl.replaceFirst(RegExp(r'/$'), '');
 
       http.Response response;

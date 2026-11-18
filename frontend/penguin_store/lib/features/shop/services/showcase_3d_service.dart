@@ -2,9 +2,9 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
-import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:penguin_store/config/api_config.dart';
+import 'package:penguin_store/core/services/secure_storage_service.dart';
 import 'package:penguin_store/features/shop/models/product_model.dart';
 import 'package:penguin_store/features/shop/services/premium_3d_service.dart';
 
@@ -123,8 +123,7 @@ class Showcase3DService {
     // Fallback: if /showcase returned 404/403 (e.g. backend pending redeploy or
     // restricted mode) and user has a valid JWT token, try admin/customer endpoints.
     if (response.statusCode == 404 || response.statusCode == 403) {
-      final prefs = await SharedPreferences.getInstance();
-      final token = prefs.getString('jwt_token')?.trim() ?? '';
+      final token = (await SecureStorageService.getToken())?.trim() ?? '';
 
       if (token.isNotEmpty) {
         final authHeaders = {

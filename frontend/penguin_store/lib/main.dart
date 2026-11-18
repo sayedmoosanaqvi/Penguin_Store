@@ -2,6 +2,7 @@
 import 'package:flutter/material.dart';
 import 'package:penguin_store/features/shop/providers/auth_provider.dart';
 import 'package:penguin_store/features/shop/providers/cart_provider.dart';
+import 'package:penguin_store/features/shop/providers/shop_state_provider.dart';
 import 'package:penguin_store/helpers/shared_preferences.dart';
 import 'package:penguin_store/helpers/theme_provider.dart';
 import 'package:provider/provider.dart';
@@ -50,6 +51,9 @@ Future<void> main() async {
           create: (_) => CartProvider(),
         ),
         ChangeNotifierProvider(
+          create: (_) => ShopStateProvider(),
+        ),
+        ChangeNotifierProvider(
           create: (_) => AuthProvider()..tryAutoLogin(),
         ),
         ChangeNotifierProvider(
@@ -66,17 +70,58 @@ class PenguinStoreApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Consumer<ThemeProvider>(
-      builder: (context, themeProvider, child) {
-        return MaterialApp.router(
-          title: 'Penguin Store',
-          debugShowCheckedModeBanner: false,
-          routerConfig: appRouter,
-          theme: ThemeProvider.lightTheme(),
-          darkTheme: ThemeProvider.darkTheme(),
-          themeMode: themeProvider.themeMode,
-        );
-      },
+    return _AuthSessionSyncBridge(
+      child: Consumer<ThemeProvider>(
+        builder: (context, themeProvider, child) {
+          return MaterialApp.router(
+            title: 'Penguin Store',
+            debugShowCheckedModeBanner: false,
+            routerConfig: appRouter,
+            theme: ThemeProvider.lightTheme(),
+            darkTheme: ThemeProvider.darkTheme(),
+            themeMode: themeProvider.themeMode,
+          );
+        },
+      ),
     );
   }
+}
+
+class _AuthSessionSyncBridge extends StatefulWidget {
+  final Widget child;
+  const _AuthSessionSyncBridge({required this.child});
+
+  @override
+  State<_AuthSessionSyncBridge> createState() =>
+      _AuthSessionSyncBridgeState();
+}
+
+class _AuthSessionSyncBridgeState extends State<_AuthSessionSyncBridge> {
+  String? _lastSyncedToken;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final auth = context.watch<AuthProvider>();
+    final token = auth.isAuthenticated ? auth.token : null;
+
+    if (token != null && token.isNotEmpty && token != _lastSyncedToken) {
+      _lastSyncedToken = token;
+      final email = auth.userEmail;
+      Future.microtask(() {
+        if (!mounted) return;
+        context.read<CartProvider>().syncWithServer();
+        context.read<ShopStateProvider>().syncFromServer(userEmail: email);
+      });
+    } else if (!auth.isAuthenticated && _lastSyncedToken != null) {
+      _lastSyncedToken = null;
+      Future.microtask(() {
+        if (!mounted) return;
+        context.read<ShopStateProvider>().clearPrivateSessionData();
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.child;
 }

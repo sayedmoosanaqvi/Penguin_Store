@@ -218,6 +218,18 @@ class RightDrawer extends StatelessWidget {
                 ),
                 _drawerTile(
                   context,
+                  icon: Icons.favorite_border_rounded,
+                  title: 'My Wishlist',
+                  onTap: () => _openPage(context, '/wishlist'),
+                ),
+                _drawerTile(
+                  context,
+                  icon: Icons.location_on_outlined,
+                  title: 'Saved Addresses',
+                  onTap: () => _openPage(context, '/addresses'),
+                ),
+                _drawerTile(
+                  context,
                   icon: Icons.notifications_none_rounded,
                   title: 'Notifications',
                   onTap: () {

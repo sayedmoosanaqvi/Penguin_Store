@@ -1122,9 +1122,27 @@ def get_3d_showcase(
     if not by_product:
         return {"count": 0, "items": []}
 
-    products = db.query(Product).filter(
-        Product.id.in_(list(by_product))
-    ).all()
+    from sqlalchemy.orm import load_only
+    products = (
+        db.query(Product)
+        .options(
+            load_only(
+                Product.id,
+                Product.name,
+                Product.description,
+                Product.price,
+                Product.original_price,
+                Product.image_url,
+                Product.category,
+                Product.rating,
+                Product.reviews,
+                Product.discount_percent,
+                Product.is_featured,
+            )
+        )
+        .filter(Product.id.in_(list(by_product)))
+        .all()
+    )
 
     items = []
     for product in sorted(products, key=lambda p: p.id, reverse=True):
@@ -1179,6 +1197,12 @@ def delete_admin_model(
 
     if asset is None:
         raise HTTPException(status_code=404, detail="3D model not found.")
+
+    if asset.product_id == 144 and asset.is_active:
+        raise HTTPException(
+            status_code=403,
+            detail="Reference 3D showcase asset for Product #144 is protected.",
+        )
 
     path, bucket = asset.storage_path, asset.storage_bucket
 

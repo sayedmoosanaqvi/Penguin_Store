@@ -2,9 +2,9 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
-import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:penguin_store/config/api_config.dart';
+import 'package:penguin_store/core/services/secure_storage_service.dart';
 
 class Admin3DModelRow {
   final int id;
@@ -52,8 +52,7 @@ class Admin3DService {
   static const Duration _uploadTimeout = Duration(minutes: 4);
 
   Future<Map<String, String>> _headers() async {
-    final prefs = await SharedPreferences.getInstance();
-    final token = prefs.getString('jwt_token')?.trim() ?? '';
+    final token = (await SecureStorageService.getToken())?.trim() ?? '';
     if (token.isEmpty) throw Exception('Admin login is required.');
     return {'Authorization': 'Bearer $token', 'Accept': 'application/json'};
   }

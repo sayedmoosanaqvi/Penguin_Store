@@ -1,6 +1,7 @@
 import os
 import re
 from collections import Counter
+from functools import lru_cache
 from math import sqrt
 
 
@@ -26,6 +27,7 @@ KB_PATH = os.path.join(
 # KNOWLEDGE BASE LOADER
 # ===========================================================================
 
+@lru_cache(maxsize=1)
 def load_knowledge_chunks() -> list[str]:
     """
     Load Penguin Store's knowledge base and split it into policy/document

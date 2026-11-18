@@ -7,9 +7,13 @@ import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 
 import 'package:penguin_store/config/api_config.dart';
+import 'package:penguin_store/core/services/api_error_handler.dart';
+import 'package:penguin_store/core/services/secure_storage_service.dart';
 import 'package:penguin_store/core/widgets/animated_widgets.dart';
 import 'package:penguin_store/features/shop/providers/auth_provider.dart';
 import 'package:penguin_store/features/shop/providers/cart_provider.dart';
+import 'package:penguin_store/features/shop/providers/shop_state_provider.dart';
+import 'package:penguin_store/features/shop/services/commerce_service.dart';
 import 'package:penguin_store/features/shop/services/stripe_payment_service.dart';
 import 'package:penguin_store/features/shop/widgets/custom_toast.dart';
 
@@ -21,10 +25,13 @@ class CartScreen extends StatefulWidget {
 }
 
 class _CartScreenState extends State<CartScreen> {
+  // Stripe code remains intact and ready; paused while COD/manual dispatch is active.
+  static const bool _stripePaymentsEnabled = false;
+
   bool _isCheckingOut = false;
 
   Future<void> _processDynamicCheckout(
-    String email,
+    _CheckoutDetails details,
     List<CartItem> items,
   ) async {
     if (_isCheckingOut || items.isEmpty) return;
@@ -39,46 +46,83 @@ class _CartScreenState extends State<CartScreen> {
         };
       }).toList();
 
-      final checkoutResponse = await http.post(
-        Uri.parse('${ApiConfig.baseUrl}/api/orders/checkout'),
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: jsonEncode({
-          'customer_name': 'Valued Customer',
-          'customer_email': email,
-          'shipping_address': '123 Main St',
-          'city': 'Sargodha',
-          'postal_code': '40100',
-          'items': cartPayloadItems,
-        }),
-      );
+      final token = (await SecureStorageService.getToken())?.trim();
+      final checkoutResponse = await http
+          .post(
+            Uri.parse('${ApiConfig.baseUrl}/api/orders/checkout'),
+            headers: {
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+              if (token != null && token.isNotEmpty)
+                'Authorization': 'Bearer $token',
+            },
+            body: jsonEncode({
+              'customer_name': details.name,
+              'customer_email': details.email,
+              'shipping_address': details.streetAddress,
+              'city': details.city,
+              'state_province': details.stateProvince,
+              'country': details.country,
+              'postal_code': details.postalCode,
+              'items': cartPayloadItems,
+            }),
+          )
+          .timeout(const Duration(seconds: 25));
 
       if (checkoutResponse.statusCode != 200) {
         throw Exception(
-          'Checkout failed: ${checkoutResponse.body}',
+          ApiErrorHandler.fromStatus(
+            checkoutResponse.statusCode,
+            checkoutResponse.body,
+            fallback: 'Could not place your order right now.',
+          ),
         );
       }
 
-      final orderData = jsonDecode(checkoutResponse.body);
-
-      final int createdOrderId =
-          (orderData['order_id'] as num).toInt();
+      final orderData = jsonDecode(checkoutResponse.body) as Map;
+      final int createdOrderId = (orderData['order_id'] as num).toInt();
 
       if (!mounted) return;
 
-      await StripePaymentService.startCheckout(
-        orderId: createdOrderId,
-        currency: 'usd',
-      );
+      if (details.saveAddress) {
+        await context.read<ShopStateProvider>().addAddress(
+              label: 'Home',
+              recipientName: details.name,
+              phone: '',
+              streetAddress: details.streetAddress,
+              city: details.city,
+              stateProvince: details.stateProvince,
+              country: details.country,
+              postalCode: details.postalCode,
+              isDefault: true,
+            );
+      }
 
-      // Keep cart items until payment success is verified.
+      if (!mounted) return;
+
+      if (_stripePaymentsEnabled) {
+        await StripePaymentService.startCheckout(
+          orderId: createdOrderId,
+          currency: 'usd',
+        );
+        return;
+      }
+
+      context.read<CartProvider>().clear();
+      CustomToast.show(
+        context,
+        'Order #$createdOrderId placed! Confirmation sent to ${details.email}.',
+      );
+      context.go('/success');
     } catch (e) {
       if (!mounted) return;
 
       CustomToast.show(
         context,
-        'Checkout error: $e',
+        ApiErrorHandler.sanitize(
+          e,
+          fallback: 'Checkout could not be completed. Please try again.',
+        ),
         isError: true,
       );
     } finally {
@@ -94,20 +138,23 @@ class _CartScreenState extends State<CartScreen> {
     if (_isCheckingOut || items.isEmpty) return;
 
     final auth = context.read<AuthProvider>();
+    final shopState = context.read<ShopStateProvider>();
 
-    final email = await showDialog<String>(
+    final details = await showDialog<_CheckoutDetails>(
       context: context,
       barrierDismissible: true,
       builder: (dialogContext) {
-        return _CheckoutEmailDialog(
+        return _CheckoutDetailsDialog(
           initialEmail: auth.userEmail ?? '',
+          isAuthenticated: auth.isAuthenticated,
+          savedAddresses: shopState.addresses,
         );
       },
     );
 
-    if (!mounted || email == null) return;
+    if (!mounted || details == null) return;
 
-    await _processDynamicCheckout(email, items);
+    await _processDynamicCheckout(details, items);
   }
 
   Widget _buildEmptyState(ThemeData theme) {
@@ -552,79 +599,256 @@ class _CartScreenState extends State<CartScreen> {
   }
 }
 
-class _CheckoutEmailDialog extends StatefulWidget {
-  final String initialEmail;
+class _CheckoutDetails {
+  final String name;
+  final String email;
+  final String streetAddress;
+  final String city;
+  final String stateProvince;
+  final String country;
+  final String postalCode;
+  final bool saveAddress;
 
-  const _CheckoutEmailDialog({
+  const _CheckoutDetails({
+    required this.name,
+    required this.email,
+    required this.streetAddress,
+    required this.city,
+    required this.stateProvince,
+    required this.country,
+    required this.postalCode,
+    required this.saveAddress,
+  });
+}
+
+class _CheckoutDetailsDialog extends StatefulWidget {
+  final String initialEmail;
+  final bool isAuthenticated;
+  final List<SavedAddress> savedAddresses;
+
+  const _CheckoutDetailsDialog({
     required this.initialEmail,
+    required this.isAuthenticated,
+    required this.savedAddresses,
   });
 
   @override
-  State<_CheckoutEmailDialog> createState() =>
-      _CheckoutEmailDialogState();
+  State<_CheckoutDetailsDialog> createState() =>
+      _CheckoutDetailsDialogState();
 }
 
-class _CheckoutEmailDialogState extends State<_CheckoutEmailDialog> {
+class _CheckoutDetailsDialogState extends State<_CheckoutDetailsDialog> {
   final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
 
+  late final TextEditingController _nameController;
   late final TextEditingController _emailController;
+  late final TextEditingController _streetController;
+  late final TextEditingController _cityController;
+  late final TextEditingController _stateController;
+  late final TextEditingController _postalController;
+
+  bool _saveAddress = false;
+  int? _selectedAddressId;
 
   @override
   void initState() {
     super.initState();
 
+    SavedAddress? def;
+    if (widget.savedAddresses.isNotEmpty) {
+      def = widget.savedAddresses.firstWhere(
+        (a) => a.isDefault,
+        orElse: () => widget.savedAddresses.first,
+      );
+      _selectedAddressId = def.id;
+    }
+
+    _nameController = TextEditingController(
+      text: def?.recipientName ?? '',
+    );
     _emailController = TextEditingController(
       text: widget.initialEmail,
     );
+    _streetController = TextEditingController(
+      text: def?.streetAddress ?? '',
+    );
+    _cityController = TextEditingController(
+      text: def?.city ?? '',
+    );
+    _stateController = TextEditingController(
+      text: def?.stateProvince ?? 'Punjab',
+    );
+    _postalController = TextEditingController(
+      text: def?.postalCode ?? '',
+    );
+  }
+
+  void _applySavedAddress(SavedAddress addr) {
+    setState(() {
+      _selectedAddressId = addr.id;
+      _nameController.text = addr.recipientName;
+      _streetController.text = addr.streetAddress;
+      _cityController.text = addr.city;
+      _stateController.text = addr.stateProvince;
+      _postalController.text = addr.postalCode;
+      _saveAddress = false;
+    });
   }
 
   @override
   void dispose() {
+    _nameController.dispose();
     _emailController.dispose();
+    _streetController.dispose();
+    _cityController.dispose();
+    _stateController.dispose();
+    _postalController.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return AlertDialog(
       title: const Text(
-        'Checkout Details',
+        'Shipping & Checkout',
         style: TextStyle(
           fontSize: 18,
-          fontWeight: FontWeight.w700,
+          fontWeight: FontWeight.w800,
         ),
       ),
-      content: Form(
-        key: _formKey,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'Where should we send your order receipt?',
-              style: TextStyle(fontSize: 12),
+      content: SizedBox(
+        width: 440,
+        child: SingleChildScrollView(
+          child: Form(
+            key: _formKey,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: theme.primaryColor.withValues(alpha: 0.08),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: const Row(
+                    children: [
+                      Icon(Icons.local_shipping_outlined, size: 18),
+                      SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'Cash on Delivery / Pay on Dispatch (Online card payments are paused).',
+                          style: TextStyle(fontSize: 11.5),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                if (widget.savedAddresses.isNotEmpty) ...[
+                  const SizedBox(height: 12),
+                  const Text(
+                    'Saved Addresses',
+                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
+                  ),
+                  const SizedBox(height: 6),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 6,
+                    children: widget.savedAddresses.map((addr) {
+                      return ChoiceChip(
+                        label: Text('${addr.label} • ${addr.city}'),
+                        selected: _selectedAddressId == addr.id,
+                        onSelected: (_) => _applySavedAddress(addr),
+                      );
+                    }).toList(),
+                  ),
+                ],
+                const SizedBox(height: 12),
+                TextFormField(
+                  controller: _nameController,
+                  decoration: const InputDecoration(
+                    labelText: 'Full Name',
+                    prefixIcon: Icon(Icons.person_outline),
+                  ),
+                  validator: (v) =>
+                      (v == null || v.trim().length < 2) ? 'Required' : null,
+                ),
+                const SizedBox(height: 10),
+                TextFormField(
+                  controller: _emailController,
+                  keyboardType: TextInputType.emailAddress,
+                  decoration: const InputDecoration(
+                    labelText: 'Receipt Email',
+                    prefixIcon: Icon(Icons.email_outlined),
+                  ),
+                  validator: (value) {
+                    final email = value?.trim() ?? '';
+                    if (email.isEmpty ||
+                        !RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
+                            .hasMatch(email)) {
+                      return 'Enter a valid email address';
+                    }
+                    return null;
+                  },
+                ),
+                const SizedBox(height: 10),
+                TextFormField(
+                  controller: _streetController,
+                  decoration: const InputDecoration(
+                    labelText: 'Street Address',
+                    prefixIcon: Icon(Icons.home_outlined),
+                  ),
+                  validator: (v) => (v == null || v.trim().length < 4)
+                      ? 'Enter delivery street address'
+                      : null,
+                ),
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextFormField(
+                        controller: _cityController,
+                        decoration: const InputDecoration(labelText: 'City'),
+                        validator: (v) => (v == null || v.trim().isEmpty)
+                            ? 'Required'
+                            : null,
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: TextFormField(
+                        controller: _postalController,
+                        decoration:
+                            const InputDecoration(labelText: 'Postal Code'),
+                        validator: (v) => (v == null || v.trim().isEmpty)
+                            ? 'Required'
+                            : null,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                TextFormField(
+                  controller: _stateController,
+                  decoration:
+                      const InputDecoration(labelText: 'State / Province'),
+                ),
+                if (widget.isAuthenticated) ...[
+                  const SizedBox(height: 6),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text(
+                      'Save this shipping address',
+                      style: TextStyle(fontSize: 13),
+                    ),
+                    value: _saveAddress,
+                    onChanged: (v) => setState(() => _saveAddress = v),
+                  ),
+                ],
+              ],
             ),
-            const SizedBox(height: 14),
-            TextFormField(
-              controller: _emailController,
-              keyboardType: TextInputType.emailAddress,
-              decoration: const InputDecoration(
-                labelText: 'Email Address',
-                prefixIcon: Icon(Icons.email_outlined),
-              ),
-              validator: (value) {
-                final email = value?.trim() ?? '';
-
-                if (email.isEmpty ||
-                    !RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
-                        .hasMatch(email)) {
-                  return 'Enter a valid email address';
-                }
-
-                return null;
-              },
-            ),
-          ],
+          ),
         ),
       ),
       actions: [
@@ -637,11 +861,22 @@ class _CheckoutEmailDialogState extends State<_CheckoutEmailDialog> {
             if (_formKey.currentState!.validate()) {
               Navigator.pop(
                 context,
-                _emailController.text.trim(),
+                _CheckoutDetails(
+                  name: _nameController.text.trim(),
+                  email: _emailController.text.trim().toLowerCase(),
+                  streetAddress: _streetController.text.trim(),
+                  city: _cityController.text.trim(),
+                  stateProvince: _stateController.text.trim().isEmpty
+                      ? 'Punjab'
+                      : _stateController.text.trim(),
+                  country: 'Pakistan',
+                  postalCode: _postalController.text.trim(),
+                  saveAddress: _saveAddress,
+                ),
               );
             }
           },
-          child: const Text('Continue to Payment'),
+          child: const Text('Place Order'),
         ),
       ],
     );

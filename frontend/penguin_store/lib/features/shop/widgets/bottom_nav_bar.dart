@@ -74,14 +74,22 @@ class BottomNavBar extends StatelessWidget {
               label: 'Discover',
             ),
             NavigationDestination(
-              icon: Badge(
-                isLabelVisible: cartCount > 0,
-                label: Text(
-                  cartCount > 99 ? '99+' : '$cartCount',
-                  style: const TextStyle(fontSize: 10),
+              icon: TweenAnimationBuilder<double>(
+                key: ValueKey('cart-badge-$cartCount'),
+                tween: Tween<double>(begin: 1.24, end: 1.0),
+                duration: const Duration(milliseconds: 260),
+                curve: Curves.easeOutBack,
+                builder: (context, scale, child) =>
+                    Transform.scale(scale: scale, child: child),
+                child: Badge(
+                  isLabelVisible: cartCount > 0,
+                  label: Text(
+                    cartCount > 99 ? '99+' : '$cartCount',
+                    style: const TextStyle(fontSize: 10),
+                  ),
+                  backgroundColor: theme.colorScheme.error,
+                  child: const Icon(Icons.shopping_bag_outlined),
                 ),
-                backgroundColor: theme.colorScheme.error,
-                child: const Icon(Icons.shopping_bag_outlined),
               ),
               selectedIcon: Badge(
                 isLabelVisible: cartCount > 0,

@@ -1,90 +1,76 @@
-
+import asyncio
+import logging
 import os
 import re
-import time
 import uuid
-import logging
-from collections import defaultdict, deque
+from contextlib import asynccontextmanager
 from pathlib import Path
-from threading import Lock
 from typing import Any
-from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
-from supabase import create_client, Client
-
 from fastapi import (
     BackgroundTasks,
-    FastAPI,
     Depends,
+    FastAPI,
+    File,
     HTTPException,
     Request,
     UploadFile,
-    File,
     status,
 )
 from fastapi.responses import JSONResponse
-
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
-
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session, load_only
+from starlette.concurrency import run_in_threadpool
+from supabase import Client, create_client
 
 _BACKEND_ENV_PATH = Path(__file__).resolve().parents[1] / ".env"
 load_dotenv(_BACKEND_ENV_PATH)
 load_dotenv()
 
-from . import models, schemas
-from .database import engine, get_db
-from .models import User
-
-from .security import (
-    get_password_hash,
-    verify_password,
+from . import models, schemas  # noqa: E402
+from .api.v1.router import api_v1_router  # noqa: E402
+from .core.config import settings  # noqa: E402
+from .core.database import engine, get_db  # noqa: E402
+from .core.security import (  # noqa: E402
     create_access_token,
     get_current_user,
-    get_current_admin_user,
+    get_password_hash,
+    require_role,
+    resolve_user_role,
+    verify_password,
 )
-
-from .routers import (
+from .middleware.security import (  # noqa: E402
+    configure_cors,
+    security_and_rate_limit_middleware,
+)
+from .models import CartItemModel, User  # noqa: E402
+from .repositories.product_repo import PRODUCT_PUBLIC_COLUMNS  # noqa: E402
+from .routers import (  # noqa: E402
     agent,
-    stripe,
     agent_chat,
-    supplier,
-    orders,
-    trending,
-    recommendations,
     notifications,
-    visual_search,
+    orders,
     premium_3d,
+    recommendations,
+    stripe,
+    supplier,
+    trending,
+    visual_search,
 )
 
 logger = logging.getLogger(__name__)
 
-ENVIRONMENT = os.getenv(
-    "ENVIRONMENT",
-    "development",
-).lower()
-
-FRONTEND_URL = os.getenv(
-    "FRONTEND_URL",
-    "",
-).strip()
-
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-
-SUPABASE_KEY = (
-    os.getenv("SUPABASE_SERVICE_KEY")
-    or os.getenv("SUPABASE_KEY")
-)
-
-PUBLIC_ASSET_BUCKET = "penguin-store-assets"
-PRIVATE_3D_BUCKET = "penguin-store-3d"
-
-MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+ENVIRONMENT = settings.ENVIRONMENT
+FRONTEND_URL = settings.FRONTEND_URL
+SUPABASE_URL = settings.SUPABASE_URL
+SUPABASE_KEY = settings.SUPABASE_SERVICE_KEY
+PUBLIC_ASSET_BUCKET = settings.PUBLIC_ASSET_BUCKET
+PRIVATE_3D_BUCKET = settings.PRIVATE_3D_BUCKET
+MAX_UPLOAD_BYTES = settings.MAX_UPLOAD_BYTES
 
 ALLOWED_IMAGE_TYPES = {
     ".jpg": "image/jpeg",
@@ -95,94 +81,68 @@ ALLOWED_IMAGE_TYPES = {
     ".avif": "image/avif",
 }
 
-
-# Supabase client
 if not SUPABASE_URL or not SUPABASE_KEY:
     raise RuntimeError(
         "Supabase credentials are missing. "
         "Configure SUPABASE_URL and SUPABASE_SERVICE_KEY."
     )
 
-supabase: Client = create_client(
-    SUPABASE_URL,
-    SUPABASE_KEY,
-)
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
-# Database initialization
-models.Base.metadata.create_all(bind=engine)
+async def _warmup_ai_engines() -> None:
+    """Pre-load ResNet-50 ONNX and RAG chunks asynchronously so first request is fast."""
+    try:
+        from .agent.rag import load_knowledge_chunks
+        from .vector_service import warmup_vision_model
+
+        await run_in_threadpool(load_knowledge_chunks)
+        await run_in_threadpool(warmup_vision_model)
+        logger.info("AI engines warmed up at startup.")
+    except Exception:
+        logger.debug("AI startup warmup skipped or deferred.", exc_info=True)
 
 
-# FastAPI application
+@asynccontextmanager
+async def app_lifespan(_app: FastAPI):
+    try:
+        models.Base.metadata.create_all(bind=engine)
+    except Exception:
+        logger.warning("Startup metadata check deferred (database temporarily unreachable).")
+
+    warmup_task = asyncio.create_task(_warmup_ai_engines())
+    try:
+        yield
+    finally:
+        if not warmup_task.done():
+            warmup_task.cancel()
+
+
 app = FastAPI(
     title="Penguin Store API",
     description=(
-        "AI-powered e-commerce platform with "
-        "secure authentication, product management, "
-        "Stripe payments, visual search and Premium 3D."
+        "Enterprise AI-powered e-commerce platform with strict RBAC, "
+        "Supabase PostgreSQL + Storage, visual search, CTRL-X agents, and Premium 3D."
     ),
-    version="2.0.0",
+    version="2.1.0",
+    lifespan=app_lifespan,
 )
 
+configure_cors(app)
+app.middleware("http")(security_and_rate_limit_middleware)
 
-# CORS configuration
-allowed_origins = set()
 
-if FRONTEND_URL:
-    parsed_frontend = urlsplit(FRONTEND_URL)
-
-    if (
-        parsed_frontend.scheme in ("http", "https")
-        and parsed_frontend.netloc
-    ):
-        allowed_origins.add(
-            f"{parsed_frontend.scheme}://"
-            f"{parsed_frontend.netloc}"
-        )
-
-for origin in os.getenv(
-    "ALLOWED_ORIGINS",
-    "",
-).split(","):
-    origin = origin.strip().rstrip("/")
-
-    if origin:
-        parsed_origin = urlsplit(origin)
-
-        if (
-            parsed_origin.scheme in ("http", "https")
-            and parsed_origin.netloc
-            and not parsed_origin.path
-            and not parsed_origin.query
-            and not parsed_origin.fragment
-        ):
-            allowed_origins.add(origin)
-
-local_origin_regex = None
-
-if ENVIRONMENT == "development":
-    local_origin_regex = (
-        r"^http://(localhost|127\.0\.0\.1)(:\d+)?$"
+@app.exception_handler(Exception)
+async def global_exception_handler(_request: Request, exc: Exception):
+    logger.exception("Unhandled server exception: %s", exc)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "An unexpected error occurred. Please try again shortly."},
     )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=sorted(allowed_origins),
-    allow_origin_regex=local_origin_regex,
-    allow_credentials=True,
-    allow_methods=[
-        "GET",
-        "POST",
-        "PUT",
-        "PATCH",
-        "DELETE",
-        "OPTIONS",
-    ],
-    allow_headers=["*"],
-)
 
-
-# Existing API routers
+# Versioned & existing routers
+app.include_router(api_v1_router)
 app.include_router(agent.router)
 app.include_router(stripe.router)
 app.include_router(agent_chat.router)
@@ -195,13 +155,12 @@ app.include_router(visual_search.router)
 app.include_router(premium_3d.router)
 
 
-# Root endpoint
 @app.get("/")
 def read_root():
     return {
         "message": "Welcome to Penguin Store API!",
         "status": "online",
-        "version": "2.0.0",
+        "version": "2.1.0",
         "features": [
             "Product Catalog",
             "CTRL-X AI Agent",
@@ -214,7 +173,6 @@ def read_root():
     }
 
 
-# Health endpoint
 @app.get("/health")
 def health_check():
     return {
@@ -223,50 +181,11 @@ def health_check():
     }
 
 
-# Security Headers & Auth Rate-Limiting Middleware
-_rate_limit_lock = Lock()
-_auth_request_buckets: dict[str, deque[float]] = defaultdict(deque)
-_AUTH_RATE_WINDOW_SECONDS = 60.0
-_AUTH_RATE_MAX_REQUESTS = 20
-
-
-@app.middleware("http")
-async def security_and_rate_limit_middleware(request: Request, call_next):
-    path = request.url.path
-    if request.method == "POST" and path in ("/login", "/signup"):
-        client_ip = (
-            request.client.host if request.client else "unknown"
-        )
-        bucket_key = f"{client_ip}:{path}"
-        now = time.monotonic()
-        with _rate_limit_lock:
-            q = _auth_request_buckets[bucket_key]
-            while q and (now - q[0]) > _AUTH_RATE_WINDOW_SECONDS:
-                q.popleft()
-            if len(q) >= _AUTH_RATE_MAX_REQUESTS:
-                return JSONResponse(
-                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                    content={
-                        "detail": "Too many authentication attempts. Please wait a minute and try again."
-                    },
-                )
-            q.append(now)
-
-    response = await call_next(request)
-    response.headers.setdefault("X-Content-Type-Options", "nosniff")
-    response.headers.setdefault("X-Frame-Options", "DENY")
-    response.headers.setdefault(
-        "Referrer-Policy",
-        "strict-origin-when-cross-origin",
-    )
-    return response
-
-
 class TrackEventRequest(BaseModel):
-    action: str
+    action: str = Field(..., min_length=1, max_length=100)
     details: Any = None
-    timestamp: str | None = None
-    device: str | None = None
+    timestamp: str | None = Field(default=None, max_length=64)
+    device: str | None = Field(default=None, max_length=100)
 
 
 @app.post("/track")
@@ -277,51 +196,22 @@ def track_user_action(payload: TrackEventRequest):
     }
 
 
-# Public product fields only
-PRODUCT_PUBLIC_COLUMNS = (
-    models.Product.id,
-    models.Product.name,
-    models.Product.description,
-    models.Product.price,
-    models.Product.original_price,
-    models.Product.image_url,
-    models.Product.category,
-    models.Product.rating,
-    models.Product.reviews,
-    models.Product.discount_percent,
-    models.Product.is_featured,
-)
-
-
-# Retry read-only queries after transient database disconnects
 def _run_product_read(db: Session, operation):
     for attempt in range(2):
         try:
             return operation()
-
         except OperationalError:
             db.rollback()
-
             if attempt == 0:
-                logger.warning(
-                    "Product read failed. Retrying once."
-                )
+                logger.warning("Product read failed. Retrying once.")
                 continue
-
-            logger.exception(
-                "Product read failed after retry."
-            )
-
+            logger.exception("Product read failed after retry.")
             raise HTTPException(
                 status_code=503,
-                detail=(
-                    "The product database is temporarily "
-                    "unavailable. Please try again."
-                ),
+                detail="The product database is temporarily unavailable. Please try again.",
             )
 
 
-# Product creation - admin only
 @app.post(
     "/products/",
     response_model=schemas.Product,
@@ -331,158 +221,96 @@ def create_product(
     product: schemas.ProductCreate,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
-    admin_user: User = Depends(get_current_admin_user),
+    admin_user: User = Depends(require_role(["admin"])),
 ):
-    db_product = models.Product(
-        **product.model_dump()
-    )
-
+    db_product = models.Product(**product.model_dump())
     try:
         db.add(db_product)
         db.commit()
         db.refresh(db_product)
-
     except IntegrityError:
         db.rollback()
+        raise HTTPException(status_code=409, detail="Product could not be created.")
 
-        raise HTTPException(
-            status_code=409,
-            detail="Product could not be created.",
-        )
-
-    # Automatically generate & cache the 2048-D visual search embedding
     background_tasks.add_task(
         visual_search.index_single_product_by_id,
         db_product.id,
     )
-
     return db_product
 
 
-# Optimized product catalog - public
-@app.get(
-    "/products/",
-    response_model=list[schemas.Product],
-)
-def get_products(
-    db: Session = Depends(get_db),
-):
+@app.get("/products/", response_model=list[schemas.Product])
+def get_products(db: Session = Depends(get_db)):
     def query_products():
         return (
             db.query(models.Product)
-            .options(
-                load_only(
-                    *PRODUCT_PUBLIC_COLUMNS
-                )
-            )
-            .order_by(
-                models.Product.id.asc()
-            )
+            .options(load_only(*PRODUCT_PUBLIC_COLUMNS))
+            .order_by(models.Product.id.asc())
             .all()
         )
 
-    return _run_product_read(
-        db,
-        query_products,
-    )
+    return _run_product_read(db, query_products)
 
 
-# Optimized single-product endpoint
-@app.get(
-    "/products/{product_id}",
-    response_model=schemas.Product,
-)
-def get_product_by_id(
-    product_id: int,
-    db: Session = Depends(get_db),
-):
+@app.get("/products/{product_id}", response_model=schemas.Product)
+def get_product_by_id(product_id: int, db: Session = Depends(get_db)):
     def query_product():
         return (
             db.query(models.Product)
-            .options(
-                load_only(
-                    *PRODUCT_PUBLIC_COLUMNS
-                )
-            )
-            .filter(
-                models.Product.id == product_id
-            )
+            .options(load_only(*PRODUCT_PUBLIC_COLUMNS))
+            .filter(models.Product.id == product_id)
             .first()
         )
 
-    product = _run_product_read(
-        db,
-        query_product,
-    )
-
+    product = _run_product_read(db, query_product)
     if product is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Product not found.",
-        )
-
+        raise HTTPException(status_code=404, detail="Product not found.")
     return product
 
 
-# Product deletion - admin only
-@app.delete(
-    "/products/{product_id}",
-    status_code=status.HTTP_200_OK,
-)
+@app.delete("/products/{product_id}", status_code=status.HTTP_200_OK)
 def delete_product(
     product_id: int,
     db: Session = Depends(get_db),
-    admin_user: User = Depends(get_current_admin_user),
+    admin_user: User = Depends(require_role(["admin"])),
 ):
+    if product_id == 144:
+        raise HTTPException(
+            status_code=403,
+            detail="Product #144 is protected as the reference 3D showcase asset.",
+        )
+
     product = (
         db.query(models.Product)
-        .filter(
-            models.Product.id == product_id
-        )
+        .filter(models.Product.id == product_id)
         .first()
     )
-
     if product is None:
         raise HTTPException(
             status_code=404,
-            detail=(
-                f"Product with id {product_id} "
-                "does not exist."
-            ),
+            detail=f"Product with id {product_id} does not exist.",
         )
 
     try:
         db.delete(product)
         db.commit()
         visual_search.invalidate_visual_cache()
-
     except IntegrityError:
         db.rollback()
-
         raise HTTPException(
             status_code=409,
-            detail=(
-                "This product is referenced by existing "
-                "records and cannot be deleted."
-            ),
+            detail="This product is referenced by existing records and cannot be deleted.",
         )
 
-    return {
-        "message": "Product deleted successfully",
-    }
+    return {"message": "Product deleted successfully"}
 
 
-# User registration schema
 class UserCreate(BaseModel):
-    email: str
-    password: str
+    email: str = Field(..., min_length=3, max_length=254)
+    password: str = Field(..., min_length=8, max_length=72)
 
 
-# User registration
-@app.post(
-    "/signup",
-    status_code=status.HTTP_201_CREATED,
-)
+@app.post("/signup", status_code=status.HTTP_201_CREATED)
 def create_user(
     user: UserCreate,
     db: Session = Depends(get_db),
@@ -490,190 +318,139 @@ def create_user(
     email = user.email.strip().lower()
     password = user.password
 
-    if (
-        len(email) > 254
-        or not re.fullmatch(
-            r"[^@\s]+@[^@\s]+\.[^@\s]+",
-            email,
-        )
-    ):
-        raise HTTPException(
-            status_code=422,
-            detail="Enter a valid email address.",
-        )
+    if len(email) > 254 or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
+        raise HTTPException(status_code=422, detail="Enter a valid email address.")
 
     password_bytes = password.encode("utf-8")
-
     if len(password) < 8:
         raise HTTPException(
             status_code=422,
-            detail=(
-                "Password must contain at least "
-                "8 characters."
-            ),
+            detail="Password must contain at least 8 characters.",
         )
-
     if len(password_bytes) > 72:
         raise HTTPException(
             status_code=422,
-            detail=(
-                "Password exceeds the supported length."
-            ),
+            detail="Password exceeds the supported length.",
         )
 
     existing_user = (
-        db.query(User)
-        .filter(
-            func.lower(User.email) == email
-        )
+        db.query(User.id)
+        .filter(func.lower(User.email) == email)
         .first()
     )
-
     if existing_user:
-        raise HTTPException(
-            status_code=400,
-            detail="Email already registered",
-        )
-
-    hashed_password = get_password_hash(
-        password
-    )
+        raise HTTPException(status_code=400, detail="Email already registered")
 
     new_user = User(
         email=email,
-        hashed_password=hashed_password,
+        hashed_password=get_password_hash(password),
         is_admin=False,
+        role="customer",
+        is_active=True,
     )
 
     try:
         db.add(new_user)
         db.commit()
         db.refresh(new_user)
-
     except IntegrityError:
         db.rollback()
+        raise HTTPException(status_code=400, detail="Email already registered")
 
-        raise HTTPException(
-            status_code=400,
-            detail="Email already registered",
-        )
-
-    return {
-        "message": (
-            "User created successfully. "
-            "Welcome to Penguin Store!"
-        )
-    }
+    return {"message": "User created successfully. Welcome to Penguin Store!"}
 
 
-# Secure JWT login
 @app.post("/login")
 def login(
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db),
 ):
     email = form_data.username.strip().lower()
-
     user = (
         db.query(User)
-        .filter(
-            func.lower(User.email) == email
-        )
+        .filter(func.lower(User.email) == email)
         .first()
     )
 
-    if not user or not verify_password(
-        form_data.password,
-        user.hashed_password,
+    if (
+        not user
+        or not getattr(user, "is_active", True)
+        or not verify_password(form_data.password, user.hashed_password)
     ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
-            headers={
-                "WWW-Authenticate": "Bearer",
-            },
+            headers={"WWW-Authenticate": "Bearer"},
         )
 
+    role = resolve_user_role(user)
     access_token = create_access_token(
         data={
             "sub": user.email,
-            "is_admin": bool(user.is_admin),
+            "is_admin": bool(user.is_admin or role == "admin"),
+            "role": role,
         }
     )
 
     return {
         "access_token": access_token,
         "token_type": "bearer",
+        "role": role,
     }
 
 
-# Authenticated account details
 @app.get("/auth/me")
-def get_my_account(
-    current_user: User = Depends(get_current_user),
-):
+def get_my_account(current_user: User = Depends(get_current_user)):
+    role = resolve_user_role(current_user)
     return {
         "id": current_user.id,
         "email": current_user.email,
-        "is_admin": bool(current_user.is_admin),
+        "full_name": getattr(current_user, "full_name", None),
+        "is_admin": bool(current_user.is_admin or role == "admin"),
+        "role": role,
     }
 
 
-# Secure image upload to Supabase - admin only
+@app.delete("/auth/me", status_code=status.HTTP_200_OK)
+def delete_my_account_legacy_path(
+    payload: schemas.DeleteAccountRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    from .api.v1.endpoints.auth import delete_my_account
+
+    return delete_my_account(payload=payload, current_user=current_user, db=db)
+
+
 @app.post("/upload-file/")
 async def upload_file_to_supabase(
     file: UploadFile = File(...),
-    admin_user: User = Depends(get_current_admin_user),
+    admin_user: User = Depends(require_role(["admin"])),
 ):
     try:
         if not file.filename:
-            raise HTTPException(
-                status_code=400,
-                detail="Filename is missing.",
-            )
+            raise HTTPException(status_code=400, detail="Filename is missing.")
 
-        extension = os.path.splitext(
-            file.filename
-        )[1].lower()
-
+        extension = os.path.splitext(file.filename)[1].lower()
         if extension not in ALLOWED_IMAGE_TYPES:
             raise HTTPException(
                 status_code=415,
-                detail=(
-                    "Unsupported image format. "
-                    "Use JPG, PNG, WEBP, GIF or AVIF."
-                ),
+                detail="Unsupported image format. Use JPG, PNG, WEBP, GIF or AVIF.",
             )
 
-        file_bytes = await file.read(
-            MAX_UPLOAD_BYTES + 1
-        )
-
+        file_bytes = await file.read(MAX_UPLOAD_BYTES + 1)
         if not file_bytes:
-            raise HTTPException(
-                status_code=400,
-                detail="Uploaded file is empty.",
-            )
-
+            raise HTTPException(status_code=400, detail="Uploaded file is empty.")
         if len(file_bytes) > MAX_UPLOAD_BYTES:
             raise HTTPException(
                 status_code=413,
-                detail=(
-                    "Image exceeds the 10 MB upload limit."
-                ),
+                detail="Image exceeds the 10 MB upload limit.",
             )
 
-        content_type = ALLOWED_IMAGE_TYPES[
-            extension
-        ]
+        content_type = ALLOWED_IMAGE_TYPES[extension]
+        unique_filename = f"{uuid.uuid4().hex}{extension}"
 
-        unique_filename = (
-            f"{uuid.uuid4().hex}{extension}"
-        )
-
-        supabase.storage.from_(
-            PUBLIC_ASSET_BUCKET
-        ).upload(
+        supabase.storage.from_(PUBLIC_ASSET_BUCKET).upload(
             path=unique_filename,
             file=file_bytes,
             file_options={
@@ -682,12 +459,8 @@ async def upload_file_to_supabase(
             },
         )
 
-        file_url = (
-            supabase.storage
-            .from_(PUBLIC_ASSET_BUCKET)
-            .get_public_url(
-                unique_filename
-            )
+        file_url = supabase.storage.from_(PUBLIC_ASSET_BUCKET).get_public_url(
+            unique_filename
         )
 
         return {
@@ -695,69 +468,22 @@ async def upload_file_to_supabase(
             "storage": "supabase",
             "bucket": PUBLIC_ASSET_BUCKET,
         }
-
     except HTTPException:
         raise
-
     except Exception:
-        logger.exception(
-            "Supabase image upload failed."
-        )
-
+        logger.exception("Supabase image upload failed.")
         raise HTTPException(
             status_code=500,
-            detail=(
-                "Failed to upload file "
-                "to Supabase Storage."
-            ),
+            detail="Failed to upload file to Supabase Storage.",
         )
-
     finally:
         await file.close()
 
 
 # ===========================================================================
-# /api/v1 COMPATIBILITY ROUTES
-# Provides standardized REST paths alongside the original endpoints
+# /api/v1 ORDERS & PERSISTENT POSTGRESQL CART COMPATIBILITY ROUTES
 # ===========================================================================
 
-_USER_CART_STORE: dict[str, dict[int, int]] = {}
-_USER_CART_LOCK = Lock()
-
-
-class CartSyncItem(BaseModel):
-    product_id: int
-    quantity: int = 1
-
-
-app.add_api_route(
-    "/api/v1/auth/register",
-    create_user,
-    methods=["POST"],
-    status_code=status.HTTP_201_CREATED,
-    tags=["API v1"],
-)
-app.add_api_route(
-    "/api/v1/auth/login",
-    login,
-    methods=["POST"],
-    tags=["API v1"],
-)
-app.add_api_route(
-    "/api/v1/products/",
-    get_products,
-    methods=["GET"],
-    response_model=list[schemas.Product],
-    tags=["API v1"],
-)
-app.add_api_route(
-    "/api/v1/products/",
-    create_product,
-    methods=["POST"],
-    response_model=schemas.Product,
-    status_code=status.HTTP_201_CREATED,
-    tags=["API v1"],
-)
 app.add_api_route(
     "/api/v1/orders/",
     orders.process_checkout,
@@ -777,27 +503,34 @@ def get_v1_cart(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    key = current_user.email.strip().lower()
-    with _USER_CART_LOCK:
-        saved = dict(_USER_CART_STORE.get(key, {}))
+    rows = (
+        db.query(CartItemModel)
+        .filter(CartItemModel.user_id == current_user.id)
+        .all()
+    )
+    if not rows:
+        return {
+            "user_email": current_user.email.strip().lower(),
+            "items": [],
+            "subtotal": 0.0,
+        }
 
-    if not saved:
-        return {"user_email": key, "items": [], "subtotal": 0.0}
-
+    pids = [r.product_id for r in rows]
     products = (
         db.query(models.Product)
         .options(load_only(*PRODUCT_PUBLIC_COLUMNS))
-        .filter(models.Product.id.in_(list(saved.keys())))
+        .filter(models.Product.id.in_(pids))
         .all()
     )
     by_id = {p.id: p for p in products}
+
     items_out = []
     subtotal = 0.0
-    for pid, qty in saved.items():
-        p = by_id.get(pid)
+    for row in rows:
+        p = by_id.get(row.product_id)
         if not p:
             continue
-        line_total = round(float(p.price) * qty, 2)
+        line_total = round(float(p.price) * row.quantity, 2)
         subtotal += line_total
         items_out.append(
             {
@@ -806,13 +539,14 @@ def get_v1_cart(
                 "price": float(p.price),
                 "image_url": p.image_url,
                 "category": p.category,
-                "quantity": qty,
+                "quantity": row.quantity,
+                "selected_variant": row.selected_variant,
                 "line_total": line_total,
             }
         )
 
     return {
-        "user_email": key,
+        "user_email": current_user.email.strip().lower(),
         "items": items_out,
         "subtotal": round(subtotal, 2),
     }
@@ -820,13 +554,10 @@ def get_v1_cart(
 
 @app.post("/api/v1/cart/", tags=["API v1"])
 def add_to_v1_cart(
-    item: CartSyncItem,
+    item: schemas.CartSyncItem,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    if item.quantity < 1 or item.quantity > 100:
-        raise HTTPException(status_code=422, detail="Quantity must be between 1 and 100.")
-
     product = (
         db.query(models.Product)
         .options(load_only(models.Product.id, models.Product.name, models.Product.stock))
@@ -836,14 +567,60 @@ def add_to_v1_cart(
     if not product:
         raise HTTPException(status_code=404, detail="Product not found.")
 
-    key = current_user.email.strip().lower()
-    with _USER_CART_LOCK:
-        bucket = _USER_CART_STORE.setdefault(key, {})
-        new_qty = min(100, bucket.get(item.product_id, 0) + item.quantity)
-        bucket[item.product_id] = new_qty
+    variant = item.selected_variant.strip()
+    existing = (
+        db.query(CartItemModel)
+        .filter(
+            CartItemModel.user_id == current_user.id,
+            CartItemModel.product_id == item.product_id,
+            CartItemModel.selected_variant == variant,
+        )
+        .first()
+    )
 
+    if existing:
+        existing.quantity = min(100, existing.quantity + item.quantity)
+        new_qty = existing.quantity
+    else:
+        db.add(
+            CartItemModel(
+                user_id=current_user.id,
+                product_id=item.product_id,
+                quantity=item.quantity,
+                selected_variant=variant,
+            )
+        )
+        new_qty = item.quantity
+
+    db.commit()
     return {
         "status": "added",
         "product_id": item.product_id,
+        "selected_variant": variant,
         "quantity": new_qty,
     }
+
+
+@app.put("/api/v1/cart/sync", tags=["API v1"])
+def replace_v1_cart(
+    payload: schemas.CartBulkSyncRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    db.query(CartItemModel).filter(CartItemModel.user_id == current_user.id).delete()
+    merged: dict[tuple[int, str], int] = {}
+    for entry in payload.items:
+        key = (entry.product_id, entry.selected_variant.strip())
+        merged[key] = min(100, merged.get(key, 0) + entry.quantity)
+
+    for (pid, variant), qty in merged.items():
+        db.add(
+            CartItemModel(
+                user_id=current_user.id,
+                product_id=pid,
+                quantity=qty,
+                selected_variant=variant,
+            )
+        )
+    db.commit()
+    return {"status": "synced", "item_count": len(merged)}
