@@ -161,12 +161,29 @@ def decode_access_token(token: str) -> dict:
 
 
 def _lookup_active_user(db: Session, email: str) -> User | None:
-    clean_email = email.strip().lower()
-    user = (
-        db.query(User)
-        .filter(func.lower(User.email) == clean_email)
-        .first()
+    from sqlalchemy.exc import OperationalError
+    from app.core.supabase_rest import (
+        fetch_user_by_email_https,
+        is_pg_tcp_reachable,
+        mark_pg_tcp_unreachable,
     )
+
+    clean_email = email.strip().lower()
+    user = None
+    if is_pg_tcp_reachable():
+        try:
+            user = (
+                db.query(User)
+                .filter(func.lower(User.email) == clean_email)
+                .first()
+            )
+        except OperationalError:
+            db.rollback()
+            mark_pg_tcp_unreachable()
+
+    if user is None and not is_pg_tcp_reachable():
+        user = fetch_user_by_email_https(clean_email)
+
     if user is None:
         return None
     if not getattr(user, "is_active", True):

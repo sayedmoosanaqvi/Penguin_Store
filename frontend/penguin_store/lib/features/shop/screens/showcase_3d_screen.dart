@@ -1,11 +1,18 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
+import 'package:provider/provider.dart';
 
 import 'package:penguin_store/core/widgets/animated_widgets.dart';
+import 'package:penguin_store/features/shop/models/product_model.dart';
+import 'package:penguin_store/features/shop/providers/auth_provider.dart';
 import 'package:penguin_store/features/shop/screens/product_3d_viewer_screen.dart';
-import 'package:penguin_store/features/shop/screens/product_details_screen.dart';
+import 'package:penguin_store/features/shop/services/premium_3d_service.dart';
 import 'package:penguin_store/features/shop/services/showcase_3d_service.dart';
+import 'package:penguin_store/features/shop/widgets/product_card_skeleton.dart';
+import 'package:penguin_store/features/shop/widgets/right_drawer.dart';
+import 'package:penguin_store/features/shop/widgets/top_nav_bar.dart';
 
-/// Gallery of every product that has an active 3D model.
+/// Public gallery of every product in Penguin Store that has a 3D model.
 class Showcase3DScreen extends StatefulWidget {
   const Showcase3DScreen({super.key});
 
@@ -15,300 +22,749 @@ class Showcase3DScreen extends StatefulWidget {
 
 class _Showcase3DScreenState extends State<Showcase3DScreen> {
   final Showcase3DService _service = Showcase3DService();
-  late Future<List<Showcase3DItem>> _future = _service.fetchShowcase();
-  int? _openingProductId;
+  late Future<List<Showcase3DItem>> _future;
+  String _selectedFilter = 'All';
 
-  Future<void> _reload() async {
-    final next = _service.fetchShowcase();
-    setState(() => _future = next);
-    Catalog3D.refresh(force: true);
-    try {
-      await next;
-    } catch (_) {}
+  @override
+  void initState() {
+    super.initState();
+    _reload();
   }
 
-  Future<void> _open(Showcase3DItem item) async {
-    if (_openingProductId != null || item.models.isEmpty) return;
-    setState(() => _openingProductId = item.product.id);
+  void _reload() {
+    Catalog3D.refresh(force: true);
+    setState(() {
+      _future = _service.fetchShowcase();
+    });
+  }
 
-    try {
-      final model = item.models.first;
-      final url = await _service.fetchModelUrl(item.product.id, model.id);
-      if (!mounted) return;
+  Future<void> _openViewer(
+    Showcase3DItem item, {
+    Product3DModel? initialModel,
+  }) async {
+    if (item.models.isEmpty) return;
+    final chosenModel = initialModel ?? item.models.first;
 
-      await Navigator.of(context).push(
-        PageRouteBuilder<void>(
-          transitionDuration: const Duration(milliseconds: 380),
-          pageBuilder: (_, __, ___) => Product3DViewerScreen(
-            productName: item.product.name,
-            modelUrl: url,
-            posterUrl:
-                item.product.imageUrl.isNotEmpty ? item.product.imageUrl : null,
-            productId: item.product.id,
-            models: item.models,
-            currentModelId: model.id,
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const Center(
+        child: Card(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.all(Radius.circular(18)),
           ),
-          transitionsBuilder: (_, animation, __, child) => FadeTransition(
-            opacity: CurvedAnimation(
-              parent: animation,
-              curve: Curves.easeOutCubic,
+          child: Padding(
+            padding: EdgeInsets.symmetric(horizontal: 28, vertical: 24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                CircularProgressIndicator(color: Color(0xFF1E88E5)),
+                SizedBox(height: 14),
+                Text(
+                  'Preparing 3D Studio View...',
+                  style: TextStyle(fontWeight: FontWeight.w700),
+                ),
+              ],
             ),
-            child: child,
           ),
         ),
-      );
+      ),
+    );
+
+    String? url;
+    Object? err;
+    try {
+      url = await _service.fetchModelUrl(item.product.id, chosenModel.id);
     } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))),
-      );
-    } finally {
-      if (mounted) setState(() => _openingProductId = null);
+      err = e;
     }
+
+    if (!mounted) return;
+    Navigator.of(context, rootNavigator: true).pop();
+
+    if (url == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            err?.toString().replaceFirst('Exception: ', '') ??
+                'Could not load 3D model.',
+          ),
+          backgroundColor: Colors.redAccent,
+        ),
+      );
+      return;
+    }
+
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => Product3DViewerScreen(
+          productName: item.product.name,
+          modelUrl: url!,
+          posterUrl: Product.resolveImageUrl(item.product.imageUrl),
+          productId: item.product.id,
+          models: item.models,
+          currentModelId: chosenModel.id,
+        ),
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
+    final isAdmin = context.watch<AuthProvider>().isAdmin;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('3D Showcase')),
+      backgroundColor: isDark
+          ? const Color(0xFF0A0F1D)
+          : const Color(0xFFF3F7FB),
+      appBar: const TopNavBar(),
+      endDrawer: const RightDrawer(),
+      floatingActionButton: isAdmin
+          ? FloatingActionButton.extended(
+              backgroundColor: const Color(0xFF1E88E5),
+              foregroundColor: Colors.white,
+              onPressed: () async {
+                await context.push('/admin/3d');
+                if (mounted) _reload();
+              },
+              icon: const Icon(Icons.view_in_ar_rounded),
+              label: const Text(
+                '3D Studio',
+                style: TextStyle(fontWeight: FontWeight.w700),
+              ),
+            )
+          : null,
       body: RefreshIndicator(
-        onRefresh: _reload,
-        child: FutureBuilder<List<Showcase3DItem>>(
-          future: _future,
-          builder: (context, snapshot) {
-            final items = snapshot.data ?? const <Showcase3DItem>[];
-
-            return CustomScrollView(
-              physics: const AlwaysScrollableScrollPhysics(),
-              slivers: [
-                SliverToBoxAdapter(child: _hero(theme, items.length)),
-                if (snapshot.connectionState == ConnectionState.waiting)
-                  const SliverFillRemaining(
-                    hasScrollBody: false,
-                    child: Center(child: CircularProgressIndicator()),
-                  )
-                else if (snapshot.hasError)
-                  SliverFillRemaining(
-                    hasScrollBody: false,
-                    child: Center(
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const Icon(Icons.cloud_off_rounded, size: 40),
-                          const SizedBox(height: 8),
-                          const Text('Could not load 3D models.'),
-                          TextButton(
-                            onPressed: _reload,
-                            child: const Text('Try again'),
-                          ),
-                        ],
+        color: const Color(0xFF1E88E5),
+        onRefresh: () async => _reload(),
+        child: CustomScrollView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          slivers: [
+            SliverToBoxAdapter(child: _buildHero(isAdmin)),
+            FutureBuilder<List<Showcase3DItem>>(
+              future: _future,
+              builder: (context, snap) {
+                if (snap.connectionState == ConnectionState.waiting) {
+                  return SliverPadding(
+                    padding: const EdgeInsets.fromLTRB(20, 8, 20, 40),
+                    sliver: SliverGrid(
+                      gridDelegate:
+                          const SliverGridDelegateWithMaxCrossAxisExtent(
+                        maxCrossAxisExtent: 340,
+                        mainAxisSpacing: 18,
+                        crossAxisSpacing: 18,
+                        childAspectRatio: 0.72,
+                      ),
+                      delegate: SliverChildBuilderDelegate(
+                        (context, index) => const ProductCardSkeleton(),
+                        childCount: 4,
                       ),
                     ),
-                  )
-                else if (items.isEmpty)
-                  const SliverFillRemaining(
+                  );
+                }
+                if (snap.hasError) {
+                  return SliverFillRemaining(
                     hasScrollBody: false,
                     child: Center(
                       child: Padding(
-                        padding: EdgeInsets.all(30),
-                        child: Text(
-                          'No 3D models yet.\nCheck back soon!',
-                          textAlign: TextAlign.center,
+                        padding: const EdgeInsets.all(24),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(
+                              Icons.cloud_off_rounded,
+                              size: 56,
+                              color: Colors.redAccent,
+                            ),
+                            const SizedBox(height: 12),
+                            Text(
+                              snap.error
+                                  .toString()
+                                  .replaceFirst('Exception: ', ''),
+                              textAlign: TextAlign.center,
+                            ),
+                            const SizedBox(height: 16),
+                            FilledButton.icon(
+                              onPressed: _reload,
+                              style: FilledButton.styleFrom(
+                                backgroundColor: const Color(0xFF1E88E5),
+                              ),
+                              icon: const Icon(Icons.refresh),
+                              label: const Text('Retry'),
+                            ),
+                          ],
                         ),
                       ),
                     ),
-                  )
-                else
-                  SliverLayoutBuilder(
-                    builder: (context, c) {
-                      final w = c.crossAxisExtent;
-                      final cols = w >= 1000 ? 4 : w >= 700 ? 3 : 2;
-                      return SliverPadding(
-                        padding: const EdgeInsets.fromLTRB(12, 4, 12, 28),
-                        sliver: SliverGrid(
-                          gridDelegate:
-                              SliverGridDelegateWithFixedCrossAxisCount(
-                            crossAxisCount: cols,
-                            mainAxisSpacing: 12,
-                            crossAxisSpacing: 12,
-                            childAspectRatio: 0.78,
-                          ),
-                          delegate: SliverChildBuilderDelegate(
-                            (context, i) => FadeSlideIn.staggered(
-                              key: ValueKey('3d-${items[i].product.id}'),
-                              index: i,
-                              child: _card(theme, items[i]),
-                            ),
-                            childCount: items.length,
-                          ),
+                  );
+                }
+
+                final allItems = snap.data ?? const [];
+                if (allItems.isEmpty) {
+                  return SliverFillRemaining(
+                    hasScrollBody: false,
+                    child: _buildEmpty(isAdmin),
+                  );
+                }
+
+                final categories = <String>{
+                  'All',
+                  ...allItems
+                      .map((e) => e.product.category.trim())
+                      .where((c) => c.isNotEmpty),
+                }.toList();
+
+                final items = _selectedFilter == 'All'
+                    ? allItems
+                    : allItems
+                        .where(
+                          (e) =>
+                              e.product.category.toLowerCase() ==
+                              _selectedFilter.toLowerCase(),
+                        )
+                        .toList();
+
+                return SliverMainAxisGroup(
+                  slivers: [
+                    SliverToBoxAdapter(
+                      child: _buildStatsAndFilterBar(
+                        totalProducts: allItems.length,
+                        totalVariants: allItems.fold<int>(
+                          0,
+                          (acc, e) => acc + e.models.length,
                         ),
-                      );
-                    },
-                  ),
-              ],
-            );
-          },
+                        categories: categories,
+                        isDark: isDark,
+                      ),
+                    ),
+                    SliverPadding(
+                      padding: const EdgeInsets.fromLTRB(20, 8, 20, 48),
+                      sliver: SliverGrid(
+                        gridDelegate:
+                            const SliverGridDelegateWithMaxCrossAxisExtent(
+                          maxCrossAxisExtent: 340,
+                          mainAxisSpacing: 18,
+                          crossAxisSpacing: 18,
+                          childAspectRatio: 0.69,
+                        ),
+                        delegate: SliverChildBuilderDelegate(
+                          (context, i) => FadeSlideIn.staggered(
+                            index: i,
+                            child: _ShowcaseCard(
+                              item: items[i],
+                              onView3D: (model) =>
+                                  _openViewer(items[i], initialModel: model),
+                              onDetails: () => context.push(
+                                '/product/${items[i].product.id}',
+                                extra: items[i].product,
+                              ),
+                            ),
+                          ),
+                          childCount: items.length,
+                        ),
+                      ),
+                    ),
+                  ],
+                );
+              },
+            ),
+          ],
         ),
       ),
     );
   }
 
-  Widget _hero(ThemeData theme, int count) {
+  Widget _buildHero(bool isAdmin) {
     return Container(
-      margin: const EdgeInsets.all(12),
-      height: 130,
-      clipBehavior: Clip.antiAlias,
+      margin: const EdgeInsets.fromLTRB(16, 16, 16, 8),
       decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(20),
+        borderRadius: BorderRadius.circular(24),
         gradient: const LinearGradient(
-          colors: [Color(0xFF1E88E5), Color(0xFF00ACC1)],
+          colors: [
+            Color(0xFF0A192F),
+            Color(0xFF1565C0),
+            Color(0xFF00ACC1),
+          ],
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
         ),
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xFF1E88E5).withValues(alpha: 0.25),
+            blurRadius: 24,
+            offset: const Offset(0, 12),
+          ),
+        ],
       ),
-      child: SnowfallBackground(
-        child: Padding(
-          padding: const EdgeInsets.all(18),
-          child: Row(
-            children: [
-              const PulsingOrb(
-                size: 62,
-                icon: Icons.view_in_ar_rounded,
-                colors: [Color(0x66FFFFFF), Color(0x33FFFFFF)],
-              ),
-              const SizedBox(width: 16),
-              Expanded(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  crossAxisAlignment: CrossAxisAlignment.start,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(24),
+        child: SnowfallBackground(
+          flakes: 26,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
+            child: Wrap(
+              spacing: 20,
+              runSpacing: 16,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              alignment: WrapAlignment.spaceBetween,
+              children: [
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 560),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 11,
+                          vertical: 5,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.16),
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(
+                            color: Colors.white.withValues(alpha: 0.28),
+                          ),
+                        ),
+                        child: const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.auto_awesome_rounded,
+                              color: Colors.cyanAccent,
+                              size: 14,
+                            ),
+                            SizedBox(width: 6),
+                            Text(
+                              'PENGUIN 3D INTERACTIVE SHOWROOM',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 11,
+                                fontWeight: FontWeight.w800,
+                                letterSpacing: 1.1,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      const Text(
+                        'Inspect Every Angle in True 360° 3D',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 26,
+                          fontWeight: FontWeight.w900,
+                          height: 1.15,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      const Text(
+                        'Rotate, zoom, and switch studio lighting backdrops (Arctic Ice, Clean Studio, Midnight) on live GLB models stored in Supabase.',
+                        style: TextStyle(
+                          color: Colors.white70,
+                          fontSize: 13.5,
+                          height: 1.45,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
                   children: [
-                    const Text(
-                      'Touch it. Spin it. Own it.',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 17,
-                        fontWeight: FontWeight.w800,
-                      ),
+                    const PulsingOrb(
+                      icon: Icons.view_in_ar_rounded,
+                      size: 56,
                     ),
-                    const SizedBox(height: 4),
-                    Text(
-                      count == 0
-                          ? 'Interactive 3D products'
-                          : '$count products in interactive 3D',
-                      style: const TextStyle(
-                        color: Colors.white70,
-                        fontSize: 12,
+                    if (isAdmin) ...[
+                      const SizedBox(width: 14),
+                      FilledButton.icon(
+                        style: FilledButton.styleFrom(
+                          backgroundColor: Colors.white,
+                          foregroundColor: const Color(0xFF0D47A1),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 12,
+                          ),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                        ),
+                        onPressed: () async {
+                          await context.push('/admin/3d');
+                          if (mounted) _reload();
+                        },
+                        icon: const Icon(Icons.cloud_upload_rounded, size: 18),
+                        label: const Text(
+                          'Upload GLB',
+                          style: TextStyle(fontWeight: FontWeight.w800),
+                        ),
                       ),
-                    ),
+                    ],
                   ],
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
     );
   }
 
-  Widget _card(ThemeData theme, Showcase3DItem item) {
+  Widget _buildStatsAndFilterBar({
+    required int totalProducts,
+    required int totalVariants,
+    required List<String> categories,
+    required bool isDark,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 8, 20, 10),
+      child: Wrap(
+        spacing: 12,
+        runSpacing: 10,
+        alignment: WrapAlignment.spaceBetween,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Badge3D(),
+              const SizedBox(width: 10),
+              Text(
+                '$totalProducts 3D Products · $totalVariants Interactive GLB Assets',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700,
+                  color: isDark ? Colors.white70 : const Color(0xFF334155),
+                ),
+              ),
+            ],
+          ),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: categories.map((cat) {
+                final selected = _selectedFilter == cat;
+                return Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: ChoiceChip(
+                    label: Text(cat),
+                    selected: selected,
+                    onSelected: (_) => setState(() => _selectedFilter = cat),
+                    selectedColor: const Color(0xFF1E88E5),
+                    backgroundColor: isDark
+                        ? const Color(0xFF151E32)
+                        : Colors.white,
+                    labelStyle: TextStyle(
+                      color: selected
+                          ? Colors.white
+                          : (isDark ? Colors.white70 : const Color(0xFF334155)),
+                      fontWeight: FontWeight.w700,
+                      fontSize: 12,
+                    ),
+                  ),
+                );
+              }).toList(),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEmpty(bool isAdmin) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const PulsingOrb(icon: Icons.view_in_ar_rounded, size: 78),
+            const SizedBox(height: 18),
+            const Text(
+              'No 3D models uploaded yet',
+              style: TextStyle(fontSize: 19, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              'Upload a .glb file in 3D Studio to display it here.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Colors.grey),
+            ),
+            if (isAdmin) ...[
+              const SizedBox(height: 18),
+              FilledButton.icon(
+                style: FilledButton.styleFrom(
+                  backgroundColor: const Color(0xFF1E88E5),
+                ),
+                onPressed: () async {
+                  await context.push('/admin/3d');
+                  if (mounted) _reload();
+                },
+                icon: const Icon(Icons.upload_file),
+                label: const Text('Open 3D Studio'),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ShowcaseCard extends StatelessWidget {
+  final Showcase3DItem item;
+  final void Function(Product3DModel? model) onView3D;
+  final VoidCallback onDetails;
+
+  const _ShowcaseCard({
+    required this.item,
+    required this.onView3D,
+    required this.onDetails,
+  });
+
+  @override
+  Widget build(BuildContext context) {
     final p = item.product;
-    final opening = _openingProductId == p.id;
+    final resolvedImage = Product.resolveImageUrl(p.imageUrl);
+    final isDark = Theme.of(context).brightness == Brightness.dark;
 
     return PressableScale(
-      onTap: () => _open(item),
+      onTap: () => onView3D(null),
       child: Container(
         decoration: BoxDecoration(
-          color: theme.colorScheme.surface,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: theme.primaryColor.withValues(alpha: 0.14)),
+          color: isDark ? const Color(0xFF131C2E) : Colors.white,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+            color: const Color(0xFF1E88E5).withValues(alpha: 0.22),
+          ),
           boxShadow: [
             BoxShadow(
-              color: theme.primaryColor.withValues(alpha: 0.08),
-              blurRadius: 12,
-              offset: const Offset(0, 5),
+              color: const Color(0xFF0D47A1).withValues(
+                alpha: isDark ? 0.25 : 0.08,
+              ),
+              blurRadius: 20,
+              offset: const Offset(0, 8),
             ),
           ],
         ),
+        clipBehavior: Clip.antiAlias,
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Expanded(
               child: Stack(
                 fit: StackFit.expand,
                 children: [
-                  ClipRRect(
-                    borderRadius:
-                        const BorderRadius.vertical(top: Radius.circular(15)),
-                    child: p.imageUrl.isEmpty
-                        ? const ColoredBox(color: Color(0xFFEAF5FF))
-                        : Image.network(
-                            p.imageUrl,
-                            fit: BoxFit.cover,
-                            errorBuilder: (_, __, ___) => const ColoredBox(
-                              color: Color(0xFFEAF5FF),
-                              child: Icon(Icons.view_in_ar_rounded, size: 40),
-                            ),
-                          ),
-                  ),
-                  const Positioned(left: 8, top: 8, child: Badge3D()),
-                  if (opening)
-                    const Positioned.fill(
-                      child: ColoredBox(
-                        color: Color(0x55FFFFFF),
-                        child: Center(child: CircularProgressIndicator()),
+                  Container(
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        colors: isDark
+                            ? const [Color(0xFF0F172A), Color(0xFF1E293B)]
+                            : const [Color(0xFFEAF4FE), Color(0xFFD7ECFB)],
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
                       ),
                     ),
+                    child: resolvedImage.isEmpty
+                        ? const _FallbackPoster()
+                        : Image.network(
+                            resolvedImage,
+                            fit: BoxFit.cover,
+                            errorBuilder: (_, _, _) =>
+                                const _FallbackPoster(),
+                          ),
+                  ),
+                  Positioned(
+                    top: 10,
+                    left: 10,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 4,
+                      ),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF0A192F).withValues(alpha: 0.78),
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Text(
+                        p.category.toUpperCase(),
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 10,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: 0.6,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const Positioned(
+                    top: 10,
+                    right: 10,
+                    child: Badge3D(),
+                  ),
+                  Positioned(
+                    bottom: 10,
+                    right: 10,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 11,
+                        vertical: 6,
+                      ),
+                      decoration: BoxDecoration(
+                        gradient: const LinearGradient(
+                          colors: [Color(0xFF1E88E5), Color(0xFF00ACC1)],
+                        ),
+                        borderRadius: BorderRadius.circular(20),
+                        boxShadow: [
+                          BoxShadow(
+                            color: const Color(0xFF1E88E5)
+                                .withValues(alpha: 0.35),
+                            blurRadius: 10,
+                            offset: const Offset(0, 3),
+                          ),
+                        ],
+                      ),
+                      child: const Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.threed_rotation_rounded,
+                            size: 14,
+                            color: Colors.white,
+                          ),
+                          SizedBox(width: 5),
+                          Text(
+                            'Tap to Rotate',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
                 ],
               ),
             ),
             Padding(
-              padding: const EdgeInsets.fromLTRB(10, 8, 6, 8),
-              child: Row(
+              padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          p.name,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          '\$${p.price.toStringAsFixed(2)}',
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w800,
-                            color: theme.primaryColor,
-                          ),
-                        ),
-                      ],
+                  Text(
+                    p.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontWeight: FontWeight.w800,
+                      fontSize: 15.5,
+                      color: isDark ? Colors.white : const Color(0xFF0F172A),
                     ),
                   ),
-                  IconButton(
-                    tooltip: 'Product details',
-                    visualDensity: VisualDensity.compact,
-                    icon: const Icon(Icons.arrow_forward_rounded, size: 18),
-                    onPressed: () => Navigator.of(context).push(
-                      MaterialPageRoute<void>(
-                        builder: (_) => ProductDetailScreen(
-                          product: p,
-                          productId: p.id,
+                  const SizedBox(height: 4),
+                  Row(
+                    children: [
+                      Text(
+                        '\$${p.price.toStringAsFixed(2)}',
+                        style: const TextStyle(
+                          color: Color(0xFF1E88E5),
+                          fontWeight: FontWeight.w900,
+                          fontSize: 16,
                         ),
                       ),
-                    ),
+                      const Spacer(),
+                      Icon(
+                        Icons.layers_outlined,
+                        size: 14,
+                        color: isDark ? Colors.white54 : Colors.blueGrey,
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        '${item.models.length} ${item.models.length == 1 ? 'GLB' : 'GLBs'}',
+                        style: TextStyle(
+                          color: isDark ? Colors.white60 : Colors.blueGrey,
+                          fontSize: 11.5,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: FilledButton.icon(
+                          style: FilledButton.styleFrom(
+                            backgroundColor: const Color(0xFF1E88E5),
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(vertical: 10),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                          ),
+                          onPressed: () => onView3D(null),
+                          icon: const Icon(Icons.view_in_ar_rounded, size: 17),
+                          label: const Text(
+                            'Launch 3D',
+                            style: TextStyle(
+                              fontSize: 12.5,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      IconButton.outlined(
+                        tooltip: 'Product Details',
+                        onPressed: onDetails,
+                        style: IconButton.styleFrom(
+                          side: BorderSide(
+                            color: const Color(0xFF1E88E5)
+                                .withValues(alpha: 0.35),
+                          ),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                        ),
+                        icon: const Icon(
+                          Icons.open_in_new_rounded,
+                          size: 18,
+                          color: Color(0xFF1E88E5),
+                        ),
+                      ),
+                    ],
                   ),
                 ],
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _FallbackPoster extends StatelessWidget {
+  const _FallbackPoster();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          colors: [Color(0xFF0A192F), Color(0xFF1565C0), Color(0xFF00ACC1)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+      ),
+      child: const Center(
+        child: Icon(
+          Icons.view_in_ar_rounded,
+          size: 64,
+          color: Colors.white70,
         ),
       ),
     );

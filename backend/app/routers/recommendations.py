@@ -33,11 +33,24 @@ def get_user_recommendations(
             detail="You can only request personalized recommendations for your own account.",
         )
 
-    products = compute_collaborative_recommendations(
-        db=db,
-        user_email=clean_email,
-        limit=limit,
+    from app.core.supabase_rest import (
+        fetch_trending_products_https,
+        is_pg_tcp_reachable,
+        mark_pg_tcp_unreachable,
     )
+
+    if not is_pg_tcp_reachable():
+        products = fetch_trending_products_https(limit=limit)
+    else:
+        try:
+            products = compute_collaborative_recommendations(
+                db=db,
+                user_email=clean_email,
+                limit=limit,
+            )
+        except Exception:
+            mark_pg_tcp_unreachable()
+            products = fetch_trending_products_https(limit=limit)
 
     return {
         "status": "success",

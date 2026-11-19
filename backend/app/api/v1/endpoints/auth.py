@@ -86,12 +86,10 @@ def login_user(
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db),
 ):
+    from app.core.security import _lookup_active_user
+
     email = form_data.username.strip().lower()
-    user = (
-        db.query(User)
-        .filter(func.lower(User.email) == email)
-        .first()
-    )
+    user = _lookup_active_user(db, email)
 
     if (
         not user

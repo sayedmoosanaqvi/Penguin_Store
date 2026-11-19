@@ -91,7 +91,19 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
 async def _warmup_ai_engines() -> None:
-    """Pre-load ResNet-50 ONNX and RAG chunks asynchronously so first request is fast."""
+    """Pre-load Supabase HTTPS cache, ResNet-50 ONNX, and RAG chunks asynchronously."""
+    try:
+        from .core.supabase_rest import (
+            fetch_3d_showcase_https,
+            fetch_products_https,
+        )
+
+        await run_in_threadpool(fetch_products_https)
+        await run_in_threadpool(fetch_3d_showcase_https)
+        logger.info("Supabase HTTPS catalog & 3D showcase cache warmed up.")
+    except Exception:
+        logger.debug("Supabase HTTPS cache warmup deferred.", exc_info=True)
+
     try:
         from .agent.rag import load_knowledge_chunks
         from .vector_service import warmup_vision_model
@@ -105,11 +117,6 @@ async def _warmup_ai_engines() -> None:
 
 @asynccontextmanager
 async def app_lifespan(_app: FastAPI):
-    try:
-        models.Base.metadata.create_all(bind=engine)
-    except Exception:
-        logger.warning("Startup metadata check deferred (database temporarily unreachable).")
-
     warmup_task = asyncio.create_task(_warmup_ai_engines())
     try:
         yield
@@ -223,24 +230,38 @@ def create_product(
     db: Session = Depends(get_db),
     admin_user: User = Depends(require_role(["admin"])),
 ):
-    db_product = models.Product(**product.model_dump())
-    try:
-        db.add(db_product)
-        db.commit()
-        db.refresh(db_product)
-    except IntegrityError:
-        db.rollback()
-        raise HTTPException(status_code=409, detail="Product could not be created.")
-
-    background_tasks.add_task(
-        visual_search.index_single_product_by_id,
-        db_product.id,
+    from .core.supabase_rest import (
+        _normalize_product_dict,
+        get_supabase_client,
+        invalidate_supabase_rest_cache,
     )
-    return db_product
+
+    try:
+        client = get_supabase_client()
+        res = client.table("products").insert(product.model_dump()).execute()
+        rows = res.data or []
+        if not rows:
+            raise HTTPException(status_code=409, detail="Product could not be created.")
+        invalidate_supabase_rest_cache()
+        created = _normalize_product_dict(rows[0])
+        return created
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=409, detail="Product could not be created.")
 
 
 @app.get("/products/", response_model=list[schemas.Product])
 def get_products(db: Session = Depends(get_db)):
+    from .core.supabase_rest import (
+        fetch_products_https,
+        is_pg_tcp_reachable,
+        mark_pg_tcp_unreachable,
+    )
+
+    if not is_pg_tcp_reachable():
+        return fetch_products_https()
+
     def query_products():
         return (
             db.query(models.Product)
@@ -249,11 +270,27 @@ def get_products(db: Session = Depends(get_db)):
             .all()
         )
 
-    return _run_product_read(db, query_products)
+    try:
+        return _run_product_read(db, query_products)
+    except HTTPException:
+        mark_pg_tcp_unreachable()
+        return fetch_products_https()
 
 
 @app.get("/products/{product_id}", response_model=schemas.Product)
 def get_product_by_id(product_id: int, db: Session = Depends(get_db)):
+    from .core.supabase_rest import (
+        fetch_product_by_id_https,
+        is_pg_tcp_reachable,
+        mark_pg_tcp_unreachable,
+    )
+
+    if not is_pg_tcp_reachable():
+        product = fetch_product_by_id_https(product_id)
+        if product is None:
+            raise HTTPException(status_code=404, detail="Product not found.")
+        return product
+
     def query_product():
         return (
             db.query(models.Product)
@@ -262,7 +299,12 @@ def get_product_by_id(product_id: int, db: Session = Depends(get_db)):
             .first()
         )
 
-    product = _run_product_read(db, query_product)
+    try:
+        product = _run_product_read(db, query_product)
+    except HTTPException:
+        mark_pg_tcp_unreachable()
+        product = fetch_product_by_id_https(product_id)
+
     if product is None:
         raise HTTPException(status_code=404, detail="Product not found.")
     return product
@@ -274,29 +316,32 @@ def delete_product(
     db: Session = Depends(get_db),
     admin_user: User = Depends(require_role(["admin"])),
 ):
+    from .core.supabase_rest import (
+        fetch_product_by_id_https,
+        get_supabase_client,
+        invalidate_supabase_rest_cache,
+    )
+
     if product_id == 144:
         raise HTTPException(
             status_code=403,
             detail="Product #144 is protected as the reference 3D showcase asset.",
         )
 
-    product = (
-        db.query(models.Product)
-        .filter(models.Product.id == product_id)
-        .first()
-    )
-    if product is None:
+    existing = fetch_product_by_id_https(product_id)
+    if existing is None:
         raise HTTPException(
             status_code=404,
             detail=f"Product with id {product_id} does not exist.",
         )
 
     try:
-        db.delete(product)
-        db.commit()
+        client = get_supabase_client()
+        client.table("product_3d_assets").delete().eq("product_id", product_id).execute()
+        client.table("products").delete().eq("id", product_id).execute()
+        invalidate_supabase_rest_cache()
         visual_search.invalidate_visual_cache()
-    except IntegrityError:
-        db.rollback()
+    except Exception:
         raise HTTPException(
             status_code=409,
             detail="This product is referenced by existing records and cannot be deleted.",
@@ -365,12 +410,10 @@ def login(
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db),
 ):
+    from .core.security import _lookup_active_user
+
     email = form_data.username.strip().lower()
-    user = (
-        db.query(User)
-        .filter(func.lower(User.email) == email)
-        .first()
-    )
+    user = _lookup_active_user(db, email)
 
     if (
         not user

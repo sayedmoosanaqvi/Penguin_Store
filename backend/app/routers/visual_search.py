@@ -36,6 +36,7 @@ from app.vector_service import (
     analyze_and_embed_query,
     generate_image_vector,
 )
+from app.services.ai_telemetry_service import record_visual_search_metric
 
 _BACKEND_ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
 load_dotenv(_BACKEND_ENV_PATH)
@@ -771,6 +772,24 @@ async def visual_product_search(
             if in_database
             else None
         )
+
+        top1_sim = float(scored_products[0]["score"]) if in_database else 0.0
+        top5_slice = scored_products[:5]
+        avg_top5_sim = (
+            round(sum(float(m["score"]) for m in top5_slice) / len(top5_slice), 4)
+            if top5_slice
+            else 0.0
+        )
+        try:
+            record_visual_search_metric(
+                latency_ms=elapsed_ms,
+                top1_similarity=top1_sim,
+                avg_top5_similarity=avg_top5_sim,
+                total_matches=len(scored_products),
+                was_deblurred=bool(embed_result.get("was_deblurred", False)),
+            )
+        except Exception:
+            pass
 
         return {
             "query_status": (

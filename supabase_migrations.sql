@@ -247,3 +247,106 @@ DROP POLICY IF EXISTS "Service role full ctrlx_audit_logs" ON ctrlx_audit_logs;
 CREATE POLICY "Service role full ctrlx_audit_logs" ON ctrlx_audit_logs
     FOR ALL USING (auth.role() = 'service_role')
     WITH CHECK (auth.role() = 'service_role');
+
+
+-- ============================================================================
+-- 11. FYP PHASE 1: AI-Powered Trustworthy Review & Fake Review Detection Engine
+-- ============================================================================
+
+ALTER TABLE reviews
+    ADD COLUMN IF NOT EXISTS trust_score DOUBLE PRECISION NOT NULL DEFAULT 85.0,
+    ADD COLUMN IF NOT EXISTS is_flagged_suspicious BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS trust_flags TEXT NOT NULL DEFAULT '[]',
+    ADD COLUMN IF NOT EXISTS aspect_sentiments TEXT NOT NULL DEFAULT '{}',
+    ADD COLUMN IF NOT EXISTS moderation_status VARCHAR(32) NOT NULL DEFAULT 'approved';
+
+CREATE INDEX IF NOT EXISTS idx_reviews_flagged_status
+    ON reviews (is_flagged_suspicious, moderation_status, created_at DESC);
+
+-- Exclude hidden spam reviews from public product aggregate rating
+CREATE OR REPLACE FUNCTION sync_product_review_aggregates()
+RETURNS TRIGGER AS $$
+DECLARE
+    target_product_id INTEGER;
+    avg_rating DOUBLE PRECISION;
+    total_reviews INTEGER;
+BEGIN
+    target_product_id := COALESCE(NEW.product_id, OLD.product_id);
+
+    SELECT
+        COALESCE(ROUND(AVG(rating)::numeric, 2)::double precision, 0.0),
+        COUNT(*)::integer
+    INTO avg_rating, total_reviews
+    FROM reviews
+    WHERE product_id = target_product_id
+      AND COALESCE(moderation_status, 'approved') <> 'hidden';
+
+    UPDATE products
+    SET rating = avg_rating,
+        reviews = total_reviews
+    WHERE id = target_product_id;
+
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Cached AI Review Summarizer & Aspect Sentiment Insights per product
+CREATE TABLE IF NOT EXISTS product_review_insights (
+    product_id INTEGER PRIMARY KEY REFERENCES products(id) ON DELETE CASCADE,
+    raw_rating DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+    trust_weighted_rating DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+    total_reviews INTEGER NOT NULL DEFAULT 0,
+    verified_authentic_percent DOUBLE PRECISION NOT NULL DEFAULT 100.0,
+    flagged_count INTEGER NOT NULL DEFAULT 0,
+    pros_json TEXT NOT NULL DEFAULT '[]',
+    cons_json TEXT NOT NULL DEFAULT '[]',
+    verdict TEXT NOT NULL DEFAULT '',
+    aspect_bars_json TEXT NOT NULL DEFAULT '{}',
+    review_count_at_generation INTEGER NOT NULL DEFAULT 0,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE product_review_insights ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Public read product_review_insights" ON product_review_insights;
+CREATE POLICY "Public read product_review_insights" ON product_review_insights
+    FOR SELECT USING (TRUE);
+
+DROP POLICY IF EXISTS "Service role full product_review_insights" ON product_review_insights;
+CREATE POLICY "Service role full product_review_insights" ON product_review_insights
+    FOR ALL USING (auth.role() = 'service_role')
+    WITH CHECK (auth.role() = 'service_role');
+
+
+-- ============================================================================
+-- 12. FYP PHASE 3: Examiner-Ready AI Evaluation & System Metrics Telemetry
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS ai_metrics_logs (
+    id SERIAL PRIMARY KEY,
+    subsystem VARCHAR(50) NOT NULL,
+    operation VARCHAR(100) NOT NULL DEFAULT '',
+    latency_ms DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+    success BOOLEAN NOT NULL DEFAULT TRUE,
+    top1_similarity DOUBLE PRECISION,
+    avg_top5_similarity DOUBLE PRECISION,
+    tool_calls_count INTEGER,
+    trust_score DOUBLE PRECISION,
+    is_flagged_suspicious BOOLEAN,
+    original_size_kb DOUBLE PRECISION,
+    optimized_size_kb DOUBLE PRECISION,
+    reduction_percent DOUBLE PRECISION,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_metrics_subsystem_created
+    ON ai_metrics_logs (subsystem, created_at DESC);
+
+ALTER TABLE ai_metrics_logs ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Service role full ai_metrics_logs" ON ai_metrics_logs;
+CREATE POLICY "Service role full ai_metrics_logs" ON ai_metrics_logs
+    FOR ALL USING (auth.role() = 'service_role')
+    WITH CHECK (auth.role() = 'service_role');
+

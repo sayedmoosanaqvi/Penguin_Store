@@ -35,7 +35,7 @@ engine = create_engine(
     pool_timeout=15,
     connect_args={
         "sslmode": "require",
-        "connect_timeout": 10,
+        "connect_timeout": 3,
         "keepalives": 1,
         "keepalives_idle": 30,
         "keepalives_interval": 10,

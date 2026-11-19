@@ -59,20 +59,24 @@ def create_product_v1(
     db: Session = Depends(get_db),
     admin_user: User = Depends(require_role(["admin"])),
 ):
-    db_product = ProductModel(**payload.model_dump())
-    try:
-        db.add(db_product)
-        db.commit()
-        db.refresh(db_product)
-    except IntegrityError:
-        db.rollback()
-        raise HTTPException(status_code=409, detail="Product could not be created.")
-
-    background_tasks.add_task(
-        visual_search.index_single_product_by_id,
-        db_product.id,
+    from app.core.supabase_rest import (
+        _normalize_product_dict,
+        get_supabase_client,
+        invalidate_supabase_rest_cache,
     )
-    return db_product
+
+    try:
+        client = get_supabase_client()
+        res = client.table("products").insert(payload.model_dump()).execute()
+        rows = res.data or []
+        if not rows:
+            raise HTTPException(status_code=409, detail="Product could not be created.")
+        invalidate_supabase_rest_cache()
+        return _normalize_product_dict(rows[0])
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=409, detail="Product could not be created.")
 
 
 @router.put("/{product_id}", response_model=Product)
@@ -83,28 +87,32 @@ def update_product_v1(
     db: Session = Depends(get_db),
     admin_user: User = Depends(require_role(["admin"])),
 ):
-    product = get_public_product_by_id(db, product_id)
-    if product is None:
+    from app.core.supabase_rest import (
+        _normalize_product_dict,
+        fetch_product_by_id_https,
+        get_supabase_client,
+        invalidate_supabase_rest_cache,
+    )
+
+    existing = fetch_product_by_id_https(product_id)
+    if existing is None:
         raise HTTPException(status_code=404, detail="Product not found.")
 
     updates = payload.model_dump(exclude_unset=True)
-    image_changed = "image_url" in updates and updates["image_url"] != product.image_url
-
-    for key, val in updates.items():
-        setattr(product, key, val)
+    if not updates:
+        return existing
 
     try:
-        db.commit()
-        db.refresh(product)
+        client = get_supabase_client()
+        res = client.table("products").update(updates).eq("id", product_id).execute()
+        rows = res.data or []
+        invalidate_supabase_rest_cache()
         visual_search.invalidate_visual_cache()
-    except IntegrityError:
-        db.rollback()
+        if rows:
+            return _normalize_product_dict(rows[0])
+        return fetch_product_by_id_https(product_id) or existing
+    except Exception:
         raise HTTPException(status_code=409, detail="Product update conflict.")
-
-    if image_changed:
-        background_tasks.add_task(visual_search.index_single_product_by_id, product.id)
-
-    return product
 
 
 @router.delete("/{product_id}", status_code=status.HTTP_200_OK)
@@ -113,22 +121,29 @@ def delete_product_v1(
     db: Session = Depends(get_db),
     admin_user: User = Depends(require_role(["admin"])),
 ):
+    from app.core.supabase_rest import (
+        fetch_product_by_id_https,
+        get_supabase_client,
+        invalidate_supabase_rest_cache,
+    )
+
     if product_id == 144:
         raise HTTPException(
             status_code=403,
             detail="Product #144 is protected as the reference 3D catalog showcase item.",
         )
 
-    product = db.query(ProductModel).filter(ProductModel.id == product_id).first()
-    if product is None:
+    existing = fetch_product_by_id_https(product_id)
+    if existing is None:
         raise HTTPException(status_code=404, detail="Product not found.")
 
     try:
-        db.delete(product)
-        db.commit()
+        client = get_supabase_client()
+        client.table("product_3d_assets").delete().eq("product_id", product_id).execute()
+        client.table("products").delete().eq("id", product_id).execute()
+        invalidate_supabase_rest_cache()
         visual_search.invalidate_visual_cache()
-    except IntegrityError:
-        db.rollback()
+    except Exception:
         raise HTTPException(
             status_code=409,
             detail="This product is referenced by existing records and cannot be deleted.",

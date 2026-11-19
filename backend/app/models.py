@@ -472,6 +472,11 @@ class Review(Base):
     title = Column(String(150), nullable=True)
     comment = Column(Text, nullable=False)
     verified_purchase = Column(Boolean, nullable=False, default=False)
+    trust_score = Column(Float, nullable=False, default=85.0)
+    is_flagged_suspicious = Column(Boolean, nullable=False, default=False)
+    trust_flags = Column(Text, nullable=False, default="[]")
+    aspect_sentiments = Column(Text, nullable=False, default="{}")
+    moderation_status = Column(String(32), nullable=False, default="approved")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -582,3 +587,49 @@ class CtrlXAuditLog(Base):
     latency_ms = Column(Float, nullable=False, default=0.0)
     status = Column(String(30), nullable=False, default="success")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class ProductReviewInsight(Base):
+    __tablename__ = "product_review_insights"
+
+    product_id = Column(
+        Integer,
+        ForeignKey("products.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    raw_rating = Column(Float, nullable=False, default=0.0)
+    trust_weighted_rating = Column(Float, nullable=False, default=0.0)
+    total_reviews = Column(Integer, nullable=False, default=0)
+    verified_authentic_percent = Column(Float, nullable=False, default=100.0)
+    flagged_count = Column(Integer, nullable=False, default=0)
+    pros_json = Column(Text, nullable=False, default="[]")
+    cons_json = Column(Text, nullable=False, default="[]")
+    verdict = Column(Text, nullable=False, default="")
+    aspect_bars_json = Column(Text, nullable=False, default="{}")
+    review_count_at_generation = Column(Integer, nullable=False, default=0)
+    updated_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class AIMetricsLog(Base):
+    __tablename__ = "ai_metrics_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    subsystem = Column(String(50), nullable=False, index=True)
+    operation = Column(String(100), nullable=False, default="")
+    latency_ms = Column(Float, nullable=False, default=0.0)
+    success = Column(Boolean, nullable=False, default=True)
+    top1_similarity = Column(Float, nullable=True)
+    avg_top5_similarity = Column(Float, nullable=True)
+    tool_calls_count = Column(Integer, nullable=True)
+    trust_score = Column(Float, nullable=True)
+    is_flagged_suspicious = Column(Boolean, nullable=True)
+    original_size_kb = Column(Float, nullable=True)
+    optimized_size_kb = Column(Float, nullable=True)
+    reduction_percent = Column(Float, nullable=True)
+    metadata_json = Column(Text, nullable=False, default="{}")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+

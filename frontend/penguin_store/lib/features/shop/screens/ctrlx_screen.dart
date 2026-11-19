@@ -9,13 +9,16 @@ import 'package:provider/provider.dart';
 import 'package:penguin_store/features/shop/providers/cart_provider.dart';
 import 'package:penguin_store/core/widgets/animated_widgets.dart';
 
-// 1. Custom model to handle multi-modal responses (Text, Products, Cart, Orders)
+// 1. Custom model to handle multi-modal responses (Text, Products, Bundles, Cart, Orders, Reasoning Trace)
 class AgentMessage {
   final String role; // "user" or "bot"
   final String text;
-  final String dataType; // "text", "product_list", "cart_update", "order_tracker"
+  final String dataType; // "text", "product_list", "bundle", "cart_update", "order_tracker"
   final List<Product> suggestedProducts;
   final Map<String, dynamic>? orderAction;
+  final Map<String, dynamic>? bundle;
+  final List<Map<String, dynamic>> reasoningSteps;
+  final String routedAgent;
 
   AgentMessage({
     required this.role,
@@ -23,6 +26,9 @@ class AgentMessage {
     this.dataType = "text",
     this.suggestedProducts = const [],
     this.orderAction,
+    this.bundle,
+    this.reasoningSteps = const [],
+    this.routedAgent = "CTRL-X",
   });
 }
 
@@ -44,10 +50,11 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
   final String _threadId = const Uuid().v4();
 
   static const List<String> _quickPrompts = [
+    'Build a phone + earbuds bundle under \$1,200',
+    'Build me a \$200 shirt + shoes outfit',
     'Do you have shirts?',
     'Recommend men shoes',
     'What is your return policy?',
-    'What payment methods do you accept?',
   ];
 
   @override
@@ -99,12 +106,26 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
         final aiReply =
             (data['response'] ?? "No response received.").toString();
         final dataType = (data['data_type'] ?? "text").toString();
+        final routedAgent = (data['routed_agent'] ?? "CTRL-X").toString();
 
         List<Product> products = [];
         Map<String, dynamic>? orderData;
+        Map<String, dynamic>? bundleData;
+        List<Map<String, dynamic>> reasoningSteps = [];
 
-        // 1. Handle Product Search Results
-        if (dataType == "product_list" &&
+        if (data['reasoning_steps'] is List) {
+          reasoningSteps = (data['reasoning_steps'] as List)
+              .whereType<Map>()
+              .map((m) => Map<String, dynamic>.from(m))
+              .toList();
+        }
+
+        if (data['bundle'] is Map) {
+          bundleData = Map<String, dynamic>.from(data['bundle'] as Map);
+        }
+
+        // 1. Handle Product Search or Bundle Results
+        if ((dataType == "product_list" || dataType == "bundle") &&
             data['suggested_products'] is List) {
           final List<dynamic> rawProducts = data['suggested_products'];
           products = rawProducts
@@ -124,7 +145,9 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
                   description:
                       (p['description'] ?? 'Suggested by CTRL-X')
                           .toString(),
-                  rating: (p['rating'] as num?)?.toDouble() ?? 4.8,
+                  rating: ((p['trust_weighted_rating'] ?? p['rating']) as num?)
+                          ?.toDouble() ??
+                      4.8,
                   reviews: (p['reviews'] as num?)?.toInt() ?? 12,
                 ),
               )
@@ -204,6 +227,9 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
               dataType: dataType,
               suggestedProducts: products,
               orderAction: orderData,
+              bundle: bundleData,
+              reasoningSteps: reasoningSteps,
+              routedAgent: routedAgent,
             ),
           );
         });
@@ -453,11 +479,248 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
   }
 
   static const List<IconData> _promptIcons = [
+    Icons.auto_awesome_rounded,
+    Icons.shopping_bag_outlined,
     Icons.checkroom_rounded,
     Icons.directions_run_rounded,
     Icons.policy_outlined,
-    Icons.payments_outlined,
   ];
+
+  Widget _buildBundleCard(
+    Map<String, dynamic> bundle,
+    List<Product> bundleProducts,
+    ThemeData theme,
+  ) {
+    final title = (bundle['title'] ?? 'CTRL-X Trust-Verified Bundle').toString();
+    final totalPrice = (bundle['total_price'] as num?)?.toDouble() ?? 0.0;
+    final budget = (bundle['budget'] as num?)?.toDouble();
+    final budgetRemaining =
+        (bundle['budget_remaining'] as num?)?.toDouble() ?? 0.0;
+    final avgTrust =
+        (bundle['average_trust_rating'] as num?)?.toDouble() ?? 4.8;
+    final rationale = (bundle['rationale'] ?? '').toString();
+
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 20, top: 6),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: theme.cardTheme.color ?? theme.colorScheme.surface,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(
+          color: theme.primaryColor.withValues(alpha: 0.35),
+          width: 1.5,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: theme.primaryColor.withValues(alpha: 0.08),
+            blurRadius: 14,
+            offset: const Offset(0, 5),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: theme.primaryColor.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Icon(
+                  Icons.auto_awesome_mosaic_rounded,
+                  color: theme.primaryColor,
+                  size: 20,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w800,
+                        fontSize: 15.5,
+                      ),
+                    ),
+                    Text(
+                      '${bundleProducts.length} items • Avg Trust ${avgTrust.toStringAsFixed(1)}★',
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        color: theme.colorScheme.onSurfaceVariant,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                decoration: BoxDecoration(
+                  color: Colors.green.withValues(alpha: 0.14),
+                  borderRadius: BorderRadius.circular(99),
+                ),
+                child: Text(
+                  budget != null
+                      ? '\$${budgetRemaining.toStringAsFixed(2)} Under Budget'
+                      : 'Trust Verified',
+                  style: const TextStyle(
+                    color: Colors.green,
+                    fontSize: 10.5,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          if (rationale.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            Text(
+              rationale,
+              style: TextStyle(
+                fontSize: 12,
+                height: 1.4,
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+          const Divider(height: 20),
+          ...bundleProducts.map((prod) {
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: Row(
+                children: [
+                  Container(
+                    width: 46,
+                    height: 46,
+                    decoration: BoxDecoration(
+                      color: theme.colorScheme.surfaceContainerHighest
+                          .withValues(alpha: 0.4),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(10),
+                      child: prod.imageUrl.isNotEmpty
+                          ? Image.network(
+                              prod.imageUrl,
+                              fit: BoxFit.contain,
+                              errorBuilder: (_, __, ___) => const Icon(
+                                Icons.inventory_2_outlined,
+                                size: 20,
+                              ),
+                            )
+                          : const Icon(Icons.inventory_2_outlined, size: 20),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          prod.name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        Row(
+                          children: [
+                            Text(
+                              prod.category,
+                              style: TextStyle(
+                                fontSize: 10.5,
+                                color: theme.colorScheme.onSurfaceVariant,
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            const Icon(
+                              Icons.verified_rounded,
+                              size: 12,
+                              color: Colors.green,
+                            ),
+                            const SizedBox(width: 3),
+                            Text(
+                              '${prod.rating.toStringAsFixed(1)}★ Trust',
+                              style: const TextStyle(
+                                fontSize: 10.5,
+                                fontWeight: FontWeight.w700,
+                                color: Colors.green,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                  Text(
+                    '\$${prod.price.toStringAsFixed(2)}',
+                    style: TextStyle(
+                      fontSize: 13.5,
+                      fontWeight: FontWeight.w800,
+                      color: theme.primaryColor,
+                    ),
+                  ),
+                ],
+              ),
+            );
+          }),
+          const Divider(height: 16),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Bundle Total',
+                    style: TextStyle(fontSize: 11, color: Colors.grey),
+                  ),
+                  Text(
+                    '\$${totalPrice.toStringAsFixed(2)}',
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w900,
+                      color: theme.primaryColor,
+                    ),
+                  ),
+                ],
+              ),
+              ElevatedButton.icon(
+                onPressed: bundleProducts.isEmpty
+                    ? null
+                    : () {
+                        final cart = context.read<CartProvider>();
+                        for (final item in bundleProducts) {
+                          cart.addToCart(item);
+                        }
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text(
+                              'Added all ${bundleProducts.length} bundle items (\$${totalPrice.toStringAsFixed(2)}) to cart!',
+                            ),
+                            backgroundColor: theme.primaryColor,
+                            behavior: SnackBarBehavior.floating,
+                          ),
+                        );
+                      },
+                icon: const Icon(Icons.add_shopping_cart_rounded, size: 17),
+                label: const Text('Add Full Bundle to Cart'),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
 
   Widget _botAvatar() {
     return Container(
@@ -720,11 +983,27 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
                                   ? CrossAxisAlignment.end
                                   : CrossAxisAlignment.start,
                               children: [
+                                if (!isUser && msg.reasoningSteps.isNotEmpty)
+                                  _ReasoningTraceAccordion(
+                                    steps: msg.reasoningSteps,
+                                    routedAgent: msg.routedAgent,
+                                  ),
                                 _buildBubble(msg, theme, isDark),
+
+                                // Bundle Card Injection (Phase 2)
+                                if (!isUser &&
+                                    msg.bundle != null &&
+                                    msg.suggestedProducts.isNotEmpty)
+                                  _buildBundleCard(
+                                    msg.bundle!,
+                                    msg.suggestedProducts,
+                                    theme,
+                                  ),
 
                                 // Product Carousel Injection
                                 if (!isUser &&
                                     msg.dataType == "product_list" &&
+                                    msg.bundle == null &&
                                     msg.suggestedProducts.isNotEmpty)
                                   Container(
                                     height: 300,
@@ -882,6 +1161,154 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _ReasoningTraceAccordion extends StatefulWidget {
+  final List<Map<String, dynamic>> steps;
+  final String routedAgent;
+
+  const _ReasoningTraceAccordion({
+    required this.steps,
+    required this.routedAgent,
+  });
+
+  @override
+  State<_ReasoningTraceAccordion> createState() =>
+      _ReasoningTraceAccordionState();
+}
+
+class _ReasoningTraceAccordionState extends State<_ReasoningTraceAccordion> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final totalMs = widget.steps.fold<double>(
+      0.0,
+      (sum, s) => sum + ((s['duration_ms'] as num?)?.toDouble() ?? 0.0),
+    );
+
+    return Container(
+      margin: const EdgeInsets.only(left: 38, bottom: 6),
+      constraints: const BoxConstraints(maxWidth: 540),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface.withValues(alpha: 0.88),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: theme.primaryColor.withValues(alpha: 0.22),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          InkWell(
+            borderRadius: BorderRadius.circular(12),
+            onTap: () => setState(() => _expanded = !_expanded),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.psychology_outlined,
+                    size: 16,
+                    color: theme.primaryColor,
+                  ),
+                  const SizedBox(width: 6),
+                  Flexible(
+                    child: Text(
+                      'Agent Reasoning Trace • ${widget.routedAgent} (${widget.steps.length} steps • ${totalMs.toStringAsFixed(1)} ms)',
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w700,
+                        color: theme.primaryColor,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  Icon(
+                    _expanded
+                        ? Icons.keyboard_arrow_up_rounded
+                        : Icons.keyboard_arrow_down_rounded,
+                    size: 17,
+                    color: theme.primaryColor,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          if (_expanded) ...[
+            const Divider(height: 1),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
+              child: Column(
+                children: widget.steps.map((s) {
+                  final stepName = (s['step'] ?? 'Step').toString();
+                  final summary = (s['summary'] ?? '').toString();
+                  final ms = (s['duration_ms'] as num?)?.toDouble() ?? 0.0;
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 6),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Padding(
+                          padding: EdgeInsets.only(top: 2),
+                          child: Icon(
+                            Icons.check_circle_rounded,
+                            size: 14,
+                            color: Color(0xFF16A34A),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Flexible(
+                                    child: Text(
+                                      stepName,
+                                      style: const TextStyle(
+                                        fontSize: 11.5,
+                                        fontWeight: FontWeight.w800,
+                                      ),
+                                    ),
+                                  ),
+                                  Text(
+                                    '${ms.toStringAsFixed(1)} ms',
+                                    style: TextStyle(
+                                      fontSize: 10.5,
+                                      fontWeight: FontWeight.w700,
+                                      color: theme.primaryColor,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              if (summary.isNotEmpty)
+                                Text(
+                                  summary,
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    color: theme.colorScheme.onSurfaceVariant,
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                }).toList(),
+              ),
+            ),
+          ],
+        ],
       ),
     );
   }

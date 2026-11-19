@@ -30,6 +30,7 @@ from ..database import get_db
 from ..glb_optimizer import GLBError, optimize_glb
 from ..models import PremiumSubscription, Product, Product3DAsset, User
 from ..security import get_current_admin_user, get_current_user
+from ..services.ai_telemetry_service import record_glb_optimization_metric
 
 logger = logging.getLogger(__name__)
 
@@ -184,6 +185,8 @@ def _active_assets(
 
 
 def _service_client():
+    from app.core.supabase_rest import get_supabase_client
+
     url = os.getenv(
         "SUPABASE_URL",
         "",
@@ -203,7 +206,7 @@ def _service_client():
             ),
         )
 
-    return url, create_client(url, key)
+    return url, get_supabase_client()
 
 
 def _sign_asset(
@@ -227,12 +230,22 @@ def _sign_asset(
     url, client = _service_client()
 
     try:
-        signed = client.storage.from_(
-            BUCKET
-        ).create_signed_url(
-            asset.storage_path,
-            SIGNED_URL_LIFETIME,
-        )
+        signed = None
+        last_sign_err: Exception | None = None
+        for attempt in range(3):
+            try:
+                signed = client.storage.from_(
+                    BUCKET
+                ).create_signed_url(
+                    asset.storage_path,
+                    SIGNED_URL_LIFETIME,
+                )
+                break
+            except Exception as sign_exc:
+                last_sign_err = sign_exc
+                time.sleep(0.2 * (attempt + 1))
+        if signed is None and last_sign_err is not None:
+            raise last_sign_err
 
         signed_url = (
             signed.get("signedURL")
@@ -293,10 +306,29 @@ def _sign_asset(
 # Automatically includes newly uploaded 3D shirts.
 def _optimize_for_web(content: bytes) -> bytes:
     """Validate + cap embedded textures at 512 px. Falls back to original."""
+    t0 = time.perf_counter()
     try:
         optimized, stats = optimize_glb(content)
     except GLBError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+
+    elapsed_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+    orig_kb = round(len(content) / 1024.0, 2)
+    opt_kb = round(len(optimized) / 1024.0, 2)
+    reduction_pct = (
+        round(((orig_kb - opt_kb) / orig_kb) * 100.0, 2)
+        if orig_kb > 0 and orig_kb >= opt_kb
+        else 0.0
+    )
+    try:
+        record_glb_optimization_metric(
+            original_size_kb=orig_kb,
+            optimized_size_kb=opt_kb,
+            reduction_percent=reduction_pct,
+            latency_ms=elapsed_ms,
+        )
+    except Exception:
+        pass
 
     logger.info("GLB optimisation: %s", stats)
 
@@ -316,15 +348,30 @@ def _optimize_for_web(content: bytes) -> bytes:
 def get_3d_catalog(
     db: Session = Depends(get_db),
 ):
-    rows = db.query(
-        Product3DAsset.product_id
-    ).filter(
-        Product3DAsset.is_active.is_(True),
-        Product3DAsset.storage_bucket == BUCKET,
-        Product3DAsset.model_format == "glb",
-    ).distinct().all()
+    from sqlalchemy.exc import OperationalError
+    from app.core.supabase_rest import (
+        fetch_3d_catalog_ids_https,
+        is_pg_tcp_reachable,
+        mark_pg_tcp_unreachable,
+    )
 
-    ids = sorted(row[0] for row in rows)
+    if not is_pg_tcp_reachable():
+        ids = fetch_3d_catalog_ids_https(bucket=BUCKET)
+        return {"product_ids": ids, "count": len(ids)}
+
+    try:
+        rows = db.query(
+            Product3DAsset.product_id
+        ).filter(
+            Product3DAsset.is_active.is_(True),
+            Product3DAsset.storage_bucket == BUCKET,
+            Product3DAsset.model_format == "glb",
+        ).distinct().all()
+        ids = sorted(row[0] for row in rows)
+    except OperationalError:
+        db.rollback()
+        mark_pg_tcp_unreachable()
+        ids = fetch_3d_catalog_ids_https(bucket=BUCKET)
 
     return {
         "product_ids": ids,
@@ -337,30 +384,76 @@ def get_product_3d_availability(
     product_id: int,
     db: Session = Depends(get_db),
 ):
-    exists = db.query(Product.id).filter(
-        Product.id == product_id
-    ).first()
+    from sqlalchemy.exc import OperationalError
+    from app.core.supabase_rest import (
+        fetch_product_3d_assets_https,
+        fetch_product_by_id_https,
+        is_pg_tcp_reachable,
+        mark_pg_tcp_unreachable,
+    )
 
-    if exists is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Product not found.",
-        )
+    if not is_pg_tcp_reachable():
+        product_row = fetch_product_by_id_https(product_id)
+        if product_row is None:
+            raise HTTPException(status_code=404, detail="Product not found.")
+        raw_assets = fetch_product_3d_assets_https(product_id, bucket=BUCKET)
+        return {
+            "product_id": product_id,
+            "has_3d": bool(raw_assets),
+            "models": [
+                {
+                    "id": int(a["id"]),
+                    "display_name": a.get("display_name") or "3D View",
+                    "variant_name": a.get("variant_name") or "Default",
+                }
+                for a in raw_assets
+            ],
+        }
 
-    assets = _active_assets(db, product_id)
+    try:
+        exists = db.query(Product.id).filter(
+            Product.id == product_id
+        ).first()
 
-    return {
-        "product_id": product_id,
-        "has_3d": bool(assets),
-        "models": [
-            {
-                "id": asset.id,
-                "display_name": asset.display_name,
-                "variant_name": asset.variant_name,
-            }
-            for asset in assets
-        ],
-    }
+        if exists is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Product not found.",
+            )
+
+        assets = _active_assets(db, product_id)
+
+        return {
+            "product_id": product_id,
+            "has_3d": bool(assets),
+            "models": [
+                {
+                    "id": asset.id,
+                    "display_name": asset.display_name,
+                    "variant_name": asset.variant_name,
+                }
+                for asset in assets
+            ],
+        }
+    except OperationalError:
+        db.rollback()
+        mark_pg_tcp_unreachable()
+        product_row = fetch_product_by_id_https(product_id)
+        if product_row is None:
+            raise HTTPException(status_code=404, detail="Product not found.")
+        raw_assets = fetch_product_3d_assets_https(product_id, bucket=BUCKET)
+        return {
+            "product_id": product_id,
+            "has_3d": bool(raw_assets),
+            "models": [
+                {
+                    "id": int(a["id"]),
+                    "display_name": a.get("display_name") or "3D View",
+                    "variant_name": a.get("variant_name") or "Default",
+                }
+                for a in raw_assets
+            ],
+        }
 
 
 @router.get("/me")
@@ -644,28 +737,32 @@ def update_model_activation(
     db: Session = Depends(get_db),
     admin: User = Depends(get_current_admin_user),
 ):
-    asset = db.get(
-        Product3DAsset,
-        model_id,
+    from app.core.supabase_rest import (
+        get_supabase_client,
+        invalidate_supabase_rest_cache,
     )
 
-    if asset is None:
+    client = get_supabase_client()
+    res = (
+        client.table("product_3d_assets")
+        .update({"is_active": bool(payload.is_active)})
+        .eq("id", model_id)
+        .execute()
+    )
+    rows = res.data or []
+    if not rows:
         raise HTTPException(
             status_code=404,
             detail="3D model not found.",
         )
 
-    asset.is_active = payload.is_active
-
-    db.commit()
-    db.refresh(asset)
-
+    invalidate_supabase_rest_cache()
     with _signed_url_lock:
-        _signed_url_cache.pop(asset.id, None)
+        _signed_url_cache.pop(model_id, None)
 
     return {
-        "id": asset.id,
-        "is_active": asset.is_active,
+        "id": model_id,
+        "is_active": bool(rows[0].get("is_active", payload.is_active)),
     }
 
 
@@ -682,23 +779,14 @@ def upload_product_glb(
     db: Session = Depends(get_db),
     admin: User = Depends(get_current_admin_user),
 ):
-    exists = db.query(Product.id).filter(
-        Product.id == product_id
-    ).first()
+    from app.core.supabase_rest import fetch_product_by_id_https
+
+    exists = fetch_product_by_id_https(product_id)
 
     if exists is None:
         raise HTTPException(
             status_code=404,
             detail="Product not found.",
-        )
-
-    if (
-        not file.filename
-        or not file.filename.lower().endswith(".glb")
-    ):
-        raise HTTPException(
-            status_code=415,
-            detail="Upload a .glb model file.",
         )
 
     display_name = display_name.strip()
@@ -713,123 +801,19 @@ def upload_product_glb(
             detail="Invalid model name or variant.",
         )
 
-    try:
-        content = file.file.read(
-            MAX_GLB_BYTES + 1
-        )
-
-    finally:
-        file.file.close()
-
-    if (
-        not content
-        or len(content) > MAX_GLB_BYTES
-    ):
-        raise HTTPException(
-            status_code=413,
-            detail=(
-                "GLB must be nonempty "
-                "and at most 60 MB."
-            ),
-        )
-
-    if (
-        len(content) < 20
-        or content[:4] != b"glTF"
-        or int.from_bytes(
-            content[4:8],
-            "little",
-        ) != 2
-        or int.from_bytes(
-            content[8:12],
-            "little",
-        ) != len(content)
-        or content[16:20] != b"JSON"
-    ):
-        raise HTTPException(
-            status_code=422,
-            detail="Invalid GLB 2.0 file.",
-        )
-
-    content = _optimize_for_web(content)
-
-    _, client = _service_client()
-
-    storage_path = (
-        f"products/{product_id}/"
-        f"{uuid.uuid4().hex}.glb"
-    )
-
-    storage = client.storage.from_(BUCKET)
-
-    try:
-        storage.upload(
-            path=storage_path,
-            file=content,
-            file_options={
-                "content-type": "model/gltf-binary",
-                "upsert": "false",
-            },
-        )
-
-    except Exception:
-        logger.exception(
-            "Private GLB upload failed "
-            "for product %s",
-            product_id,
-        )
-
-        raise HTTPException(
-            status_code=502,
-            detail=(
-                "GLB upload to Supabase failed."
-            ),
-        )
-
-    asset = Product3DAsset(
-        product_id=product_id,
+    content = _read_glb_upload(file)
+    asset = _store_glb(
+        db,
+        product_id,
+        content,
         display_name=display_name,
         variant_name=variant_name or None,
-        storage_bucket=BUCKET,
-        storage_path=storage_path,
-        model_format="glb",
-        file_size_bytes=len(content),
-        is_active=True,
     )
-
-    try:
-        db.add(asset)
-        db.commit()
-        db.refresh(asset)
-
-    except Exception:
-        db.rollback()
-
-        logger.exception(
-            "Database registration failed "
-            "for model %s",
-            storage_path,
-        )
-
-        try:
-            storage.remove([storage_path])
-
-        except Exception:
-            logger.exception(
-                "Failed to clean up orphan GLB "
-                "at %s",
-                storage_path,
-            )
-
-        raise HTTPException(
-            status_code=500,
-            detail="GLB registration failed.",
-        )
 
     return {
         "id": asset.id,
         "product_id": product_id,
-        "storage_path": storage_path,
+        "storage_path": asset.storage_path,
         "is_active": True,
         "file_size_bytes": len(content),
     }
@@ -843,18 +827,35 @@ def preview_admin_model(
     db: Session = Depends(get_db),
     admin: User = Depends(get_current_admin_user),
 ):
+    from app.core.supabase_rest import get_supabase_client
+
     response.headers["Cache-Control"] = "no-store"
 
-    asset = db.query(Product3DAsset).filter(
-        Product3DAsset.id == model_id,
-        Product3DAsset.is_active.is_(True),
-    ).first()
-
-    if asset is None:
+    client = get_supabase_client()
+    res = (
+        client.table("product_3d_assets")
+        .select("*")
+        .eq("id", model_id)
+        .eq("is_active", True)
+        .limit(1)
+        .execute()
+    )
+    rows = res.data or []
+    if not rows:
         raise HTTPException(
             status_code=404,
             detail="Active 3D model not found.",
         )
+
+    r = rows[0]
+    asset = Product3DAsset(
+        id=int(r["id"]),
+        product_id=int(r["product_id"]),
+        storage_bucket=str(r.get("storage_bucket") or BUCKET),
+        storage_path=str(r.get("storage_path") or ""),
+        model_format=str(r.get("model_format") or "glb"),
+        is_active=True,
+    )
 
     return {
         "product_id": asset.product_id,
@@ -873,6 +874,13 @@ def view_public_3d_showcase(
     response: Response,
     db: Session = Depends(get_db),
 ):
+    from sqlalchemy.exc import OperationalError
+    from app.core.supabase_rest import (
+        fetch_3d_asset_by_id_https,
+        is_pg_tcp_reachable,
+        mark_pg_tcp_unreachable,
+    )
+
     response.headers["Cache-Control"] = "no-store"
 
     showcase_enabled = (
@@ -888,13 +896,22 @@ def view_public_3d_showcase(
             detail="Public 3D showcase is unavailable.",
         )
 
-    asset = db.query(Product3DAsset).filter(
-        Product3DAsset.id == model_id,
-        Product3DAsset.product_id == product_id,
-        Product3DAsset.is_active.is_(True),
-        Product3DAsset.storage_bucket == BUCKET,
-        Product3DAsset.model_format == "glb",
-    ).first()
+    asset = None
+    if is_pg_tcp_reachable():
+        try:
+            asset = db.query(Product3DAsset).filter(
+                Product3DAsset.id == model_id,
+                Product3DAsset.product_id == product_id,
+                Product3DAsset.is_active.is_(True),
+                Product3DAsset.storage_bucket == BUCKET,
+                Product3DAsset.model_format == "glb",
+            ).first()
+        except OperationalError:
+            db.rollback()
+            mark_pg_tcp_unreachable()
+
+    if asset is None and not is_pg_tcp_reachable():
+        asset = fetch_3d_asset_by_id_https(product_id, model_id, bucket=BUCKET)
 
     if asset is None:
         raise HTTPException(
@@ -953,7 +970,9 @@ def _store_glb(
     display_name: str,
     variant_name: str | None,
 ) -> Product3DAsset:
-    """Upload an (already optimised) GLB to private storage + register it."""
+    """Upload an (already optimised) GLB to private storage + register it over HTTPS."""
+    from app.core.supabase_rest import invalidate_supabase_rest_cache
+
     _, client = _service_client()
 
     storage_path = f"products/{product_id}/{uuid.uuid4().hex}.glb"
@@ -976,31 +995,46 @@ def _store_glb(
             detail="GLB upload to Supabase failed.",
         )
 
-    asset = Product3DAsset(
-        product_id=product_id,
-        display_name=display_name,
-        variant_name=variant_name or None,
-        storage_bucket=BUCKET,
-        storage_path=storage_path,
-        model_format="glb",
-        file_size_bytes=len(content),
-        is_active=True,
-    )
-
     try:
-        db.add(asset)
-        db.commit()
-        db.refresh(asset)
+        res = (
+            client.table("product_3d_assets")
+            .insert(
+                {
+                    "product_id": product_id,
+                    "display_name": display_name,
+                    "variant_name": variant_name or None,
+                    "storage_bucket": BUCKET,
+                    "storage_path": storage_path,
+                    "model_format": "glb",
+                    "file_size_bytes": len(content),
+                    "is_active": True,
+                }
+            )
+            .execute()
+        )
+        rows = res.data or []
+        if not rows:
+            raise RuntimeError("No row returned from product_3d_assets insert.")
+        r = rows[0]
+        invalidate_supabase_rest_cache()
+        return Product3DAsset(
+            id=int(r["id"]),
+            product_id=int(r["product_id"]),
+            display_name=str(r.get("display_name") or display_name),
+            variant_name=r.get("variant_name"),
+            storage_bucket=str(r.get("storage_bucket") or BUCKET),
+            storage_path=str(r.get("storage_path") or storage_path),
+            model_format="glb",
+            file_size_bytes=len(content),
+            is_active=True,
+        )
     except Exception:
-        db.rollback()
         logger.exception("DB registration failed for %s", storage_path)
         try:
             storage.remove([storage_path])
         except Exception:
             logger.exception("Failed to clean orphan GLB %s", storage_path)
         raise HTTPException(status_code=500, detail="GLB registration failed.")
-
-    return asset
 
 
 def _read_glb_upload(file: UploadFile) -> bytes:
@@ -1089,13 +1123,33 @@ def get_generated_poster(
     product_id: int,
     db: Session = Depends(get_db),
 ):
-    product = db.query(Product.name).filter(Product.id == product_id).first()
+    from sqlalchemy.exc import OperationalError
+    from app.core.supabase_rest import (
+        fetch_product_by_id_https,
+        is_pg_tcp_reachable,
+        mark_pg_tcp_unreachable,
+    )
 
-    if product is None:
+    product_name = None
+    if is_pg_tcp_reachable():
+        try:
+            row = db.query(Product.name).filter(Product.id == product_id).first()
+            if row is not None:
+                product_name = row.name
+        except OperationalError:
+            db.rollback()
+            mark_pg_tcp_unreachable()
+
+    if product_name is None and not is_pg_tcp_reachable():
+        row_dict = fetch_product_by_id_https(product_id)
+        if row_dict is not None:
+            product_name = row_dict.get("name") or "3D Model"
+
+    if product_name is None:
         raise HTTPException(status_code=404, detail="Product not found.")
 
     return Response(
-        content=_poster_png(product.name or "3D Model"),
+        content=_poster_png(product_name or "3D Model"),
         media_type="image/png",
         headers={"Cache-Control": "public, max-age=86400"},
     )
@@ -1107,13 +1161,28 @@ def get_3d_showcase(
     db: Session = Depends(get_db),
 ):
     """Public feed for the '3D' filter: products + their active models."""
+    from sqlalchemy.exc import OperationalError
+    from app.core.supabase_rest import (
+        fetch_3d_showcase_https,
+        is_pg_tcp_reachable,
+        mark_pg_tcp_unreachable,
+    )
+
     response.headers["Cache-Control"] = "public, max-age=30"
 
-    assets = db.query(Product3DAsset).filter(
-        Product3DAsset.is_active.is_(True),
-        Product3DAsset.storage_bucket == BUCKET,
-        Product3DAsset.model_format == "glb",
-    ).order_by(Product3DAsset.id).all()
+    if not is_pg_tcp_reachable():
+        return fetch_3d_showcase_https(bucket=BUCKET)
+
+    try:
+        assets = db.query(Product3DAsset).filter(
+            Product3DAsset.is_active.is_(True),
+            Product3DAsset.storage_bucket == BUCKET,
+            Product3DAsset.model_format == "glb",
+        ).order_by(Product3DAsset.id).all()
+    except OperationalError:
+        db.rollback()
+        mark_pg_tcp_unreachable()
+        return fetch_3d_showcase_https(bucket=BUCKET)
 
     by_product: dict[int, list[Product3DAsset]] = {}
     for asset in assets:
@@ -1166,9 +1235,56 @@ def list_admin_models(
     db: Session = Depends(get_db),
     admin: User = Depends(get_current_admin_user),
 ):
-    rows = db.query(Product3DAsset, Product.name).join(
-        Product, Product.id == Product3DAsset.product_id
-    ).order_by(Product3DAsset.id.desc()).all()
+    from sqlalchemy.exc import OperationalError
+    from app.core.supabase_rest import (
+        fetch_3d_showcase_https,
+        is_pg_tcp_reachable,
+        mark_pg_tcp_unreachable,
+    )
+
+    if not is_pg_tcp_reachable():
+        showcase = fetch_3d_showcase_https(bucket=BUCKET)
+        items = []
+        for p in showcase.get("items", []):
+            for m in p.get("models", []):
+                items.append(
+                    {
+                        "id": m["id"],
+                        "product_id": p["id"],
+                        "product_name": p.get("name"),
+                        "display_name": m.get("display_name") or "3D View",
+                        "variant_name": m.get("variant_name") or "Default",
+                        "file_size_bytes": m.get("file_size_bytes"),
+                        "is_active": True,
+                        "created_at": None,
+                    }
+                )
+        return {"items": items}
+
+    try:
+        rows = db.query(Product3DAsset, Product.name).join(
+            Product, Product.id == Product3DAsset.product_id
+        ).order_by(Product3DAsset.id.desc()).all()
+    except OperationalError:
+        db.rollback()
+        mark_pg_tcp_unreachable()
+        showcase = fetch_3d_showcase_https(bucket=BUCKET)
+        items = []
+        for p in showcase.get("items", []):
+            for m in p.get("models", []):
+                items.append(
+                    {
+                        "id": m["id"],
+                        "product_id": p["id"],
+                        "product_name": p.get("name"),
+                        "display_name": m.get("display_name") or "3D View",
+                        "variant_name": m.get("variant_name") or "Default",
+                        "file_size_bytes": m.get("file_size_bytes"),
+                        "is_active": True,
+                        "created_at": None,
+                    }
+                )
+        return {"items": items}
 
     return {
         "items": [
@@ -1193,28 +1309,42 @@ def delete_admin_model(
     db: Session = Depends(get_db),
     admin: User = Depends(get_current_admin_user),
 ):
-    asset = db.get(Product3DAsset, model_id)
+    from app.core.supabase_rest import (
+        get_supabase_client,
+        invalidate_supabase_rest_cache,
+    )
 
-    if asset is None:
+    client = get_supabase_client()
+    res = (
+        client.table("product_3d_assets")
+        .select("*")
+        .eq("id", model_id)
+        .limit(1)
+        .execute()
+    )
+    rows = res.data or []
+    if not rows:
         raise HTTPException(status_code=404, detail="3D model not found.")
 
-    if asset.product_id == 144 and asset.is_active:
+    asset = rows[0]
+    if int(asset.get("product_id", -1)) == 144 and asset.get("is_active"):
         raise HTTPException(
             status_code=403,
             detail="Reference 3D showcase asset for Product #144 is protected.",
         )
 
-    path, bucket = asset.storage_path, asset.storage_bucket
+    path = str(asset.get("storage_path") or "")
+    bucket = str(asset.get("storage_bucket") or BUCKET)
 
-    db.delete(asset)
-    db.commit()
+    client.table("product_3d_assets").delete().eq("id", model_id).execute()
+    invalidate_supabase_rest_cache()
 
     with _signed_url_lock:
         _signed_url_cache.pop(model_id, None)
 
     try:
-        _, client = _service_client()
-        client.storage.from_(bucket).remove([path])
+        if path:
+            client.storage.from_(bucket).remove([path])
     except Exception:
         logger.exception("Could not remove storage object %s", path)
 
@@ -1238,8 +1368,13 @@ def upload_standalone_3d_product(
 ):
     """
     One-step 3D upload: creates a store product (so it can be searched,
-    filtered and bought) and attaches the optimised GLB to it.
+    filtered and bought) and attaches the optimised GLB to it over HTTPS.
     """
+    from app.core.supabase_rest import (
+        get_supabase_client,
+        invalidate_supabase_rest_cache,
+    )
+
     name = name.strip()
     category = category.strip() or SHOWCASE_CATEGORY
 
@@ -1289,57 +1424,67 @@ def upload_standalone_3d_product(
         finally:
             poster.file.close()
 
-    product = Product(
-        name=name,
-        description=description.strip() or f"Interactive 3D model: {name}",
-        price=price,
-        image_url=poster_url or "",
-        category=category,
-        rating=0.0,
-        reviews=0,
-        is_featured=False,
-        stock=50,
-        fulfillment_type="IN_HOUSE",
-        supplier_id="PENGUIN_DIRECT",
-    )
-
+    client = get_supabase_client()
     try:
-        db.add(product)
-        db.flush()
+        res = (
+            client.table("products")
+            .insert(
+                {
+                    "name": name,
+                    "description": description.strip() or f"Interactive 3D model: {name}",
+                    "price": float(price),
+                    "image_url": poster_url or "",
+                    "category": category,
+                    "rating": 0.0,
+                    "reviews": 0,
+                    "is_featured": False,
+                    "stock": 50,
+                    "fulfillment_type": "IN_HOUSE",
+                    "supplier_id": "PENGUIN_DIRECT",
+                }
+            )
+            .execute()
+        )
+        rows = res.data or []
+        if not rows:
+            raise RuntimeError("No product row returned from Supabase insert.")
+        product_row = rows[0]
+        product_id = int(product_row["id"])
 
         if not poster_url:
-            product.image_url = f"/api/premium-3d/poster/{product.id}.png"
+            generated_url = f"/api/premium-3d/poster/{product_id}.png"
+            client.table("products").update({"image_url": generated_url}).eq(
+                "id", product_id
+            ).execute()
+            product_row["image_url"] = generated_url
 
-        db.commit()
-        db.refresh(product)
+        invalidate_supabase_rest_cache()
     except Exception:
-        db.rollback()
         logger.exception("Failed creating 3D product")
         raise HTTPException(status_code=500, detail="Could not create product.")
 
     try:
         asset = _store_glb(
             db,
-            product.id,
+            product_id,
             content,
             display_name=f"{name} 3D View"[:150],
             variant_name=variant_name.strip() or None,
         )
     except HTTPException:
-        # Do not leave a model-less product behind.
         try:
-            db.delete(product)
-            db.commit()
+            client.table("products").delete().eq("id", product_id).execute()
+            invalidate_supabase_rest_cache()
         except Exception:
-            db.rollback()
+            pass
         raise
 
     return {
-        "product_id": product.id,
+        "product_id": product_id,
         "model_id": asset.id,
-        "name": product.name,
-        "category": product.category,
-        "image_url": product.image_url,
+        "name": product_row.get("name") or name,
+        "category": product_row.get("category") or category,
+        "image_url": product_row.get("image_url") or "",
         "file_size_bytes": asset.file_size_bytes,
         "is_active": True,
     }

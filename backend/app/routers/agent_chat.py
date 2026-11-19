@@ -20,6 +20,7 @@ from app.services.audit_service import (
     fetch_ctrlx_audit_logs,
     record_ctrlx_audit,
 )
+from app.services.ai_telemetry_service import record_ctrlx_metric
 
 
 def append_audit_log(entry: dict[str, Any]) -> None:
@@ -332,6 +333,14 @@ def _extract_agent_payload(
     if not isinstance(action_logs, list):
         action_logs = []
 
+    reasoning_steps = result.get("reasoning_steps")
+    if not isinstance(reasoning_steps, list):
+        reasoning_steps = []
+
+    bundle = result.get("bundle")
+    if not isinstance(bundle, dict):
+        bundle = None
+
     routed_agent = result.get("routed_agent") or result.get("next_agent") or "CTRL-X"
 
     return {
@@ -339,9 +348,11 @@ def _extract_agent_payload(
         "response": final_text,
         "data_type": data_type,
         "suggested_products": suggested_products,
+        "bundle": bundle,
         "cart_action": cart_action,
         "order_action": order_action,
         "routed_agent": routed_agent,
+        "reasoning_steps": reasoning_steps,
         "action_logs": action_logs,
     }
 
@@ -433,22 +444,34 @@ async def chat_with_agent(
         latency_ms = round((time.perf_counter() - started_at) * 1000.0, 2)
         payload["latency_ms"] = latency_ms
 
+        tools_called = [
+            t
+            for entry in payload.get("action_logs", [])
+            for t in entry.get("tools", [])
+        ]
+
         append_audit_log(
             {
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "thread_id": request.thread_id,
                 "user_input": request.user_input[:200],
                 "routed_agent": payload["routed_agent"],
-                "tools_called": [
-                    t
-                    for entry in payload.get("action_logs", [])
-                    for t in entry.get("tools", [])
-                ],
+                "tools_called": tools_called,
                 "data_type": payload["data_type"],
                 "latency_ms": latency_ms,
                 "status": "success",
             }
         )
+        try:
+            record_ctrlx_metric(
+                latency_ms=latency_ms,
+                tool_calls_count=len(tools_called),
+                success=True,
+                routed_agent=payload["routed_agent"],
+                data_type=payload["data_type"],
+            )
+        except Exception:
+            pass
 
         logger.info(
             "Agent completed | "

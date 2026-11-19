@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -24,6 +25,10 @@ from app.models import (
 )
 from app.repositories.product_repo import PRODUCT_PUBLIC_COLUMNS
 from app.schemas.commerce import AddressCreate, ReviewCreate, WishlistToggleRequest
+from app.services.review_trust_service import (
+    evaluate_review_trust,
+    get_or_generate_product_review_insights,
+)
 
 router = APIRouter(tags=["User Commerce v1"])
 
@@ -54,8 +59,17 @@ def _serialize_public_product(p: Product) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# 1. PRODUCT REVIEWS & RATINGS
+# 1. PRODUCT REVIEWS, TRUST SCORING & AI REVIEW INSIGHTS
 # ---------------------------------------------------------------------------
+
+def _parse_json_safe(raw: str | None, default: object):
+    if not raw:
+        return default
+    try:
+        return json.loads(raw)
+    except Exception:
+        return default
+
 
 @router.get("/products/{product_id}/reviews")
 def list_product_reviews(
@@ -66,26 +80,38 @@ def list_product_reviews(
     if exists is None:
         raise HTTPException(status_code=404, detail="Product not found.")
 
-    rows = (
+    all_rows = (
         db.query(Review)
         .filter(Review.product_id == product_id)
         .order_by(Review.created_at.desc())
         .all()
     )
+    rows = [
+        r for r in all_rows if (getattr(r, "moderation_status", None) or "approved") != "hidden"
+    ]
 
     dist = {"5": 0, "4": 0, "3": 0, "2": 0, "1": 0}
     total_score = 0
+    weighted_num = 0.0
+    weighted_den = 0.0
     for r in rows:
         k = str(max(1, min(5, int(r.rating))))
         dist[k] += 1
         total_score += int(r.rating)
+        t_score = float(getattr(r, "trust_score", None) or 85.0)
+        flagged = bool(getattr(r, "is_flagged_suspicious", False))
+        w = max(0.05, (t_score / 100.0) * (0.2 if flagged else (1.25 if r.verified_purchase else 1.0)))
+        weighted_num += int(r.rating) * w
+        weighted_den += w
 
     count = len(rows)
     avg = round(total_score / count, 2) if count > 0 else 0.0
+    trust_weighted = round(weighted_num / weighted_den, 2) if weighted_den > 0 else avg
 
     return {
         "product_id": product_id,
         "average_rating": avg,
+        "trust_weighted_rating": trust_weighted,
         "total_reviews": count,
         "distribution": dist,
         "reviews": [
@@ -96,11 +122,33 @@ def list_product_reviews(
                 "title": r.title or "",
                 "comment": r.comment,
                 "verified_purchase": bool(r.verified_purchase),
+                "trust_score": round(float(getattr(r, "trust_score", None) or 85.0), 1),
+                "is_flagged_suspicious": bool(getattr(r, "is_flagged_suspicious", False)),
+                "trust_flags": _parse_json_safe(getattr(r, "trust_flags", "[]"), []),
+                "aspect_sentiments": _parse_json_safe(getattr(r, "aspect_sentiments", "{}"), {}),
+                "moderation_status": getattr(r, "moderation_status", None) or "approved",
                 "created_at": r.created_at.isoformat() if r.created_at else None,
             }
             for r in rows
         ],
     }
+
+
+@router.get("/products/{product_id}/review-insights")
+def get_product_review_insights_endpoint(
+    product_id: int,
+    refresh: bool = False,
+    db: Session = Depends(get_db),
+):
+    exists = db.query(Product.id).filter(Product.id == product_id).first()
+    if exists is None:
+        raise HTTPException(status_code=404, detail="Product not found.")
+
+    return get_or_generate_product_review_insights(
+        db,
+        product_id,
+        force_refresh=refresh,
+    )
 
 
 @router.post("/products/{product_id}/reviews", status_code=status.HTTP_201_CREATED)
@@ -112,7 +160,7 @@ def submit_product_review(
 ):
     product = (
         db.query(Product)
-        .options(load_only(Product.id, Product.name, Product.rating, Product.reviews))
+        .options(load_only(Product.id, Product.name, Product.rating, Product.reviews, Product.price, Product.category))
         .filter(Product.id == product_id)
         .first()
     )
@@ -141,6 +189,18 @@ def submit_product_review(
         )
         .first()
     )
+    is_verified = verified_row is not None
+
+    trust_eval = evaluate_review_trust(
+        db,
+        product_id=product_id,
+        user_id=current_user.id,
+        user_email=clean_email,
+        rating=payload.rating,
+        title=payload.title.strip() if payload.title else None,
+        comment=payload.comment.strip(),
+        verified_purchase=is_verified,
+    )
 
     review = Review(
         product_id=product_id,
@@ -149,18 +209,30 @@ def submit_product_review(
         rating=payload.rating,
         title=payload.title.strip() if payload.title else None,
         comment=payload.comment.strip(),
-        verified_purchase=verified_row is not None,
+        verified_purchase=is_verified,
+        trust_score=trust_eval["trust_score"],
+        is_flagged_suspicious=trust_eval["is_flagged_suspicious"],
+        trust_flags=json.dumps(trust_eval["trust_flags"]),
+        aspect_sentiments=json.dumps(trust_eval["aspect_sentiments"]),
+        moderation_status=trust_eval["moderation_status"],
     )
 
     try:
         db.add(review)
         db.flush()
 
-        # Recompute aggregates in case trigger wasn't executed in standalone test DB
-        agg_rows = db.query(Review.rating).filter(Review.product_id == product_id).all()
-        if agg_rows:
-            product.reviews = len(agg_rows)
-            product.rating = round(sum(r[0] for r in agg_rows) / len(agg_rows), 2)
+        # Recompute aggregates excluding hidden spam reviews
+        agg_rows = (
+            db.query(Review.rating, Review.moderation_status)
+            .filter(Review.product_id == product_id)
+            .all()
+        )
+        visible_ratings = [
+            r[0] for r in agg_rows if (r[1] or "approved") != "hidden"
+        ]
+        if visible_ratings:
+            product.reviews = len(visible_ratings)
+            product.rating = round(sum(visible_ratings) / len(visible_ratings), 2)
 
         db.commit()
         db.refresh(review)
@@ -179,6 +251,11 @@ def submit_product_review(
         "title": review.title or "",
         "comment": review.comment,
         "verified_purchase": bool(review.verified_purchase),
+        "trust_score": review.trust_score,
+        "is_flagged_suspicious": bool(review.is_flagged_suspicious),
+        "trust_flags": trust_eval["trust_flags"],
+        "aspect_sentiments": trust_eval["aspect_sentiments"],
+        "moderation_status": review.moderation_status,
         "average_rating": product.rating,
         "total_reviews": product.reviews,
         "created_at": review.created_at.isoformat() if review.created_at else None,
