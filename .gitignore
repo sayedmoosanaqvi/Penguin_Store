@@ -60,3 +60,4 @@ __pycache__/
 # FastAPI / Uvicorn caching
 .pytest_cache/
 .fake
+Penguin_Store_Complete_Project_Documentation.docx
