@@ -8,7 +8,6 @@ import 'package:penguin_store/core/widgets/animated_widgets.dart';
 import 'package:penguin_store/features/shop/providers/auth_provider.dart';
 import 'package:penguin_store/features/shop/providers/cart_provider.dart';
 import 'package:penguin_store/features/shop/screens/auth_screen.dart';
-import 'package:penguin_store/features/shop/screens/admin_screen.dart';
 import 'package:penguin_store/features/shop/screens/legal_screens.dart';
 import 'package:penguin_store/helpers/theme_provider.dart';
 
@@ -553,23 +552,10 @@ class ProfileScreen extends StatelessWidget {
                   theme: theme,
                   children: [
                     _ProfileTile(
-                      icon: Icons.admin_panel_settings_outlined,
-                      title: 'Admin Dashboard',
-                      subtitle: 'Manage Penguin Store',
-                      onTap: () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => const AdminScreen(),
-                          ),
-                        );
-                      },
-                    ),
-                    _ProfileTile(
-                      icon: Icons.view_in_ar_rounded,
-                      title: '3D Studio',
-                      subtitle: 'Upload GLB models to the 3D filter',
-                      onTap: () => context.push('/admin/3d-studio'),
+                      icon: Icons.admin_panel_settings_rounded,
+                      title: 'Admin Studio',
+                      subtitle: 'Unified product & 3D GLB studio, reviews, and FYP metrics',
+                      onTap: () => context.push('/admin'),
                     ),
                   ],
                 ),

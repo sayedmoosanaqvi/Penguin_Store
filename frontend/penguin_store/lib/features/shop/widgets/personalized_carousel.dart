@@ -1,10 +1,9 @@
 
-import 'dart:convert';
-
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
-import 'package:http/http.dart' as http;
-import 'package:penguin_store/config/api_config.dart';
+import 'package:provider/provider.dart';
+
+import 'package:penguin_store/features/shop/providers/product_provider.dart';
 
 class PersonalizedCarousel extends StatefulWidget {
   final String userEmail;
@@ -20,66 +19,24 @@ class PersonalizedCarousel extends StatefulWidget {
 }
 
 class _PersonalizedCarouselState extends State<PersonalizedCarousel> {
-  List<dynamic> _recommendedProducts = [];
-  bool _isLoading = true;
-
   @override
   void initState() {
     super.initState();
-    _fetchRecommendations();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      context
+          .read<ProductProvider>()
+          .ensureRecommendationsLoaded(widget.userEmail);
+    });
   }
 
   @override
   void didUpdateWidget(covariant PersonalizedCarousel oldWidget) {
     super.didUpdateWidget(oldWidget);
-
     if (oldWidget.userEmail != widget.userEmail) {
-      _fetchRecommendations();
-    }
-  }
-
-  Future<void> _fetchRecommendations() async {
-    setState(() => _isLoading = true);
-
-    try {
-      final url = Uri.parse(
-        '${ApiConfig.baseUrl}/api/recommendations/for-user',
-      ).replace(
-        queryParameters: {
-          'email': widget.userEmail,
-          'limit': '5',
-        },
-      );
-
-      final response = await http.get(url);
-
-      if (!mounted) return;
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-
-        setState(() {
-          _recommendedProducts =
-              data is Map && data['products'] is List
-                  ? List<dynamic>.from(data['products'])
-                  : [];
-          _isLoading = false;
-        });
-      } else {
-        setState(() {
-          _recommendedProducts = [];
-          _isLoading = false;
-        });
-      }
-    } catch (e) {
-      debugPrint('Error fetching recommendations: $e');
-
-      if (!mounted) return;
-
-      setState(() {
-        _recommendedProducts = [];
-        _isLoading = false;
-      });
+      context
+          .read<ProductProvider>()
+          .ensureRecommendationsLoaded(widget.userEmail);
     }
   }
 
@@ -87,8 +44,11 @@ class _PersonalizedCarouselState extends State<PersonalizedCarousel> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final primary = theme.primaryColor;
+    final provider = context.watch<ProductProvider>();
+    final recommendedProducts = provider.recommendationsFor(widget.userEmail);
+    final isLoading = provider.isRecommendationsLoading(widget.userEmail);
 
-    if (_isLoading || _recommendedProducts.isEmpty) {
+    if (isLoading || recommendedProducts.isEmpty) {
       return const SizedBox.shrink();
     }
 
@@ -173,17 +133,11 @@ class _PersonalizedCarouselState extends State<PersonalizedCarousel> {
                 scrollDirection: Axis.horizontal,
                 physics: const BouncingScrollPhysics(),
                 padding: const EdgeInsets.symmetric(horizontal: 12),
-                itemCount: _recommendedProducts.length,
-                separatorBuilder: (_, __) =>
+                itemCount: recommendedProducts.length,
+                separatorBuilder: (_, _) =>
                     const SizedBox(width: 9),
                 itemBuilder: (context, index) {
-                  final raw = _recommendedProducts[index];
-
-                  if (raw is! Map) {
-                    return const SizedBox.shrink();
-                  }
-
-                  final product = raw;
+                  final product = recommendedProducts[index];
                   final id = product['id'];
                   final name =
                       (product['name'] ?? 'Recommended Product').toString();

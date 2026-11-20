@@ -20,11 +20,23 @@ class RightDrawer extends StatelessWidget {
     }
   }
 
+  static const Set<String> _shellRoutes = {
+    '/',
+    '/discover',
+    '/cart',
+    '/support',
+    '/profile',
+  };
+
   void _navigate(BuildContext context, String route) {
     final current = _currentPath(context);
     Navigator.pop(context);
     if (current == route) return;
-    context.push(route);
+    if (_shellRoutes.contains(route)) {
+      context.go(route);
+    } else {
+      context.push(route);
+    }
   }
 
   @override
@@ -179,7 +191,10 @@ class RightDrawer extends StatelessWidget {
                     icon: Icons.local_shipping_rounded,
                     title: isAuthenticated ? 'My Orders' : 'Track an Order',
                     subtitle: 'Real-time shipment & delivery status',
-                    route: isAuthenticated ? '/my-orders' : '/track-order',
+                    route: Uri(
+                      path: '/orders',
+                      queryParameters: {'email': authProvider.userEmail ?? ''},
+                    ).toString(),
                     currentPath: currentPath,
                     isDark: isDark,
                     cardBg: cardBg,
@@ -194,7 +209,7 @@ class RightDrawer extends StatelessWidget {
                       icon: Icons.manage_accounts_rounded,
                       title: 'Account & Addresses',
                       subtitle: 'Profile, security & notifications',
-                      route: '/account',
+                      route: '/profile',
                       currentPath: currentPath,
                       isDark: isDark,
                       cardBg: cardBg,
@@ -210,30 +225,15 @@ class RightDrawer extends StatelessWidget {
                     child: _buildNavTile(
                       context: context,
                       icon: Icons.admin_panel_settings_rounded,
-                      title: 'Admin Command Center',
-                      subtitle: 'Inventory, AI moderation & FYP metrics',
+                      title: 'Admin Studio',
+                      subtitle: 'Products, 3D GLB studio, reviews & FYP metrics',
                       route: '/admin',
                       currentPath: currentPath,
                       isDark: isDark,
                       cardBg: cardBg,
                       textColor: textColor,
                       accentColor: const Color(0xFF1E88E5),
-                      trailingBadge: 'ADMIN',
-                    ),
-                  ),
-                  FadeSlideIn.staggered(
-                    index: 10,
-                    child: _buildNavTile(
-                      context: context,
-                      icon: Icons.threed_rotation_rounded,
-                      title: '3D Studio Manager',
-                      subtitle: 'Upload & manage private GLB models',
-                      route: '/admin/3d',
-                      currentPath: currentPath,
-                      isDark: isDark,
-                      cardBg: cardBg,
-                      textColor: textColor,
-                      accentColor: const Color(0xFF00ACC1),
+                      trailingBadge: 'STUDIO',
                     ),
                   ),
                 ],
@@ -408,7 +408,7 @@ class RightDrawer extends StatelessWidget {
                     borderRadius: BorderRadius.circular(16),
                     onTap: () => _navigate(
                       context,
-                      isAuthenticated ? '/account' : '/login',
+                      isAuthenticated ? '/profile' : '/login',
                     ),
                     child: Container(
                       padding: const EdgeInsets.all(12),

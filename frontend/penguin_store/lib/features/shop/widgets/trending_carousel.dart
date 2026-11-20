@@ -1,10 +1,10 @@
 
-import 'dart:convert';
-
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
-import 'package:http/http.dart' as http;
-import 'package:penguin_store/config/api_config.dart';
+import 'package:provider/provider.dart';
+import 'package:shimmer/shimmer.dart';
+
+import 'package:penguin_store/features/shop/providers/product_provider.dart';
 
 class TrendingCarousel extends StatefulWidget {
   final String country;
@@ -19,63 +19,20 @@ class TrendingCarousel extends StatefulWidget {
 }
 
 class _TrendingCarouselState extends State<TrendingCarousel> {
-  List<dynamic> _trendingProducts = [];
-  bool _isLoading = true;
-
   @override
   void initState() {
     super.initState();
-    _fetchTrending();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      context.read<ProductProvider>().ensureTrendingLoaded(widget.country);
+    });
   }
 
   @override
   void didUpdateWidget(covariant TrendingCarousel oldWidget) {
     super.didUpdateWidget(oldWidget);
-
     if (oldWidget.country != widget.country) {
-      _fetchTrending();
-    }
-  }
-
-  Future<void> _fetchTrending() async {
-    setState(() => _isLoading = true);
-
-    try {
-      final url = Uri.parse(
-        '${ApiConfig.baseUrl}/api/trending/top-10',
-      ).replace(
-        queryParameters: {'country': widget.country},
-      );
-
-      final response = await http.get(url);
-
-      if (!mounted) return;
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-
-        setState(() {
-          _trendingProducts = data is Map &&
-                  data['products'] is List
-              ? List<dynamic>.from(data['products'])
-              : [];
-          _isLoading = false;
-        });
-      } else {
-        setState(() {
-          _trendingProducts = [];
-          _isLoading = false;
-        });
-      }
-    } catch (e) {
-      debugPrint('Error fetching trends: $e');
-
-      if (!mounted) return;
-
-      setState(() {
-        _trendingProducts = [];
-        _isLoading = false;
-      });
+      context.read<ProductProvider>().ensureTrendingLoaded(widget.country);
     }
   }
 
@@ -83,24 +40,37 @@ class _TrendingCarouselState extends State<TrendingCarousel> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final primary = theme.primaryColor;
+    final isDark = theme.brightness == Brightness.dark;
+    final provider = context.watch<ProductProvider>();
+    final trendingProducts = provider.trendingFor(widget.country);
+    final isLoading = provider.isTrendingLoading(widget.country);
 
-    if (_isLoading) {
+    if (isLoading && trendingProducts.isEmpty) {
       return SizedBox(
-        height: 100,
-        child: Center(
-          child: SizedBox(
-            width: 23,
-            height: 23,
-            child: CircularProgressIndicator(
-              strokeWidth: 2.5,
-              color: primary,
+        height: 175,
+        child: ListView.separated(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+          scrollDirection: Axis.horizontal,
+          itemCount: 4,
+          separatorBuilder: (_, _) => const SizedBox(width: 10),
+          itemBuilder: (_, _) => Shimmer.fromColors(
+            baseColor:
+                isDark ? const Color(0xFF1E293B) : const Color(0xFFE2E8F0),
+            highlightColor:
+                isDark ? const Color(0xFF334155) : const Color(0xFFF8FAFC),
+            child: Container(
+              width: 132,
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(14),
+              ),
             ),
           ),
         ),
       );
     }
 
-    if (_trendingProducts.isEmpty) {
+    if (trendingProducts.isEmpty) {
       return const SizedBox.shrink();
     }
 
@@ -168,7 +138,7 @@ class _TrendingCarouselState extends State<TrendingCarousel> {
                       borderRadius: BorderRadius.circular(7),
                     ),
                     child: Text(
-                      'TOP ${_trendingProducts.length}',
+                      'TOP ${trendingProducts.length}',
                       style: TextStyle(
                         color: primary,
                         fontSize: 10,
@@ -185,17 +155,11 @@ class _TrendingCarouselState extends State<TrendingCarousel> {
                 scrollDirection: Axis.horizontal,
                 physics: const BouncingScrollPhysics(),
                 padding: const EdgeInsets.symmetric(horizontal: 12),
-                itemCount: _trendingProducts.length,
-                separatorBuilder: (_, __) =>
+                itemCount: trendingProducts.length,
+                separatorBuilder: (_, _) =>
                     const SizedBox(width: 9),
                 itemBuilder: (context, index) {
-                  final raw = _trendingProducts[index];
-
-                  if (raw is! Map) {
-                    return const SizedBox.shrink();
-                  }
-
-                  final product = raw;
+                  final product = trendingProducts[index];
                   final id = product['id'];
                   final name =
                       (product['name'] ?? 'Trending Product').toString();

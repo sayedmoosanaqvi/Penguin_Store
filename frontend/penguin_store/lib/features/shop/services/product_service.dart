@@ -310,7 +310,37 @@ class ProductService {
       );
     }
 
+    invalidateCache();
     return (decoded['id'] as num).toInt();
+  }
+
+  /// Update an existing product's metadata via /api/v1/products/{id}.
+  Future<Product> updateProduct(
+    int productId,
+    Map<String, dynamic> updates,
+  ) async {
+    final headers = await _getAdminHeaders(includeJsonContentType: true);
+    if (headers == null) {
+      throw Exception('Admin login is required.');
+    }
+
+    final response = await http
+        .put(
+          Uri.parse('$baseUrl/api/v1/products/$productId'),
+          headers: headers,
+          body: jsonEncode(updates),
+        )
+        .timeout(_requestTimeout);
+
+    if (response.statusCode != 200) {
+      throw Exception(
+        'Product update failed: ${_errorDetails(response)}',
+      );
+    }
+
+    invalidateCache();
+    final decoded = jsonDecode(response.body) as Map;
+    return Product.fromJson(Map<String, dynamic>.from(decoded));
   }
 
   // Existing admin deletion
@@ -333,11 +363,51 @@ class ProductService {
           )
           .timeout(_requestTimeout);
 
-      return response.statusCode == 200;
+      if (response.statusCode == 200) {
+        invalidateCache();
+        return true;
+      }
+      return false;
 
     } catch (e) {
       debugPrint('Delete product error: $e');
       return false;
+    }
+  }
+
+  /// Upload raw image bytes (manual photo or auto-captured 3D PNG) to Supabase Storage.
+  Future<String?> uploadImageBytes(
+    Uint8List bytes, {
+    String fileName = 'product_image.png',
+  }) async {
+    try {
+      final headers = await _getAdminHeaders();
+      if (headers == null) return null;
+      if (bytes.isEmpty || bytes.length > _maxImageBytes) return null;
+
+      final request = http.MultipartRequest(
+        'POST',
+        Uri.parse('$baseUrl/upload-file/'),
+      );
+      request.headers.addAll(headers);
+      request.files.add(
+        http.MultipartFile.fromBytes('file', bytes, filename: fileName),
+      );
+
+      final stream = await request.send().timeout(_requestTimeout);
+      final response =
+          await http.Response.fromStream(stream).timeout(_requestTimeout);
+      if (response.statusCode != 200) return null;
+
+      final decoded = jsonDecode(response.body);
+      if (decoded is Map && decoded['url'] is String) {
+        final url = decoded['url'] as String;
+        if (url.isNotEmpty) return url;
+      }
+      return null;
+    } catch (e) {
+      debugPrint('Upload image bytes error: $e');
+      return null;
     }
   }
 

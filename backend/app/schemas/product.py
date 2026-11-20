@@ -12,7 +12,7 @@ class ProductBase(BaseModel):
     description: Optional[str] = Field(default=None, max_length=4000)
     price: float = Field(..., gt=0, le=1_000_000)
     original_price: Optional[float] = Field(default=None, gt=0, le=1_000_000)
-    image_url: str = Field(..., min_length=1, max_length=1024)
+    image_url: str = Field(default="", max_length=1024)
     category: str = Field(..., min_length=1, max_length=100)
     rating: Optional[float] = Field(default=0.0, ge=0.0, le=5.0)
     reviews: Optional[int] = Field(default=0, ge=0)
@@ -30,7 +30,7 @@ class ProductUpdate(BaseModel):
     description: Optional[str] = Field(default=None, max_length=4000)
     price: Optional[float] = Field(default=None, gt=0, le=1_000_000)
     original_price: Optional[float] = Field(default=None, gt=0, le=1_000_000)
-    image_url: Optional[str] = Field(default=None, min_length=1, max_length=1024)
+    image_url: Optional[str] = Field(default=None, max_length=1024)
     category: Optional[str] = Field(default=None, min_length=1, max_length=100)
     discount_percent: Optional[int] = Field(default=None, ge=0, le=95)
     is_featured: Optional[bool] = None

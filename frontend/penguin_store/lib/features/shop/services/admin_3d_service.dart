@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 
 import 'package:penguin_store/config/api_config.dart';
+import 'package:penguin_store/core/services/multipart_upload_helper.dart';
 import 'package:penguin_store/core/services/secure_storage_service.dart';
 
 class Admin3DModelRow {
@@ -40,10 +41,17 @@ class Admin3DUploadResult {
   final int productId;
   final int modelId;
   final int storedBytes;
-  const Admin3DUploadResult(this.productId, this.modelId, this.storedBytes);
+  final String? imageUrl;
+
+  const Admin3DUploadResult(
+    this.productId,
+    this.modelId,
+    this.storedBytes, {
+    this.imageUrl,
+  });
 }
 
-/// Admin-only calls for the 3D Studio screen.
+/// Admin-only calls for the unified Admin Studio & 3D Asset Library.
 class Admin3DService {
   static String get _base =>
       ApiConfig.baseUrl.replaceFirst(RegExp(r'/$'), '');
@@ -57,18 +65,22 @@ class Admin3DService {
     return {'Authorization': 'Bearer $token', 'Accept': 'application/json'};
   }
 
-  String _detail(http.Response r) {
+  String _detailFromBody(int statusCode, String body) {
     try {
-      final d = jsonDecode(r.body);
+      final d = jsonDecode(body);
       if (d is Map && d['detail'] is String) return d['detail'] as String;
     } catch (_) {}
-    return 'Server returned HTTP ${r.statusCode}.';
+    return 'Server returned HTTP $statusCode.';
   }
+
+  String _detail(http.Response r) => _detailFromBody(r.statusCode, r.body);
 
   Future<List<Admin3DModelRow>> listModels() async {
     final r = await http
-        .get(Uri.parse('$_base/api/premium-3d/admin/models'),
-            headers: await _headers())
+        .get(
+          Uri.parse('$_base/api/premium-3d/admin/models'),
+          headers: await _headers(),
+        )
         .timeout(_timeout);
 
     if (r.statusCode != 200) throw Exception(_detail(r));
@@ -97,8 +109,10 @@ class Admin3DService {
 
   Future<void> deleteModel(int modelId) async {
     final r = await http
-        .delete(Uri.parse('$_base/api/premium-3d/admin/models/$modelId'),
-            headers: await _headers())
+        .delete(
+          Uri.parse('$_base/api/premium-3d/admin/models/$modelId'),
+          headers: await _headers(),
+        )
         .timeout(_timeout);
 
     if (r.statusCode != 200) throw Exception(_detail(r));
@@ -116,8 +130,8 @@ class Admin3DService {
     return (jsonDecode(r.body) as Map)['model_url'] as String;
   }
 
-  /// One-step: create a product + attach the GLB (textures capped at 512 px
-  /// on the server).
+  /// One-step: create a product + attach the GLB + optional auto-captured or
+  /// manual poster, reporting real byte-level upload progress (0.0–1.0).
   Future<Admin3DUploadResult> uploadNewProduct({
     required String fileName,
     required Uint8List glbBytes,
@@ -126,79 +140,112 @@ class Admin3DService {
     required String category,
     String description = '',
     String variantName = '',
+    bool isFeatured = false,
     Uint8List? posterBytes,
     String? posterName,
+    void Function(double progress)? onProgress,
   }) async {
-    final request = http.MultipartRequest(
-      'POST',
-      Uri.parse('$_base/api/premium-3d/admin/showcase-upload'),
-    )
-      ..headers.addAll(await _headers())
-      ..fields.addAll({
+    final files = <MultipartUploadFile>[
+      MultipartUploadFile(
+        fieldName: 'file',
+        fileName: fileName,
+        bytes: glbBytes,
+        contentType: 'model/gltf-binary',
+      ),
+      if (posterBytes != null && posterBytes.isNotEmpty)
+        MultipartUploadFile(
+          fieldName: 'poster',
+          fileName: posterName ?? 'studio_poster.png',
+          bytes: posterBytes,
+          contentType: (posterName ?? '').toLowerCase().endsWith('.png')
+              ? 'image/png'
+              : 'image/jpeg',
+        ),
+    ];
+
+    final res = await sendMultipartWithProgress(
+      uri: Uri.parse('$_base/api/premium-3d/admin/showcase-upload'),
+      headers: await _headers(),
+      fields: {
         'name': name,
         'price': price.toString(),
         'category': category,
         'description': description,
         'variant_name': variantName,
-      })
-      ..files.add(
-        http.MultipartFile.fromBytes('file', glbBytes, filename: fileName),
-      );
+        'is_featured': isFeatured.toString(),
+      },
+      files: files,
+      onProgress: onProgress,
+      timeout: _uploadTimeout,
+    );
 
-    if (posterBytes != null && posterBytes.isNotEmpty) {
-      request.files.add(
-        http.MultipartFile.fromBytes(
-          'poster',
-          posterBytes,
-          filename: posterName ?? 'poster.jpg',
-        ),
-      );
+    if (res.statusCode != 201) {
+      throw Exception(_detailFromBody(res.statusCode, res.body));
     }
 
-    final streamed = await request.send().timeout(_uploadTimeout);
-    final r = await http.Response.fromStream(streamed).timeout(_uploadTimeout);
-
-    if (r.statusCode != 201) throw Exception(_detail(r));
-
-    final d = jsonDecode(r.body) as Map;
+    final d = jsonDecode(res.body) as Map;
     return Admin3DUploadResult(
       (d['product_id'] as num).toInt(),
       (d['model_id'] as num).toInt(),
       (d['file_size_bytes'] as num?)?.toInt() ?? 0,
+      imageUrl: d['image_url']?.toString(),
     );
   }
 
-  /// Attach a GLB to a product that already exists (original endpoint).
+  /// Attach a GLB (and optional auto-captured studio poster) to an existing product
+  /// with real byte-level upload progress (0.0–1.0).
   Future<Admin3DUploadResult> attachToProduct({
     required int productId,
     required String fileName,
     required Uint8List glbBytes,
     required String displayName,
     String variantName = '',
+    Uint8List? posterBytes,
+    String? posterName,
+    bool updateProductImage = false,
+    void Function(double progress)? onProgress,
   }) async {
-    final request = http.MultipartRequest(
-      'POST',
-      Uri.parse('$_base/api/premium-3d/admin/products/$productId/upload'),
-    )
-      ..headers.addAll(await _headers())
-      ..fields.addAll({
+    final files = <MultipartUploadFile>[
+      MultipartUploadFile(
+        fieldName: 'file',
+        fileName: fileName,
+        bytes: glbBytes,
+        contentType: 'model/gltf-binary',
+      ),
+      if (posterBytes != null && posterBytes.isNotEmpty)
+        MultipartUploadFile(
+          fieldName: 'poster',
+          fileName: posterName ?? 'studio_poster.png',
+          bytes: posterBytes,
+          contentType: (posterName ?? '').toLowerCase().endsWith('.png')
+              ? 'image/png'
+              : 'image/jpeg',
+        ),
+    ];
+
+    final res = await sendMultipartWithProgress(
+      uri: Uri.parse('$_base/api/premium-3d/admin/products/$productId/upload'),
+      headers: await _headers(),
+      fields: {
         'display_name': displayName,
         'variant_name': variantName,
-      })
-      ..files.add(
-        http.MultipartFile.fromBytes('file', glbBytes, filename: fileName),
-      );
+        'update_product_image': updateProductImage.toString(),
+      },
+      files: files,
+      onProgress: onProgress,
+      timeout: _uploadTimeout,
+    );
 
-    final streamed = await request.send().timeout(_uploadTimeout);
-    final r = await http.Response.fromStream(streamed).timeout(_uploadTimeout);
+    if (res.statusCode != 201) {
+      throw Exception(_detailFromBody(res.statusCode, res.body));
+    }
 
-    if (r.statusCode != 201) throw Exception(_detail(r));
-
-    final d = jsonDecode(r.body) as Map;
+    final d = jsonDecode(res.body) as Map;
     return Admin3DUploadResult(
       productId,
       (d['id'] as num).toInt(),
       (d['file_size_bytes'] as num?)?.toInt() ?? 0,
+      imageUrl: d['poster_url']?.toString(),
     );
   }
 }

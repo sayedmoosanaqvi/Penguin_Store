@@ -766,7 +766,74 @@ def update_model_activation(
     }
 
 
-# Existing admin GLB upload.
+def _upload_poster_image(poster: UploadFile | None) -> str | None:
+    """Upload a manual cover photo or auto-captured <model-viewer> PNG poster to Supabase Storage.
+
+    Transparent RGBA renders from <model-viewer>.toBlob() are composited onto a crisp
+    Arctic Studio backdrop so thumbnails never turn black and match the 3D viewer lighting.
+    """
+    if poster is None or not poster.filename:
+        return None
+    try:
+        from PIL import Image
+
+        raw = poster.file.read(MAX_POSTER_BYTES + 1)
+        if not raw or len(raw) > MAX_POSTER_BYTES:
+            raise ValueError("Poster exceeds maximum size limit.")
+
+        with Image.open(io.BytesIO(raw)) as im:
+            im.thumbnail((1024, 1024))
+            if im.mode in ("RGBA", "LA") or (
+                im.mode == "P" and "transparency" in im.info
+            ):
+                rgba = im.convert("RGBA")
+                w, h = rgba.size
+                bg = Image.new("RGBA", (w, h))
+                px = bg.load()
+                top, bottom = (238, 246, 255), (210, 231, 250)
+                for y in range(h):
+                    t = y / max(1, h - 1)
+                    row = (
+                        round(top[0] + (bottom[0] - top[0]) * t),
+                        round(top[1] + (bottom[1] - top[1]) * t),
+                        round(top[2] + (bottom[2] - top[2]) * t),
+                        255,
+                    )
+                    for x in range(w):
+                        px[x, y] = row
+                composed = Image.alpha_composite(bg, rgba).convert("RGB")
+            else:
+                composed = im.convert("RGB")
+
+            buf = io.BytesIO()
+            composed.save(buf, format="JPEG", quality=90, optimize=True)
+
+        _, client = _service_client()
+        poster_path = f"showcase/{uuid.uuid4().hex}.jpg"
+        bucket = client.storage.from_(PUBLIC_IMAGE_BUCKET)
+        bucket.upload(
+            path=poster_path,
+            file=buf.getvalue(),
+            file_options={
+                "content-type": "image/jpeg",
+                "upsert": "false",
+                "cache-control": "31536000",
+            },
+        )
+        return bucket.get_public_url(poster_path)
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Poster upload failed; using generated poster fallback.")
+        return None
+    finally:
+        try:
+            poster.file.close()
+        except Exception:
+            pass
+
+
+# Existing admin GLB upload (now also accepts an optional auto-captured 3D poster).
 @router.post(
     "/admin/products/{product_id}/upload",
     status_code=status.HTTP_201_CREATED,
@@ -776,10 +843,16 @@ def upload_product_glb(
     file: UploadFile = File(...),
     display_name: str = Form("3D Product View"),
     variant_name: str = Form(""),
+    poster: UploadFile | None = File(None),
+    update_product_image: bool = Form(False),
     db: Session = Depends(get_db),
     admin: User = Depends(get_current_admin_user),
 ):
-    from app.core.supabase_rest import fetch_product_by_id_https
+    from app.core.supabase_rest import (
+        fetch_product_by_id_https,
+        get_supabase_client,
+        invalidate_supabase_rest_cache,
+    )
 
     exists = fetch_product_by_id_https(product_id)
 
@@ -810,12 +883,28 @@ def upload_product_glb(
         variant_name=variant_name or None,
     )
 
+    poster_url = _upload_poster_image(poster)
+    existing_img = str(exists.get("image_url") or "").strip()
+    if poster_url and (
+        update_product_image
+        or not existing_img
+        or existing_img.startswith("/api/premium-3d/poster/")
+    ):
+        try:
+            get_supabase_client().table("products").update(
+                {"image_url": poster_url}
+            ).eq("id", product_id).execute()
+            invalidate_supabase_rest_cache()
+        except Exception:
+            logger.exception("Could not update product %s poster URL", product_id)
+
     return {
         "id": asset.id,
         "product_id": product_id,
         "storage_path": asset.storage_path,
         "is_active": True,
         "file_size_bytes": len(content),
+        "poster_url": poster_url,
     }
 
 
@@ -1362,6 +1451,7 @@ def upload_standalone_3d_product(
     category: str = Form(SHOWCASE_CATEGORY),
     description: str = Form(""),
     variant_name: str = Form(""),
+    is_featured: bool = Form(False),
     poster: UploadFile | None = File(None),
     db: Session = Depends(get_db),
     admin: User = Depends(get_current_admin_user),
@@ -1369,6 +1459,8 @@ def upload_standalone_3d_product(
     """
     One-step 3D upload: creates a store product (so it can be searched,
     filtered and bought) and attaches the optimised GLB to it over HTTPS.
+    Separate 2D image upload is optional: accepts either a manual image,
+    an auto-captured <model-viewer> snapshot, or falls back to generated poster.
     """
     from app.core.supabase_rest import (
         get_supabase_client,
@@ -1386,43 +1478,7 @@ def upload_standalone_3d_product(
         raise HTTPException(status_code=422, detail="Variant name too long.")
 
     content = _read_glb_upload(file)
-
-    poster_url: str | None = None
-
-    if poster is not None and poster.filename:
-        try:
-            from PIL import Image
-
-            raw = poster.file.read(MAX_POSTER_BYTES + 1)
-            if not raw or len(raw) > MAX_POSTER_BYTES:
-                raise ValueError("size")
-
-            with Image.open(io.BytesIO(raw)) as im:
-                im = im.convert("RGB")
-                im.thumbnail((1024, 1024))
-                buf = io.BytesIO()
-                im.save(buf, format="JPEG", quality=88, optimize=True)
-
-            _, client = _service_client()
-            poster_path = f"showcase/{uuid.uuid4().hex}.jpg"
-            bucket = client.storage.from_(PUBLIC_IMAGE_BUCKET)
-            bucket.upload(
-                path=poster_path,
-                file=buf.getvalue(),
-                file_options={
-                    "content-type": "image/jpeg",
-                    "upsert": "false",
-                    "cache-control": "31536000",
-                },
-            )
-            poster_url = bucket.get_public_url(poster_path)
-        except HTTPException:
-            raise
-        except Exception:
-            logger.exception("Poster upload failed; using generated poster.")
-            poster_url = None
-        finally:
-            poster.file.close()
+    poster_url = _upload_poster_image(poster)
 
     client = get_supabase_client()
     try:
@@ -1437,7 +1493,7 @@ def upload_standalone_3d_product(
                     "category": category,
                     "rating": 0.0,
                     "reviews": 0,
-                    "is_featured": False,
+                    "is_featured": bool(is_featured),
                     "stock": 50,
                     "fulfillment_type": "IN_HOUSE",
                     "supplier_id": "PENGUIN_DIRECT",

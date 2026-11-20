@@ -299,7 +299,7 @@ class _SupportScreenState extends State<SupportScreen> {
         title: 'Track Order',
         subtitle: 'Live shipment lookup',
         color: const Color(0xFF1E88E5),
-        route: '/track-order',
+        route: '/orders',
       ),
       (
         icon: Icons.view_in_ar_rounded,

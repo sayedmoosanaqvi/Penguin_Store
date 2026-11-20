@@ -9,8 +9,8 @@ import 'package:provider/provider.dart';
 
 import 'package:penguin_store/features/shop/models/product_model.dart';
 import 'package:penguin_store/features/shop/providers/auth_provider.dart';
+import 'package:penguin_store/features/shop/providers/product_provider.dart';
 import 'package:penguin_store/features/shop/providers/shop_state_provider.dart';
-import 'package:penguin_store/features/shop/services/product_service.dart';
 import 'package:penguin_store/features/shop/services/visual_search_service.dart';
 import 'package:penguin_store/features/shop/widgets/top_nav_bar.dart';
 import 'package:penguin_store/features/shop/widgets/right_drawer.dart';
@@ -31,13 +31,11 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> {
-  final ProductService _productService = ProductService();
+class _HomeScreenState extends State<HomeScreen>
+    with AutomaticKeepAliveClientMixin {
   final VisualSearchService _visualSearchService = VisualSearchService();
   final TextEditingController _searchController = TextEditingController();
   final FocusNode _searchFocusNode = FocusNode();
-
-  late Future<List<Product>> _productsFuture;
 
   String _selectedCategory = 'All';
   String _searchQuery = '';
@@ -57,6 +55,9 @@ class _HomeScreenState extends State<HomeScreen> {
   ];
 
   @override
+  bool get wantKeepAlive => true;
+
+  @override
   void initState() {
     super.initState();
     final savedCat = context.read<ShopStateProvider>().savedCategory;
@@ -64,8 +65,11 @@ class _HomeScreenState extends State<HomeScreen> {
       _selectedCategory = savedCat;
     }
     _searchFocusNode.addListener(_onSearchFocusChanged);
-    _productsFuture = _loadProductsWithWarmupHint();
-    Catalog3D.refresh();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _loadProductsWithWarmupHint(forceRefresh: false);
+      Catalog3D.refresh();
+    });
   }
 
   void _onSearchFocusChanged() {
@@ -79,22 +83,32 @@ class _HomeScreenState extends State<HomeScreen> {
     context.read<ShopStateProvider>().setSavedCategory(category);
   }
 
-  Future<List<Product>> _loadProductsWithWarmupHint() {
+  Future<void> _loadProductsWithWarmupHint({bool forceRefresh = false}) async {
+    final provider = context.read<ProductProvider>();
     _warmupTimer?.cancel();
     if (_showColdStartBanner && mounted) {
       setState(() => _showColdStartBanner = false);
     }
-    _warmupTimer = Timer(const Duration(seconds: 3), () {
-      if (mounted) {
-        setState(() => _showColdStartBanner = true);
-      }
-    });
-    return _productService.fetchProducts().whenComplete(() {
+
+    // Only arm the cold-start hint when there are no cached products yet.
+    if (!provider.hasProducts) {
+      _warmupTimer = Timer(const Duration(seconds: 3), () {
+        if (mounted && !context.read<ProductProvider>().hasProducts) {
+          setState(() => _showColdStartBanner = true);
+        }
+      });
+    }
+
+    try {
+      await provider.ensureProductsLoaded(forceRefresh: forceRefresh);
+    } catch (e) {
+      debugPrint('Product load failed: $e');
+    } finally {
       _warmupTimer?.cancel();
       if (_showColdStartBanner && mounted) {
         setState(() => _showColdStartBanner = false);
       }
-    });
+    }
   }
 
   @override
@@ -107,17 +121,18 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _refreshProducts() async {
-    final future = _loadProductsWithWarmupHint();
-
-    setState(() {
-      _productsFuture = future;
-    });
-
-    try {
-      await future;
-    } catch (e) {
-      debugPrint('Product refresh failed: $e');
-    }
+    final provider = context.read<ProductProvider>();
+    final auth = context.read<AuthProvider>();
+    await Future.wait([
+      _loadProductsWithWarmupHint(forceRefresh: true),
+      Catalog3D.refresh(force: true),
+      provider.ensureTrendingLoaded('Pakistan', forceRefresh: true),
+      if (auth.isAuthenticated && (auth.userEmail?.isNotEmpty ?? false))
+        provider.ensureRecommendationsLoaded(
+          auth.userEmail!,
+          forceRefresh: true,
+        ),
+    ]);
   }
 
   Future<void> _startVisualSearch(ImageSource source) async {
@@ -291,6 +306,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context);
     final theme = Theme.of(context);
 
     return Scaffold(
@@ -1091,117 +1107,114 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _buildProductsGrid() {
     return ValueListenableBuilder<Set<int>>(
       valueListenable: Catalog3D.ids,
-      builder: (context, _, __) => _buildProductsFuture(),
+      builder: (context, _, _) => _buildProductsFromProvider(),
     );
   }
 
-  Widget _buildProductsFuture() {
-    return FutureBuilder<List<Product>>(
-      future: _productsFuture,
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return _buildResponsiveGrid(
-            isLoading: true,
-            products: const [],
-          );
-        }
+  Widget _buildProductsFromProvider() {
+    final provider = context.watch<ProductProvider>();
+    final allProducts = provider.products;
 
-        if (snapshot.hasError) {
-          return SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.all(28),
-              child: Column(
-                children: [
-                  const Icon(
-                    Icons.wifi_off_rounded,
-                    size: 36,
-                    color: Colors.grey,
-                  ),
-                  const SizedBox(height: 9),
-                  const Text('Unable to load products'),
-                  const SizedBox(height: 6),
-                  Text(
-                    '${snapshot.error}',
-                    maxLines: 3,
-                    overflow: TextOverflow.ellipsis,
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(
-                      fontSize: 11,
-                      color: Colors.grey,
-                    ),
-                  ),
-                  TextButton(
-                    onPressed: _refreshProducts,
-                    child: const Text('Try Again'),
-                  ),
-                ],
+    // Only display shimmer skeletons on a cold load when nothing is cached yet.
+    if (!provider.hasProducts && provider.isLoadingProducts) {
+      return _buildResponsiveGrid(
+        isLoading: true,
+        products: const [],
+      );
+    }
+
+    if (!provider.hasProducts && provider.productsError != null) {
+      return SliverToBoxAdapter(
+        child: Padding(
+          padding: const EdgeInsets.all(28),
+          child: Column(
+            children: [
+              const Icon(
+                Icons.wifi_off_rounded,
+                size: 36,
+                color: Colors.grey,
               ),
-            ),
-          );
-        }
-
-        final allProducts = snapshot.data ?? [];
-
-        if (allProducts.isEmpty) {
-          return const SliverToBoxAdapter(
-            child: Padding(
-              padding: EdgeInsets.all(30),
-              child: Center(
-                child: Text('No products found in PostgreSQL.'),
+              const SizedBox(height: 9),
+              const Text('Unable to load products'),
+              const SizedBox(height: 6),
+              Text(
+                provider.productsError!,
+                maxLines: 3,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  fontSize: 11,
+                  color: Colors.grey,
+                ),
               ),
-            ),
-          );
-        }
-
-        _lastProducts = allProducts;
-
-        final filteredProducts = _currentFilters.apply(
-          allProducts,
-          Catalog3D.ids.value,
-        );
-
-        if (filteredProducts.isEmpty) {
-          return SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.all(35),
-              child: Column(
-                children: [
-                  const Icon(
-                    Icons.search_off_rounded,
-                    size: 36,
-                    color: Colors.grey,
-                  ),
-                  const SizedBox(height: 10),
-                  Text(
-                    _searchQuery.isNotEmpty
-                        ? 'No products match your search.'
-                        : 'No $_selectedCategory products available.',
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(fontSize: 12),
-                  ),
-                  const SizedBox(height: 10),
-                  TextButton(
-                    onPressed: () {
-                      _searchController.clear();
-                      _selectCategory('All');
-                      setState(() {
-                        _searchQuery = '';
-                        _adv = const ProductFilters();
-                      });
-                    },
-                    child: const Text('Clear Filters'),
-                  ),
-                ],
+              TextButton(
+                onPressed: _refreshProducts,
+                child: const Text('Try Again'),
               ),
-            ),
-          );
-        }
+            ],
+          ),
+        ),
+      );
+    }
 
-        return _buildResponsiveGrid(
-          products: filteredProducts,
-          isLoading: false,
-        );
-      },
+    if (allProducts.isEmpty) {
+      return const SliverToBoxAdapter(
+        child: Padding(
+          padding: EdgeInsets.all(30),
+          child: Center(
+            child: Text('No products found in catalog.'),
+          ),
+        ),
+      );
+    }
+
+    _lastProducts = allProducts;
+
+    final filteredProducts = _currentFilters.apply(
+      allProducts,
+      Catalog3D.ids.value,
+    );
+
+    if (filteredProducts.isEmpty) {
+      return SliverToBoxAdapter(
+        child: Padding(
+          padding: const EdgeInsets.all(35),
+          child: Column(
+            children: [
+              const Icon(
+                Icons.search_off_rounded,
+                size: 36,
+                color: Colors.grey,
+              ),
+              const SizedBox(height: 10),
+              Text(
+                _searchQuery.isNotEmpty
+                    ? 'No products match your search.'
+                    : 'No $_selectedCategory products available.',
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontSize: 12),
+              ),
+              const SizedBox(height: 10),
+              TextButton(
+                onPressed: () {
+                  _searchController.clear();
+                  _selectCategory('All');
+                  setState(() {
+                    _searchQuery = '';
+                    _adv = const ProductFilters();
+                  });
+                },
+                child: const Text('Clear Filters'),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return _buildResponsiveGrid(
+      products: filteredProducts,
+      isLoading: false,
     );
   }
 
@@ -1264,7 +1277,9 @@ class _HomeScreenState extends State<HomeScreen> {
                   index: index,
                   child: ProductCard(
                     product: products[index],
-                    onProductDeleted: _refreshProducts,
+                    onProductDeleted: () {
+                      context.read<ProductProvider>().invalidateAllAndRefresh();
+                    },
                   ),
                 );
               },

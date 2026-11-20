@@ -1,84 +1,165 @@
-
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
-import 'package:penguin_store/features/shop/screens/home_screen.dart';
+import 'package:penguin_store/core/widgets/animated_widgets.dart';
+import 'package:penguin_store/features/shop/screens/addresses_screen.dart';
+import 'package:penguin_store/features/shop/screens/admin_screen.dart';
+import 'package:penguin_store/features/shop/screens/auth_screen.dart';
+import 'package:penguin_store/features/shop/screens/cart_screen.dart';
 import 'package:penguin_store/features/shop/screens/ctrlx_screen.dart';
+import 'package:penguin_store/features/shop/screens/discover_screen.dart';
+import 'package:penguin_store/features/shop/screens/home_screen.dart';
+import 'package:penguin_store/features/shop/screens/notification_screen.dart';
 import 'package:penguin_store/features/shop/screens/order_tracking_screen.dart';
 import 'package:penguin_store/features/shop/screens/product_details_screen.dart';
-import 'package:penguin_store/features/shop/screens/notification_screen.dart';
-import 'package:penguin_store/features/shop/screens/splash_screen.dart';
-import 'package:penguin_store/features/shop/screens/cart_screen.dart';
-import 'package:penguin_store/features/shop/screens/discover_screen.dart';
-import 'package:penguin_store/features/shop/screens/support_screen.dart';
 import 'package:penguin_store/features/shop/screens/profile_screen.dart';
 import 'package:penguin_store/features/shop/screens/showcase_3d_screen.dart';
-import 'package:penguin_store/features/shop/screens/admin_3d_studio_screen.dart';
+import 'package:penguin_store/features/shop/screens/splash_screen.dart';
+import 'package:penguin_store/features/shop/screens/support_screen.dart';
 import 'package:penguin_store/features/shop/screens/wishlist_screen.dart';
-import 'package:penguin_store/features/shop/screens/addresses_screen.dart';
 import 'package:penguin_store/features/shop/services/notification_service.dart';
 import 'package:penguin_store/features/shop/widgets/bottom_nav_bar.dart';
 
 final GoRouter appRouter = GoRouter(
   initialLocation: '/splash',
+  errorBuilder: (context, state) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return Scaffold(
+      backgroundColor:
+          isDark ? const Color(0xFF0A0F1D) : const Color(0xFFF3F7FB),
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(28),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 420),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const PulsingOrb(
+                  icon: Icons.explore_off_rounded,
+                  size: 72,
+                ),
+                const SizedBox(height: 18),
+                Text(
+                  'Page Not Found',
+                  style: TextStyle(
+                    fontSize: 22,
+                    fontWeight: FontWeight.w900,
+                    color: isDark ? Colors.white : const Color(0xFF0F172A),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'The page "${state.uri.path}" does not exist or has moved.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: isDark ? Colors.white70 : const Color(0xFF64748B),
+                    fontSize: 13.5,
+                  ),
+                ),
+                const SizedBox(height: 22),
+                FilledButton.icon(
+                  style: FilledButton.styleFrom(
+                    backgroundColor: const Color(0xFF1E88E5),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 24,
+                      vertical: 13,
+                    ),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                  ),
+                  onPressed: () => context.go('/'),
+                  icon: const Icon(Icons.home_rounded),
+                  label: const Text(
+                    'Return to Penguin Store',
+                    style: TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  },
   routes: [
     GoRoute(
       path: '/splash',
       builder: (context, state) => const SplashScreen(),
     ),
 
-    ShellRoute(
-      builder: (context, state, child) {
-        final path = state.uri.path;
-
-        int currentIndex = 0;
-
-        switch (path) {
-          case '/discover':
-            currentIndex = 1;
-            break;
-          case '/cart':
-            currentIndex = 2;
-            break;
-          case '/support':
-            currentIndex = 3;
-            break;
-          case '/profile':
-            currentIndex = 4;
-            break;
-        }
-
+    // StatefulShellRoute keeps HomeScreen, Discover, Cart, Support & Profile
+    // alive in an IndexedStack so returning to Home has 0ms delay and preserves
+    // exact scroll position & filter state.
+    StatefulShellRoute.indexedStack(
+      builder: (context, state, navigationShell) {
         return Scaffold(
-          body: child,
+          body: navigationShell,
           bottomNavigationBar: BottomNavBar(
-            currentIndex: currentIndex,
+            currentIndex: navigationShell.currentIndex,
+            onTapIndex: (index) {
+              navigationShell.goBranch(
+                index,
+                initialLocation: index == navigationShell.currentIndex,
+              );
+            },
           ),
         );
       },
-      routes: [
-        GoRoute(
-          path: '/',
-          builder: (context, state) => const HomeScreen(),
+      branches: [
+        StatefulShellBranch(
+          routes: [
+            GoRoute(
+              path: '/',
+              builder: (context, state) => const HomeScreen(),
+            ),
+          ],
         ),
-        GoRoute(
-          path: '/discover',
-          builder: (context, state) => const DiscoverScreen(),
+        StatefulShellBranch(
+          routes: [
+            GoRoute(
+              path: '/discover',
+              builder: (context, state) => const DiscoverScreen(),
+            ),
+          ],
         ),
-        GoRoute(
-          path: '/cart',
-          builder: (context, state) => const CartScreen(),
+        StatefulShellBranch(
+          routes: [
+            GoRoute(
+              path: '/cart',
+              builder: (context, state) => const CartScreen(),
+            ),
+          ],
         ),
-        GoRoute(
-          path: '/support',
-          builder: (context, state) => const SupportScreen(),
+        StatefulShellBranch(
+          routes: [
+            GoRoute(
+              path: '/support',
+              builder: (context, state) => const SupportScreen(),
+            ),
+          ],
         ),
-        GoRoute(
-          path: '/profile',
-          builder: (context, state) => const ProfileScreen(),
+        StatefulShellBranch(
+          routes: [
+            GoRoute(
+              path: '/profile',
+              builder: (context, state) => const ProfileScreen(),
+            ),
+          ],
         ),
       ],
     ),
 
+    // Single unified Admin Studio route (with internal AuthProvider guard)
+    GoRoute(
+      path: '/admin',
+      builder: (context, state) => const AdminScreen(),
+    ),
+    GoRoute(
+      path: '/login',
+      builder: (context, state) => const AuthScreen(),
+    ),
     GoRoute(
       path: '/ctrlx',
       builder: (context, state) => const CtrlXScreen(),
@@ -86,10 +167,6 @@ final GoRouter appRouter = GoRouter(
     GoRoute(
       path: '/showcase-3d',
       builder: (context, state) => const Showcase3DScreen(),
-    ),
-    GoRoute(
-      path: '/admin/3d-studio',
-      builder: (context, state) => const Admin3DStudioScreen(),
     ),
     GoRoute(
       path: '/orders',
@@ -127,7 +204,7 @@ final GoRouter appRouter = GoRouter(
         WidgetsBinding.instance.addPostFrameCallback((_) {
           NotificationService.showPushBanner(
             context,
-            'Payment Successful! 🎉',
+            'Payment Successful!',
             'Your order is confirmed and processing.',
           );
         });

@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:provider/provider.dart';
 
 import 'package:penguin_store/core/widgets/animated_widgets.dart';
 import 'package:penguin_store/features/shop/models/product_model.dart';
-import 'package:penguin_store/features/shop/services/product_service.dart';
+import 'package:penguin_store/features/shop/providers/product_provider.dart';
 import 'package:penguin_store/features/shop/services/showcase_3d_service.dart';
 import 'package:penguin_store/features/shop/widgets/product_card.dart';
 import 'package:penguin_store/features/shop/widgets/product_card_skeleton.dart';
@@ -17,14 +18,16 @@ class DiscoverScreen extends StatefulWidget {
   State<DiscoverScreen> createState() => _DiscoverScreenState();
 }
 
-class _DiscoverScreenState extends State<DiscoverScreen> {
-  final ProductService _productService = ProductService();
+class _DiscoverScreenState extends State<DiscoverScreen>
+    with AutomaticKeepAliveClientMixin {
   final TextEditingController _searchController = TextEditingController();
 
-  late Future<List<Product>> _productsFuture;
   int _selectedCategoryIndex = 0;
   String _searchQuery = '';
   String _sortBy = 'featured';
+
+  @override
+  bool get wantKeepAlive => true;
 
   final List<Map<String, dynamic>> _categories = [
     {
@@ -68,8 +71,11 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
   @override
   void initState() {
     super.initState();
-    Catalog3D.refresh();
-    _productsFuture = _productService.fetchProducts();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      Catalog3D.refresh();
+      context.read<ProductProvider>().ensureProductsLoaded();
+    });
   }
 
   @override
@@ -79,10 +85,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
   }
 
   void _reload() {
-    Catalog3D.refresh(force: true);
-    setState(() {
-      _productsFuture = _productService.fetchProducts();
-    });
+    context.read<ProductProvider>().invalidateAllAndRefresh();
   }
 
   List<Product> _filterAndSort(List<Product> allProducts, Set<int> ids3d) {
@@ -135,6 +138,7 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context);
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final bgColor =
         isDark ? const Color(0xFF0A0F1D) : const Color(0xFFF3F7FB);
@@ -164,108 +168,101 @@ class _DiscoverScreenState extends State<DiscoverScreen> {
                   child: ValueListenableBuilder<Set<int>>(
                     valueListenable: Catalog3D.ids,
                     builder: (context, ids3d, _) {
-                      return FutureBuilder<List<Product>>(
-                        future: _productsFuture,
-                        builder: (context, snapshot) {
-                          if (snapshot.connectionState ==
-                              ConnectionState.waiting) {
-                            return GridView.builder(
-                              padding: const EdgeInsets.all(20),
-                              gridDelegate:
-                                  const SliverGridDelegateWithMaxCrossAxisExtent(
-                                maxCrossAxisExtent: 250,
-                                childAspectRatio: 0.65,
-                                crossAxisSpacing: 16,
-                                mainAxisSpacing: 16,
-                              ),
-                              itemCount: 8,
-                              itemBuilder: (_, _) =>
-                                  const ProductCardSkeleton(),
-                            );
-                          }
+                      final provider = context.watch<ProductProvider>();
 
-                          if (snapshot.hasError) {
-                            return Center(
-                              child: Padding(
-                                padding: const EdgeInsets.all(24),
-                                child: Column(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    const Icon(
-                                      Icons.cloud_off_rounded,
-                                      size: 52,
-                                      color: Colors.redAccent,
-                                    ),
-                                    const SizedBox(height: 12),
-                                    Text(
-                                      'Could not load catalog.\n${snapshot.error}',
-                                      textAlign: TextAlign.center,
-                                      style: TextStyle(color: textColor),
-                                    ),
-                                    const SizedBox(height: 16),
-                                    FilledButton.icon(
-                                      style: FilledButton.styleFrom(
-                                        backgroundColor:
-                                            const Color(0xFF1E88E5),
-                                      ),
-                                      onPressed: _reload,
-                                      icon: const Icon(Icons.refresh_rounded),
-                                      label: const Text('Retry'),
-                                    ),
-                                  ],
+                      if (!provider.hasProducts && provider.isLoadingProducts) {
+                        return GridView.builder(
+                          padding: const EdgeInsets.all(20),
+                          gridDelegate:
+                              const SliverGridDelegateWithMaxCrossAxisExtent(
+                            maxCrossAxisExtent: 250,
+                            childAspectRatio: 0.65,
+                            crossAxisSpacing: 16,
+                            mainAxisSpacing: 16,
+                          ),
+                          itemCount: 8,
+                          itemBuilder: (_, _) => const ProductCardSkeleton(),
+                        );
+                      }
+
+                      if (!provider.hasProducts &&
+                          provider.productsError != null) {
+                        return Center(
+                          child: Padding(
+                            padding: const EdgeInsets.all(24),
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const Icon(
+                                  Icons.cloud_off_rounded,
+                                  size: 52,
+                                  color: Colors.redAccent,
                                 ),
-                              ),
-                            );
-                          }
+                                const SizedBox(height: 12),
+                                Text(
+                                  'Could not load catalog.\n${provider.productsError}',
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(color: textColor),
+                                ),
+                                const SizedBox(height: 16),
+                                FilledButton.icon(
+                                  style: FilledButton.styleFrom(
+                                    backgroundColor: const Color(0xFF1E88E5),
+                                  ),
+                                  onPressed: _reload,
+                                  icon: const Icon(Icons.refresh_rounded),
+                                  label: const Text('Retry'),
+                                ),
+                              ],
+                            ),
+                          ),
+                        );
+                      }
 
-                          final allProducts = snapshot.data ?? const [];
-                          final filtered =
-                              _filterAndSort(allProducts, ids3d);
-                          final activeCat =
-                              _categories[_selectedCategoryIndex];
+                      final allProducts = provider.products;
+                      final filtered = _filterAndSort(allProducts, ids3d);
+                      final activeCat = _categories[_selectedCategoryIndex];
 
-                          return Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              _buildToolbar(
-                                title: activeCat['title'] as String,
-                                subtitle: activeCat['subtitle'] as String,
-                                count: filtered.length,
-                                isDark: isDark,
-                                textColor: textColor,
-                              ),
-                              Expanded(
-                                child: filtered.isEmpty
-                                    ? _buildEmptyState(isDark, textColor)
-                                    : GridView.builder(
-                                        padding: const EdgeInsets.fromLTRB(
-                                          20,
-                                          4,
-                                          20,
-                                          32,
+                      return Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          _buildToolbar(
+                            title: activeCat['title'] as String,
+                            subtitle: activeCat['subtitle'] as String,
+                            count: filtered.length,
+                            isDark: isDark,
+                            textColor: textColor,
+                          ),
+                          Expanded(
+                            child: filtered.isEmpty
+                                ? _buildEmptyState(isDark, textColor)
+                                : GridView.builder(
+                                    padding: const EdgeInsets.fromLTRB(
+                                      20,
+                                      4,
+                                      20,
+                                      32,
+                                    ),
+                                    gridDelegate:
+                                        const SliverGridDelegateWithMaxCrossAxisExtent(
+                                      maxCrossAxisExtent: 250,
+                                      childAspectRatio: 0.65,
+                                      crossAxisSpacing: 16,
+                                      mainAxisSpacing: 16,
+                                    ),
+                                    itemCount: filtered.length,
+                                    itemBuilder: (context, index) {
+                                      return FadeSlideIn.staggered(
+                                        index: index,
+                                        child: ProductCard(
+                                          product: filtered[index],
+                                          onProductDeleted: _reload,
                                         ),
-                                        gridDelegate:
-                                            const SliverGridDelegateWithMaxCrossAxisExtent(
-                                          maxCrossAxisExtent: 250,
-                                          childAspectRatio: 0.65,
-                                          crossAxisSpacing: 16,
-                                          mainAxisSpacing: 16,
-                                        ),
-                                        itemCount: filtered.length,
-                                        itemBuilder: (context, index) {
-                                          return FadeSlideIn.staggered(
-                                            index: index,
-                                            child: ProductCard(
-                                              product: filtered[index],
-                                              onProductDeleted: _reload,
-                                            ),
-                                          );
-                                        },
-                                      ),
-                              ),
-                            ],
-                          );
-                        },
+                                      );
+                                    },
+                                  ),
+                          ),
+                        ],
                       );
                     },
                   ),

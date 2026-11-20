@@ -8,10 +8,12 @@ import 'package:penguin_store/features/shop/providers/cart_provider.dart';
 
 class BottomNavBar extends StatelessWidget {
   final int currentIndex;
+  final ValueChanged<int>? onTapIndex;
 
   const BottomNavBar({
     super.key,
     required this.currentIndex,
+    this.onTapIndex,
   });
 
   static const List<String> _routes = [
@@ -58,7 +60,9 @@ class BottomNavBar extends StatelessWidget {
           labelBehavior:
               NavigationDestinationLabelBehavior.alwaysShow,
           onDestinationSelected: (index) {
-            if (index != currentIndex) {
+            if (onTapIndex != null) {
+              onTapIndex!(index);
+            } else if (index != currentIndex) {
               context.go(_routes[index]);
             }
           },
