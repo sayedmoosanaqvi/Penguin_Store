@@ -6,6 +6,7 @@ import 'package:penguin_store/features/shop/screens/addresses_screen.dart';
 import 'package:penguin_store/features/shop/screens/admin_screen.dart';
 import 'package:penguin_store/features/shop/screens/auth_screen.dart';
 import 'package:penguin_store/features/shop/screens/cart_screen.dart';
+import 'package:penguin_store/features/shop/screens/checkout_result_screens.dart';
 import 'package:penguin_store/features/shop/screens/ctrlx_screen.dart';
 import 'package:penguin_store/features/shop/screens/discover_screen.dart';
 import 'package:penguin_store/features/shop/screens/home_screen.dart';
@@ -17,7 +18,6 @@ import 'package:penguin_store/features/shop/screens/showcase_3d_screen.dart';
 import 'package:penguin_store/features/shop/screens/splash_screen.dart';
 import 'package:penguin_store/features/shop/screens/support_screen.dart';
 import 'package:penguin_store/features/shop/screens/wishlist_screen.dart';
-import 'package:penguin_store/features/shop/services/notification_service.dart';
 import 'package:penguin_store/features/shop/widgets/bottom_nav_bar.dart';
 
 final GoRouter appRouter = GoRouter(
@@ -154,7 +154,10 @@ final GoRouter appRouter = GoRouter(
     // Single unified Admin Studio route (with internal AuthProvider guard)
     GoRoute(
       path: '/admin',
-      builder: (context, state) => const AdminScreen(),
+      builder: (context, state) {
+        final editId = int.tryParse(state.uri.queryParameters['editId'] ?? '');
+        return AdminScreen(initialEditProductId: editId);
+      },
     ),
     GoRoute(
       path: '/login',
@@ -162,7 +165,10 @@ final GoRouter appRouter = GoRouter(
     ),
     GoRoute(
       path: '/ctrlx',
-      builder: (context, state) => const CtrlXScreen(),
+      builder: (context, state) {
+        final q = state.uri.queryParameters['q'];
+        return CtrlXScreen(initialQuery: q);
+      },
     ),
     GoRoute(
       path: '/showcase-3d',
@@ -199,58 +205,52 @@ final GoRouter appRouter = GoRouter(
       builder: (context, state) => const AddressesScreen(),
     ),
     GoRoute(
-      path: '/success',
+      path: '/checkout-success',
       builder: (context, state) {
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          NotificationService.showPushBanner(
-            context,
-            'Payment Successful!',
-            'Your order is confirmed and processing.',
-          );
-        });
-
-        return Scaffold(
-          backgroundColor: Colors.black,
-          body: Center(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                const Icon(
-                  Icons.check_circle,
-                  color: Colors.green,
-                  size: 80,
-                ),
-                const SizedBox(height: 16),
-                const Text(
-                  'Payment Successful!',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 24,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                const Text(
-                  'Your order has been placed and dispatched.',
-                  style: TextStyle(
-                    color: Colors.grey,
-                    fontSize: 16,
-                  ),
-                ),
-                const SizedBox(height: 24),
-                ElevatedButton(
-                  onPressed: () => context.go('/'),
-                  child: const Text('Back to Home'),
-                ),
-              ],
-            ),
-          ),
+        final sessionId = state.uri.queryParameters['session_id'];
+        final orderId = int.tryParse(
+          state.uri.queryParameters['order_id'] ?? '',
+        );
+        final mode = state.uri.queryParameters['mode'];
+        return CheckoutSuccessScreen(
+          sessionId: sessionId,
+          orderId: orderId,
+          mode: mode,
         );
       },
     ),
     GoRoute(
+      path: '/success',
+      builder: (context, state) {
+        final sessionId = state.uri.queryParameters['session_id'];
+        final orderId = int.tryParse(
+          state.uri.queryParameters['order_id'] ?? '',
+        );
+        final mode = state.uri.queryParameters['mode'];
+        return CheckoutSuccessScreen(
+          sessionId: sessionId,
+          orderId: orderId,
+          mode: mode,
+        );
+      },
+    ),
+    GoRoute(
+      path: '/checkout-cancel',
+      builder: (context, state) {
+        final orderId = int.tryParse(
+          state.uri.queryParameters['order_id'] ?? '',
+        );
+        return CheckoutCancelScreen(orderId: orderId);
+      },
+    ),
+    GoRoute(
       path: '/cancel',
-      builder: (context, state) => const HomeScreen(),
+      builder: (context, state) {
+        final orderId = int.tryParse(
+          state.uri.queryParameters['order_id'] ?? '',
+        );
+        return CheckoutCancelScreen(orderId: orderId);
+      },
     ),
   ],
 );

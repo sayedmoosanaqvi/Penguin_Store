@@ -263,85 +263,173 @@ def submit_product_review(
 
 
 # ---------------------------------------------------------------------------
-# 2. WISHLIST / FAVORITES
+# 2. WISHLIST / FAVORITES (PHASE 3: Bulletproof Supabase HTTPS + Memory Store)
 # ---------------------------------------------------------------------------
 
-@router.get("/wishlist/")
-def get_wishlist(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    rows = (
-        db.query(WishlistItem, Product)
-        .join(Product, Product.id == WishlistItem.product_id)
-        .options(load_only(*PRODUCT_PUBLIC_COLUMNS, Product.stock))
-        .filter(WishlistItem.user_id == current_user.id)
-        .order_by(WishlistItem.created_at.desc())
-        .all()
-    )
+from threading import Lock
+from pydantic import BaseModel
 
-    items = []
-    for w, p in rows:
-        item = _serialize_public_product(p)
-        item["price_at_save"] = w.price_at_save
-        item["price_dropped"] = (
-            w.price_at_save is not None and float(p.price) < float(w.price_at_save)
+_FAV_LOCK = Lock()
+# user_id -> { product_id -> price_at_save }
+_MEM_FAVORITES_BY_USER: dict[int, dict[int, float]] = {}
+
+
+class FavoritesSyncRequest(BaseModel):
+    product_ids: list[int] = []
+
+
+def _get_user_favorites_map(user_id: int) -> dict[int, float]:
+    """Load user favorites from Supabase HTTPS (`wishlist_items` / `favorites`) merged with in-memory store."""
+    from app.core.supabase_rest import fetch_product_by_id_https, get_supabase_client
+
+    with _FAV_LOCK:
+        mem_map = dict(_MEM_FAVORITES_BY_USER.get(user_id, {}))
+
+    try:
+        client = get_supabase_client()
+        res = (
+            client.table("wishlist_items")
+            .select("product_id,price_at_save")
+            .eq("user_id", user_id)
+            .order("created_at", desc=True)
+            .execute()
         )
-        item["in_stock"] = (p.stock or 0) > 0
+        for row in res.data or []:
+            pid = int(row.get("product_id") or 0)
+            if pid > 0:
+                p_save = row.get("price_at_save")
+                if p_save is None:
+                    p_dict = fetch_product_by_id_https(pid)
+                    p_save = float((p_dict or {}).get("price") or 0.0)
+                mem_map.setdefault(pid, float(p_save))
+    except Exception:
+        pass
+
+    with _FAV_LOCK:
+        _MEM_FAVORITES_BY_USER[user_id] = dict(mem_map)
+
+    return mem_map
+
+
+def _add_user_favorite(user_id: int, product_id: int) -> dict[str, object]:
+    from app.core.supabase_rest import fetch_product_by_id_https, get_supabase_client
+
+    prod = fetch_product_by_id_https(product_id)
+    if prod is None:
+        raise HTTPException(status_code=404, detail="Product not found.")
+
+    price = float(prod.get("price") or 0.0)
+    with _FAV_LOCK:
+        user_favs = _MEM_FAVORITES_BY_USER.setdefault(user_id, {})
+        user_favs[product_id] = price
+
+    try:
+        client = get_supabase_client()
+        client.table("wishlist_items").upsert(
+            {
+                "user_id": user_id,
+                "product_id": product_id,
+                "price_at_save": price,
+            },
+            on_conflict="user_id,product_id",
+        ).execute()
+    except Exception:
+        pass
+
+    fav_map = _get_user_favorites_map(user_id)
+    return {"wishlisted": True, "product_ids": list(fav_map.keys())}
+
+
+def _remove_user_favorite(user_id: int, product_id: int) -> dict[str, object]:
+    from app.core.supabase_rest import get_supabase_client
+
+    with _FAV_LOCK:
+        user_favs = _MEM_FAVORITES_BY_USER.setdefault(user_id, {})
+        user_favs.pop(product_id, None)
+
+    try:
+        client = get_supabase_client()
+        client.table("wishlist_items").delete().eq("user_id", user_id).eq(
+            "product_id", product_id
+        ).execute()
+    except Exception:
+        pass
+
+    fav_map = _get_user_favorites_map(user_id)
+    return {"wishlisted": False, "product_ids": list(fav_map.keys())}
+
+
+def _build_favorites_response(user_id: int) -> dict[str, object]:
+    from app.core.supabase_rest import fetch_product_by_id_https
+
+    fav_map = _get_user_favorites_map(user_id)
+    items = []
+    for pid, price_at_save in fav_map.items():
+        p = fetch_product_by_id_https(pid)
+        if p is None:
+            continue
+        cur_price = float(p.get("price") or 0.0)
+        stock_cnt = int(p.get("stock") if p.get("stock") is not None else 50)
+        item = dict(p)
+        item["price_at_save"] = price_at_save
+        item["price_dropped"] = price_at_save > 0 and cur_price < price_at_save
+        item["in_stock"] = stock_cnt > 0
         items.append(item)
 
     return {
         "count": len(items),
-        "product_ids": [i["id"] for i in items],
+        "product_ids": [int(i["id"]) for i in items],
         "items": items,
     }
+
+
+@router.get("/wishlist/")
+@router.get("/favorites")
+def get_wishlist(
+    current_user: User = Depends(get_current_user),
+):
+    return _build_favorites_response(current_user.id)
 
 
 @router.post("/wishlist/toggle")
 def toggle_wishlist(
     payload: WishlistToggleRequest,
-    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    product = (
-        db.query(Product.id, Product.price)
-        .filter(Product.id == payload.product_id)
-        .first()
-    )
-    if product is None:
-        raise HTTPException(status_code=404, detail="Product not found.")
+    fav_map = _get_user_favorites_map(current_user.id)
+    if int(payload.product_id) in fav_map:
+        return _remove_user_favorite(current_user.id, int(payload.product_id))
+    return _add_user_favorite(current_user.id, int(payload.product_id))
 
-    existing = (
-        db.query(WishlistItem)
-        .filter(
-            WishlistItem.user_id == current_user.id,
-            WishlistItem.product_id == payload.product_id,
-        )
-        .first()
-    )
 
-    if existing is not None:
-        db.delete(existing)
-        db.commit()
-        wishlisted = False
-    else:
-        db.add(
-            WishlistItem(
-                user_id=current_user.id,
-                product_id=payload.product_id,
-                price_at_save=float(product.price),
-            )
-        )
-        db.commit()
-        wishlisted = True
+@router.post("/favorites/{product_id}")
+def add_favorite_endpoint(
+    product_id: int,
+    current_user: User = Depends(get_current_user),
+):
+    return _add_user_favorite(current_user.id, product_id)
 
-    all_ids = [
-        r[0]
-        for r in db.query(WishlistItem.product_id)
-        .filter(WishlistItem.user_id == current_user.id)
-        .all()
-    ]
-    return {"wishlisted": wishlisted, "product_ids": all_ids}
+
+@router.delete("/favorites/{product_id}")
+def remove_favorite_endpoint(
+    product_id: int,
+    current_user: User = Depends(get_current_user),
+):
+    return _remove_user_favorite(current_user.id, product_id)
+
+
+@router.post("/favorites/sync")
+def sync_guest_favorites(
+    payload: FavoritesSyncRequest,
+    current_user: User = Depends(get_current_user),
+):
+    for pid in payload.product_ids[:100]:
+        if pid > 0:
+            try:
+                _add_user_favorite(current_user.id, int(pid))
+            except Exception:
+                pass
+    return _build_favorites_response(current_user.id)
 
 
 # ---------------------------------------------------------------------------

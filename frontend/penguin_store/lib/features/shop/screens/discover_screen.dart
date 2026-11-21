@@ -697,16 +697,39 @@ class _DiscoverScreenState extends State<DiscoverScreen>
               ),
             ),
             const SizedBox(height: 16),
-            OutlinedButton.icon(
-              onPressed: () {
-                _searchController.clear();
-                setState(() {
-                  _searchQuery = '';
-                  _selectedCategoryIndex = 0;
-                });
-              },
-              icon: const Icon(Icons.restart_alt_rounded),
-              label: const Text('Reset Filters'),
+            Wrap(
+              spacing: 10,
+              runSpacing: 10,
+              alignment: WrapAlignment.center,
+              children: [
+                FilledButton.icon(
+                  onPressed: () {
+                    final q = _searchQuery.trim();
+                    context.push(
+                      q.isNotEmpty
+                          ? '/ctrlx?q=${Uri.encodeComponent(q)}'
+                          : '/ctrlx',
+                    );
+                  },
+                  icon: const Icon(Icons.auto_awesome_rounded, size: 17),
+                  label: Text(
+                    _searchQuery.trim().isNotEmpty
+                        ? 'Ask CTRL-X AI: "${_searchQuery.trim()}"'
+                        : 'Ask CTRL-X AI Assistant',
+                  ),
+                ),
+                OutlinedButton.icon(
+                  onPressed: () {
+                    _searchController.clear();
+                    setState(() {
+                      _searchQuery = '';
+                      _selectedCategoryIndex = 0;
+                    });
+                  },
+                  icon: const Icon(Icons.restart_alt_rounded),
+                  label: const Text('Reset Filters'),
+                ),
+              ],
             ),
           ],
         ),

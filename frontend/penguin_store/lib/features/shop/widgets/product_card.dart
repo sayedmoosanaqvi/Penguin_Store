@@ -1,19 +1,21 @@
-import 'package:cached_network_image/cached_network_image.dart';
+import 'dart:ui';
+
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
-import 'package:shimmer/shimmer.dart';
 
-import 'package:penguin_store/config/api_config.dart';
 import 'package:penguin_store/features/shop/models/product_model.dart';
 import 'package:penguin_store/features/shop/providers/auth_provider.dart';
 import 'package:penguin_store/features/shop/providers/cart_provider.dart';
+import 'package:penguin_store/features/shop/providers/currency_provider.dart';
 import 'package:penguin_store/features/shop/providers/shop_state_provider.dart';
 import 'package:penguin_store/features/shop/screens/product_details_screen.dart';
 import 'package:penguin_store/features/shop/services/product_service.dart';
 import 'package:penguin_store/features/shop/services/showcase_3d_service.dart';
-import 'package:penguin_store/core/widgets/animated_widgets.dart';
 import 'package:penguin_store/features/shop/widgets/custom_toast.dart';
+import 'package:penguin_store/features/shop/widgets/product_comparison_sheet.dart';
+import 'package:penguin_store/features/shop/widgets/studio_product_image.dart';
 
 class ProductCard extends StatefulWidget {
   final Product product;
@@ -49,8 +51,12 @@ class _ProductCardState extends State<ProductCard> {
   }
 
   void _addToCart() {
+    if (widget.product.stock <= 0) {
+      CustomToast.show(context, 'This item is currently out of stock.',
+          isError: true);
+      return;
+    }
     context.read<CartProvider>().addToCart(widget.product);
-
     CustomToast.show(
       context,
       '${widget.product.name} added to cart!',
@@ -58,8 +64,16 @@ class _ProductCardState extends State<ProductCard> {
   }
 
   Future<void> _deleteProduct() async {
-    final theme = Theme.of(context);
+    if (widget.product.id == 144) {
+      CustomToast.show(
+        context,
+        'Product #144 is protected as the reference 3D showcase asset.',
+        isError: true,
+      );
+      return;
+    }
 
+    final theme = Theme.of(context);
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
@@ -135,7 +149,7 @@ class _ProductCardState extends State<ProductCard> {
       ),
       decoration: BoxDecoration(
         color: backgroundColor,
-        borderRadius: BorderRadius.circular(5),
+        borderRadius: BorderRadius.circular(6),
       ),
       child: Text(
         label,
@@ -151,10 +165,13 @@ class _ProductCardState extends State<ProductCard> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final isDark = theme.brightness == Brightness.dark;
+    final colors = theme.colorScheme;
     final isAdmin = context.watch<AuthProvider>().isAdmin;
+    final currency = context.watch<CurrencyProvider>();
     final product = widget.product;
-    final primary = theme.primaryColor;
+    final primary = colors.primary;
+    final outOfStock = product.stock <= 0;
+    final lowStock = product.stock > 0 && product.stock <= 8;
 
     final hasDiscount = product.originalPrice != null &&
         product.originalPrice! > product.price;
@@ -167,8 +184,7 @@ class _ProductCardState extends State<ProductCard> {
                 .round()
             : null);
 
-    final effectiveHeroTag =
-        widget.heroTag ?? 'product-${product.id}';
+    final effectiveHeroTag = widget.heroTag ?? 'product-${product.id}';
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -187,62 +203,63 @@ class _ProductCardState extends State<ProductCard> {
             }
           },
           child: Material(
-            color: theme.colorScheme.surface,
-            borderRadius: BorderRadius.circular(11),
+            color: colors.surface,
+            borderRadius: BorderRadius.circular(14),
             child: InkWell(
               onTap: _openProduct,
-              borderRadius: BorderRadius.circular(11),
+              borderRadius: BorderRadius.circular(14),
               child: AnimatedContainer(
-                duration: const Duration(milliseconds: 180),
+                duration: const Duration(milliseconds: 190),
                 decoration: BoxDecoration(
-                  color: theme.colorScheme.surface,
-                  borderRadius: BorderRadius.circular(11),
+                  color: colors.surface,
+                  borderRadius: BorderRadius.circular(14),
                   border: Border.all(
                     color: _isHovering
                         ? primary
-                        : theme.dividerColor.withOpacity(0.18),
-                    width: _isHovering ? 1.4 : 1,
+                        : theme.dividerColor.withValues(alpha: 0.2),
+                    width: _isHovering ? 1.5 : 1,
                   ),
                   boxShadow: [
                     BoxShadow(
-                      color: Colors.black.withOpacity(
-                        _isHovering ? 0.09 : 0.025,
+                      color: primary.withValues(
+                        alpha: _isHovering ? 0.14 : 0.04,
                       ),
-                      blurRadius: _isHovering ? 10 : 4,
-                      offset: const Offset(0, 3),
+                      blurRadius: _isHovering ? 16 : 6,
+                      offset: const Offset(0, 4),
                     ),
                   ],
                 ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    // Standardized Studio Product Image Framing
                     Expanded(
                       child: Stack(
                         fit: StackFit.expand,
                         children: [
                           Hero(
                             tag: effectiveHeroTag,
-                            child: ClipRRect(
+                            child: StudioProductImage(
+                              productId: product.id,
+                              imageUrl: product.imageUrl,
+                              padding: veryCompact ? 8.0 : 12.0,
+                              isHovered: _isHovering,
                               borderRadius: const BorderRadius.vertical(
-                                top: Radius.circular(10),
-                              ),
-                              child: _ProductNetworkImage(
-                                productId: product.id,
-                                imageUrl: product.imageUrl,
-                                isDark: isDark,
+                                top: Radius.circular(13),
                               ),
                             ),
                           ),
+                          // Top-left discount, featured, and animated 3D View glass badge
                           Positioned(
-                            left: 6,
-                            top: 6,
+                            left: 7,
+                            top: 7,
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 if (discount != null && discount > 0)
                                   _buildBadge(
                                     '-$discount%',
-                                    theme.colorScheme.error,
+                                    colors.error,
                                     Colors.white,
                                   ),
                                 if (product.isFeatured) ...[
@@ -259,80 +276,193 @@ class _ProductCardState extends State<ProductCard> {
                                     if (!ids.contains(product.id)) {
                                       return const SizedBox.shrink();
                                     }
-                                    return const Padding(
-                                      padding: EdgeInsets.only(top: 4),
-                                      child: Badge3D(compact: true),
+                                    return Padding(
+                                      padding: const EdgeInsets.only(top: 4),
+                                      child: ClipRRect(
+                                        borderRadius: BorderRadius.circular(12),
+                                        child: BackdropFilter(
+                                          filter: ImageFilter.blur(
+                                            sigmaX: 6,
+                                            sigmaY: 6,
+                                          ),
+                                          child: Container(
+                                            padding: const EdgeInsets.symmetric(
+                                              horizontal: 7,
+                                              vertical: 3.5,
+                                            ),
+                                            decoration: BoxDecoration(
+                                              gradient: const LinearGradient(
+                                                colors: [
+                                                  Color(0xE61E88E5),
+                                                  Color(0xE600ACC1),
+                                                ],
+                                              ),
+                                              borderRadius:
+                                                  BorderRadius.circular(12),
+                                              border: Border.all(
+                                                color: Colors.white
+                                                    .withValues(alpha: 0.35),
+                                              ),
+                                            ),
+                                            child: Row(
+                                              mainAxisSize: MainAxisSize.min,
+                                              children: [
+                                                const Icon(
+                                                  Icons.view_in_ar_rounded,
+                                                  color: Colors.white,
+                                                  size: 11,
+                                                ),
+                                                const SizedBox(width: 3),
+                                                Text(
+                                                  veryCompact
+                                                      ? '3D'
+                                                      : '3D View',
+                                                  style: const TextStyle(
+                                                    color: Colors.white,
+                                                    fontSize: 9.5,
+                                                    fontWeight: FontWeight.w900,
+                                                    letterSpacing: 0.3,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                        ),
+                                      ),
                                     );
                                   },
                                 ),
                               ],
                             ),
                           ),
+
+                          // Top-right Wishlist + Compare + Admin Edit/Delete actions
                           Positioned(
-                            top: 4,
-                            right: isAdmin ? 40 : 4,
+                            top: 5,
+                            right: 5,
                             child: Consumer<ShopStateProvider>(
                               builder: (context, shopState, _) {
                                 final wished =
                                     shopState.isWishlisted(product.id);
-                                return Material(
-                                  color: theme.colorScheme.surface
-                                      .withOpacity(0.92),
-                                  borderRadius: BorderRadius.circular(20),
-                                  child: InkWell(
-                                    borderRadius: BorderRadius.circular(20),
-                                    onTap: () {
-                                      shopState.toggleWishlist(product);
-                                      CustomToast.show(
-                                        context,
-                                        wished
-                                            ? 'Removed from wishlist'
-                                            : 'Saved to wishlist',
-                                      );
-                                    },
-                                    child: Padding(
-                                      padding: const EdgeInsets.all(6),
-                                      child: Icon(
-                                        wished
-                                            ? Icons.favorite_rounded
-                                            : Icons.favorite_border_rounded,
-                                        color: wished
-                                            ? Colors.redAccent
-                                            : theme.colorScheme.onSurfaceVariant,
-                                        size: 16,
-                                      ),
+                                final comparing =
+                                    shopState.isComparing(product.id);
+                                return Column(
+                                  children: [
+                                    _circleIconBtn(
+                                      colors: colors,
+                                      tooltip: wished
+                                          ? 'Remove from Wishlist'
+                                          : 'Add to Wishlist',
+                                      icon: wished
+                                          ? Icons.favorite_rounded
+                                          : Icons.favorite_border_rounded,
+                                      iconColor: wished
+                                          ? Colors.redAccent
+                                          : colors.onSurfaceVariant,
+                                      onTap: () {
+                                        shopState.toggleWishlist(product);
+                                        CustomToast.show(
+                                          context,
+                                          wished
+                                              ? 'Removed from wishlist'
+                                              : 'Saved to wishlist',
+                                        );
+                                      },
                                     ),
-                                  ),
+                                    const SizedBox(height: 4),
+                                    _circleIconBtn(
+                                      colors: colors,
+                                      tooltip: comparing
+                                          ? 'Comparing (tap to open tray)'
+                                          : 'Compare side-by-side',
+                                      icon: Icons.compare_arrows_rounded,
+                                      iconColor: comparing
+                                          ? const Color(0xFF00ACC1)
+                                          : colors.onSurfaceVariant,
+                                      onTap: () {
+                                        final msg =
+                                            shopState.toggleCompare(product);
+                                        ScaffoldMessenger.of(context)
+                                          ..hideCurrentSnackBar()
+                                          ..showSnackBar(
+                                            SnackBar(
+                                              content: Text(msg),
+                                              duration:
+                                                  const Duration(seconds: 3),
+                                              behavior:
+                                                  SnackBarBehavior.floating,
+                                              action: shopState
+                                                      .compareList.isNotEmpty
+                                                  ? SnackBarAction(
+                                                      label: 'COMPARE NOW',
+                                                      textColor:
+                                                          Colors.cyanAccent,
+                                                      onPressed: () =>
+                                                          showProductComparisonSheet(
+                                                        context,
+                                                      ),
+                                                    )
+                                                  : null,
+                                            ),
+                                          );
+                                      },
+                                    ),
+                                    if (isAdmin) ...[
+                                      const SizedBox(height: 4),
+                                      _circleIconBtn(
+                                        colors: colors,
+                                        tooltip: 'Edit Product in Admin Studio',
+                                        icon: Icons.edit_outlined,
+                                        iconColor: primary,
+                                        onTap: () => context.push(
+                                          '/admin?editId=${product.id}',
+                                        ),
+                                      ),
+                                      if (product.id != 144) ...[
+                                        const SizedBox(height: 4),
+                                        _circleIconBtn(
+                                          colors: colors,
+                                          tooltip: 'Delete Product',
+                                          icon: Icons.delete_outline_rounded,
+                                          iconColor: Colors.redAccent,
+                                          isLoading: _isDeleting,
+                                          onTap: _isDeleting
+                                              ? null
+                                              : _deleteProduct,
+                                        ),
+                                      ],
+                                    ],
+                                  ],
                                 );
                               },
                             ),
                           ),
-                          if (isAdmin)
+
+                          // Low / Out of stock indicator strip at bottom of image
+                          if (outOfStock || lowStock)
                             Positioned(
-                              top: 4,
-                              right: 4,
-                              child: Material(
-                                color: theme.colorScheme.surface
-                                    .withOpacity(0.94),
-                                borderRadius: BorderRadius.circular(20),
-                                child: InkWell(
-                                  borderRadius: BorderRadius.circular(20),
-                                  onTap: _isDeleting ? null : _deleteProduct,
-                                  child: Padding(
-                                    padding: const EdgeInsets.all(7),
-                                    child: _isDeleting
-                                        ? const SizedBox(
-                                            width: 15,
-                                            height: 15,
-                                            child: CircularProgressIndicator(
-                                              strokeWidth: 2,
-                                            ),
-                                          )
-                                        : const Icon(
-                                            Icons.delete_outline_rounded,
-                                            color: Colors.redAccent,
-                                            size: 17,
-                                          ),
+                              left: 7,
+                              bottom: 6,
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 7,
+                                  vertical: 2.5,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: (outOfStock
+                                          ? colors.error
+                                          : const Color(0xFFD97706))
+                                      .withValues(alpha: 0.9),
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: Text(
+                                  outOfStock
+                                      ? 'Out of Stock'
+                                      : 'Only ${product.stock} Left',
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 9,
+                                    fontWeight: FontWeight.w800,
                                   ),
                                 ),
                               ),
@@ -340,6 +470,8 @@ class _ProductCardState extends State<ProductCard> {
                         ],
                       ),
                     ),
+
+                    // Product Info & Add to Cart
                     Padding(
                       padding: EdgeInsets.all(veryCompact ? 5 : 9),
                       child: Column(
@@ -350,12 +482,12 @@ class _ProductCardState extends State<ProductCard> {
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: TextStyle(
-                              color: theme.colorScheme.onSurfaceVariant,
+                              color: colors.onSurfaceVariant,
                               fontSize: veryCompact ? 8 : 9,
                               fontWeight: FontWeight.w600,
                             ),
                           ),
-                          const SizedBox(height: 4),
+                          const SizedBox(height: 3),
                           Text(
                             product.name,
                             maxLines: 2,
@@ -363,17 +495,17 @@ class _ProductCardState extends State<ProductCard> {
                             style: TextStyle(
                               fontSize: veryCompact ? 10 : 12,
                               height: 1.25,
-                              fontWeight: FontWeight.w600,
-                              color: theme.colorScheme.onSurface,
+                              fontWeight: FontWeight.w700,
+                              color: colors.onSurface,
                             ),
                           ),
-                          const SizedBox(height: 5),
+                          const SizedBox(height: 4),
                           Row(
                             children: [
                               const Icon(
                                 Icons.star_rounded,
                                 color: Color(0xFFFFB300),
-                                size: 14,
+                                size: 13,
                               ),
                               const SizedBox(width: 3),
                               Flexible(
@@ -383,41 +515,40 @@ class _ProductCardState extends State<ProductCard> {
                                   overflow: TextOverflow.ellipsis,
                                   style: TextStyle(
                                     fontSize: veryCompact ? 9 : 10,
-                                    color: theme.colorScheme
-                                        .onSurfaceVariant,
+                                    color: colors.onSurfaceVariant,
                                   ),
                                 ),
                               ),
                             ],
                           ),
-                          const SizedBox(height: 6),
+                          const SizedBox(height: 5),
                           if (hasDiscount)
                             Text(
-                              '\$${product.originalPrice!.toStringAsFixed(2)}',
+                              currency.format(product.originalPrice!),
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                               style: TextStyle(
-                                color: theme.colorScheme.onSurfaceVariant,
+                                color: colors.onSurfaceVariant,
                                 fontSize: veryCompact ? 9 : 10,
                                 decoration: TextDecoration.lineThrough,
                               ),
                             ),
                           Text(
-                            '\$${product.price.toStringAsFixed(2)}',
+                            currency.format(product.price),
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: TextStyle(
                               color: primary,
-                              fontSize: veryCompact ? 12 : 15,
+                              fontSize: veryCompact ? 12 : 14.5,
                               fontWeight: FontWeight.w800,
                             ),
                           ),
-                          const SizedBox(height: 7),
+                          const SizedBox(height: 6),
                           SizedBox(
                             width: double.infinity,
-                            height: compact ? 30 : 33,
+                            height: compact ? 29 : 32,
                             child: ElevatedButton(
-                              onPressed: _addToCart,
+                              onPressed: outOfStock ? null : _addToCart,
                               style: ElevatedButton.styleFrom(
                                 backgroundColor: primary,
                                 foregroundColor: Colors.white,
@@ -426,25 +557,30 @@ class _ProductCardState extends State<ProductCard> {
                                   horizontal: 4,
                                 ),
                                 shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(7),
+                                  borderRadius: BorderRadius.circular(8),
                                 ),
                               ),
                               child: Row(
-                                mainAxisAlignment:
-                                    MainAxisAlignment.center,
+                                mainAxisAlignment: MainAxisAlignment.center,
                                 children: [
                                   Icon(
-                                    Icons.add_shopping_cart_rounded,
-                                    size: veryCompact ? 13 : 15,
+                                    outOfStock
+                                        ? Icons.block_rounded
+                                        : Icons.add_shopping_cart_rounded,
+                                    size: veryCompact ? 12 : 14,
                                   ),
                                   const SizedBox(width: 4),
                                   Flexible(
                                     child: Text(
-                                      veryCompact ? 'ADD' : 'ADD TO CART',
+                                      outOfStock
+                                          ? 'SOLD OUT'
+                                          : (veryCompact
+                                              ? 'ADD'
+                                              : 'ADD TO CART'),
                                       maxLines: 1,
                                       overflow: TextOverflow.ellipsis,
                                       style: TextStyle(
-                                        fontSize: veryCompact ? 9 : 10,
+                                        fontSize: veryCompact ? 8.5 : 10,
                                         fontWeight: FontWeight.w700,
                                       ),
                                     ),
@@ -465,135 +601,33 @@ class _ProductCardState extends State<ProductCard> {
       },
     );
   }
-}
 
-class _ProductNetworkImage extends StatefulWidget {
-  final int productId;
-  final String imageUrl;
-  final bool isDark;
-
-  const _ProductNetworkImage({
-    required this.productId,
-    required this.imageUrl,
-    required this.isDark,
-  });
-
-  @override
-  State<_ProductNetworkImage> createState() =>
-      _ProductNetworkImageState();
-}
-
-class _ProductNetworkImageState extends State<_ProductNetworkImage> {
-  bool _useProxyFallback = false;
-
-  @override
-  void didUpdateWidget(covariant _ProductNetworkImage oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.imageUrl != widget.imageUrl ||
-        oldWidget.productId != widget.productId) {
-      _useProxyFallback = false;
-    }
-  }
-
-  String _resolvedUrl() {
-    final trimmed = widget.imageUrl.trim();
-    final base = ApiConfig.baseUrl.replaceFirst(RegExp(r'/$'), '');
-
-    if (_useProxyFallback || trimmed.isEmpty) {
-      if (widget.productId > 0) {
-        return '$base/api/search/image-proxy?product_id=${widget.productId}'
-            '${trimmed.isNotEmpty ? '&url=${Uri.encodeComponent(trimmed)}' : ''}';
-      }
-      if (trimmed.isNotEmpty) {
-        return '$base/api/search/image-proxy?url=${Uri.encodeComponent(trimmed)}';
-      }
-      return '';
-    }
-
-    // Legacy S3 URLs return application/octet-stream, so route them through proxy on Web
-    if (kIsWeb &&
-        trimmed.contains('penguin-store-assets-v1.s3')) {
-      return '$base/api/search/image-proxy?product_id=${widget.productId}&url=${Uri.encodeComponent(trimmed)}';
-    }
-
-    return trimmed;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final targetUrl = _resolvedUrl();
-
-    if (targetUrl.isEmpty) {
-      return _buildErrorFallback(theme);
-    }
-
-    return Container(
-      width: double.infinity,
-      height: double.infinity,
-      color: widget.isDark
-          ? Colors.white.withOpacity(0.03)
-          : const Color(0xFFF8FAFC),
-      child: CachedNetworkImage(
-        imageUrl: targetUrl,
-        key: ValueKey(targetUrl),
-        width: double.infinity,
-        height: double.infinity,
-        fit: BoxFit.contain,
-        fadeInDuration: const Duration(milliseconds: 180),
-        placeholder: (context, url) => Shimmer.fromColors(
-          baseColor: widget.isDark
-              ? Colors.grey.shade800
-              : Colors.grey.shade200,
-          highlightColor: widget.isDark
-              ? Colors.grey.shade700
-              : Colors.grey.shade50,
-          child: Container(
-            width: double.infinity,
-            height: double.infinity,
-            color: Colors.white,
+  Widget _circleIconBtn({
+    required ColorScheme colors,
+    required String tooltip,
+    required IconData icon,
+    required Color iconColor,
+    VoidCallback? onTap,
+    bool isLoading = false,
+  }) {
+    return Tooltip(
+      message: tooltip,
+      child: Material(
+        color: colors.surface.withValues(alpha: 0.92),
+        shape: const CircleBorder(),
+        child: InkWell(
+          customBorder: const CircleBorder(),
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.all(6),
+            child: isLoading
+                ? const SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : Icon(icon, color: iconColor, size: 15),
           ),
-        ),
-        errorWidget: (context, url, error) {
-          if (!_useProxyFallback &&
-              (widget.productId > 0 || widget.imageUrl.trim().isNotEmpty)) {
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              if (mounted && !_useProxyFallback) {
-                setState(() {
-                  _useProxyFallback = true;
-                });
-              }
-            });
-            return Shimmer.fromColors(
-              baseColor: widget.isDark
-                  ? Colors.grey.shade800
-                  : Colors.grey.shade200,
-              highlightColor: widget.isDark
-                  ? Colors.grey.shade700
-                  : Colors.grey.shade50,
-              child: Container(
-                width: double.infinity,
-                height: double.infinity,
-                color: Colors.white,
-              ),
-            );
-          }
-          return _buildErrorFallback(theme);
-        },
-      ),
-    );
-  }
-
-  Widget _buildErrorFallback(ThemeData theme) {
-    return Container(
-      color: widget.isDark
-          ? Colors.white.withOpacity(0.04)
-          : Colors.grey.shade50,
-      child: Center(
-        child: Icon(
-          Icons.image_not_supported_outlined,
-          color: theme.colorScheme.onSurfaceVariant,
-          size: 30,
         ),
       ),
     );

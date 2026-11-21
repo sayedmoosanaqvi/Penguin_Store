@@ -350,3 +350,110 @@ CREATE POLICY "Service role full ai_metrics_logs" ON ai_metrics_logs
     FOR ALL USING (auth.role() = 'service_role')
     WITH CHECK (auth.role() = 'service_role');
 
+
+
+-- ============================================================================
+-- 13. B2B / B2C COMMERCIAL UPGRADE: Variants, Add-Ons, Bulk Tiers & RFQ System
+-- ============================================================================
+
+ALTER TABLE products
+    ADD COLUMN IF NOT EXISTS variants_json TEXT NOT NULL DEFAULT '[]',
+    ADD COLUMN IF NOT EXISTS bulk_tiers_json TEXT NOT NULL DEFAULT '[]';
+
+ALTER TABLE orders
+    ADD COLUMN IF NOT EXISTS subtotal_amount DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS discount_amount DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+    ADD COLUMN IF NOT EXISTS tax_amount DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+    ADD COLUMN IF NOT EXISTS promo_code VARCHAR(64),
+    ADD COLUMN IF NOT EXISTS currency_code VARCHAR(12) NOT NULL DEFAULT 'USD';
+
+ALTER TABLE order_items
+    ADD COLUMN IF NOT EXISTS selected_variant VARCHAR(120),
+    ADD COLUMN IF NOT EXISTS selected_addons TEXT NOT NULL DEFAULT '[]',
+    ADD COLUMN IF NOT EXISTS pricing_mode VARCHAR(32) NOT NULL DEFAULT 'B2C';
+
+CREATE TABLE IF NOT EXISTS rfq_requests (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    customer_email VARCHAR(254) NOT NULL,
+    customer_name VARCHAR(150) NOT NULL DEFAULT '',
+    company_name VARCHAR(150) NOT NULL DEFAULT '',
+    product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+    product_name VARCHAR(200) NOT NULL DEFAULT '',
+    quantity INTEGER NOT NULL CHECK (quantity >= 5),
+    target_unit_price DOUBLE PRECISION NOT NULL CHECK (target_unit_price > 0),
+    customization_notes TEXT NOT NULL DEFAULT '',
+    delivery_deadline VARCHAR(100) NOT NULL DEFAULT '',
+    status VARCHAR(32) NOT NULL DEFAULT 'Pending',
+    admin_quote_price DOUBLE PRECISION,
+    admin_reply TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_rfq_requests_email
+    ON rfq_requests (customer_email, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_rfq_requests_status
+    ON rfq_requests (status, created_at DESC);
+
+ALTER TABLE rfq_requests ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Service role full rfq_requests" ON rfq_requests;
+CREATE POLICY "Service role full rfq_requests" ON rfq_requests
+    FOR ALL USING (auth.role() = 'service_role')
+    WITH CHECK (auth.role() = 'service_role');
+
+
+
+-- ============================================================================
+-- 14. FINAL PRODUCTION UPGRADE: Stripe Payment Lifecycle, Favorites & Indexes
+-- ============================================================================
+
+ALTER TABLE orders
+    ADD COLUMN IF NOT EXISTS payment_method VARCHAR(32) NOT NULL DEFAULT 'COD',
+    ADD COLUMN IF NOT EXISTS payment_status VARCHAR(32) NOT NULL DEFAULT 'pending',
+    ADD COLUMN IF NOT EXISTS stripe_session_id VARCHAR(255),
+    ADD COLUMN IF NOT EXISTS email_sent BOOLEAN NOT NULL DEFAULT FALSE;
+
+CREATE INDEX IF NOT EXISTS idx_orders_stripe_session
+    ON orders (stripe_session_id)
+    WHERE stripe_session_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS favorites (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+    price_at_save DOUBLE PRECISION,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_favorites_user_product UNIQUE (user_id, product_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_favorites_user_created
+    ON favorites (user_id, created_at DESC);
+
+ALTER TABLE favorites ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Service role full favorites" ON favorites;
+CREATE POLICY "Service role full favorites" ON favorites
+    FOR ALL USING (auth.role() = 'service_role')
+    WITH CHECK (auth.role() = 'service_role');
+
+-- Performance indexes for <100ms catalog & 3D showcase queries
+CREATE INDEX IF NOT EXISTS idx_products_category
+    ON products (category);
+
+CREATE INDEX IF NOT EXISTS idx_products_price
+    ON products (price);
+
+CREATE INDEX IF NOT EXISTS idx_products_stock
+    ON products (stock)
+    WHERE stock > 0;
+
+CREATE INDEX IF NOT EXISTS idx_products_featured
+    ON products (is_featured, id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_product_3d_assets_active
+    ON product_3d_assets (product_id, is_active)
+    WHERE is_active = TRUE;
+

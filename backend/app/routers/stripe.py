@@ -83,58 +83,39 @@ def require_stripe():
 
 
 def resolve_frontend_url(origin: str | None) -> str:
-    if not origin:
+    """
+    Resolve the safe frontend return base URL for Stripe Checkout redirects.
+    Supports:
+    - Local Flutter Web development on any localhost / 127.0.0.1 port
+    - GitHub Pages subpaths (e.g. https://<user>.github.io/Penguin_Store)
+    - Custom production domains matching FRONTEND_URL
+    """
+    if not origin or not origin.strip():
         return FRONTEND_URL
 
-    parsed = urlparse(origin)
+    cleaned = origin.strip().rstrip("/")
+    parsed = urlparse(cleaned)
+
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return FRONTEND_URL
+
+    # Allow any localhost / 127.0.0.1 origin for local Flutter Web testing
+    if parsed.hostname in {"localhost", "127.0.0.1", "::1"}:
+        return cleaned
+
+    # Allow github.io (including /Penguin_Store base-href path) or configured FRONTEND_URL host
     configured = urlparse(FRONTEND_URL)
-
-    normalized = origin.rstrip("/")
-
-    valid_origin = (
-        parsed.scheme in ("http", "https")
-        and bool(parsed.netloc)
-        and parsed.path in ("", "/")
-        and not parsed.query
-        and not parsed.fragment
-        and not parsed.username
-        and not parsed.password
-    )
-
-    if not valid_origin:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid frontend origin.",
-        )
-
     if (
-        parsed.scheme == configured.scheme
-        and parsed.netloc == configured.netloc
+        parsed.hostname == configured.hostname
+        or (parsed.hostname and parsed.hostname.endswith(".github.io"))
     ):
-        return FRONTEND_URL
+        if parsed.path and parsed.path not in ("", "/"):
+            return f"{parsed.scheme}://{parsed.netloc}{parsed.path.rstrip('/')}"
+        if configured.path and configured.path not in ("", "/"):
+            return f"{parsed.scheme}://{parsed.netloc}{configured.path.rstrip('/')}"
+        return f"{parsed.scheme}://{parsed.netloc}"
 
-    local_hosts = {
-        "localhost",
-        "127.0.0.1",
-        "::1",
-    }
-
-    if (
-        ENVIRONMENT == "development"
-        and os.getenv(
-            "ALLOW_LOCAL_CHECKOUT",
-            "false",
-        ).lower() == "true"
-        and parsed.scheme == "http"
-        and parsed.hostname in local_hosts
-        and parsed.port is not None
-    ):
-        return normalized
-
-    raise HTTPException(
-        status_code=400,
-        detail="Frontend origin is not permitted.",
-    )
+    return FRONTEND_URL
 
 
 def _stripe_id(value):
@@ -381,97 +362,95 @@ def create_payment_intent(data: PaymentRequest):
     )
 
 
-# Existing one-time product checkout
+# Existing & v1 one-time product checkout session (Supabase HTTPS + memory-aware)
 @router.post("/create-checkout-session")
+@router.post("/api/v1/stripe/create-checkout-session")
 def create_checkout_session(
     data: PaymentRequest,
-    db: Session = Depends(get_db),
 ):
     require_stripe()
 
-    frontend = resolve_frontend_url(
-        data.frontend_origin
-    )
+    frontend = resolve_frontend_url(data.frontend_origin)
 
-    order = db.query(Order).filter(
-        Order.id == data.order_id
-    ).first()
+    from app.routers.orders import get_order_record
 
-    if not order:
+    order_record = get_order_record(data.order_id)
+    if not order_record:
         raise HTTPException(
             status_code=404,
-            detail="Order not found.",
+            detail=f"Order #{data.order_id} not found.",
         )
 
-    amount = int(
-        round(float(order.total_amount) * 100)
+    total_usd = float(order_record.get("total_amount") or 0.0)
+    amount_cents = int(round(total_usd * 100))
+
+    if amount_cents < 50:
+        amount_cents = 50  # Stripe minimum charge is $0.50 USD
+
+    # Build itemized summary for the Stripe Checkout page
+    items = order_record.get("items") or []
+    item_descriptions = []
+    for item in items[:5]:
+        p_name = item.get("product_name") or f"Product #{item.get('product_id')}"
+        qty = item.get("quantity", 1)
+        variant = item.get("selected_variant")
+        addons = item.get("selected_addons") or []
+        tag_parts = [p for p in [variant, *addons] if p]
+        tag_str = f" ({', '.join(tag_parts)})" if tag_parts else ""
+        item_descriptions.append(f"{qty}x {p_name}{tag_str}")
+
+    summary_desc = (
+        " • ".join(item_descriptions)
+        if item_descriptions
+        else f"Penguin Store Order #{data.order_id}"
     )
+    if order_record.get("promo_code"):
+        summary_desc += f" [Promo: {order_record['promo_code']}]"
 
-    if amount <= 0:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid order amount.",
-        )
-
-    if data.currency.lower() != "usd":
-        raise HTTPException(
-            status_code=400,
-            detail="Unsupported checkout currency.",
-        )
+    customer_email = str(order_record.get("customer_email") or "").strip() or None
 
     try:
         session = stripe.checkout.Session.create(
             payment_method_types=["card"],
+            customer_email=customer_email,
             line_items=[
                 {
                     "price_data": {
                         "currency": "usd",
                         "product_data": {
-                            "name": (
-                                f"Penguin Store Order #{order.id}"
-                            ),
+                            "name": f"Penguin Store Order #{data.order_id}",
+                            "description": summary_desc[:450],
                         },
-                        "unit_amount": amount,
+                        "unit_amount": amount_cents,
                     },
                     "quantity": 1,
                 }
             ],
             mode="payment",
             success_url=(
-                f"{frontend}/#/success"
+                f"{frontend}/#/checkout-success"
                 f"?session_id={{CHECKOUT_SESSION_ID}}"
-                f"&order_id={order.id}"
+                f"&order_id={data.order_id}"
             ),
-            cancel_url=f"{frontend}/#/cancel",
-            shipping_address_collection={
-                "allowed_countries": [
-                    "US",
-                    "GB",
-                    "AE",
-                    "PK",
-                ],
-            },
+            cancel_url=f"{frontend}/#/checkout-cancel?order_id={data.order_id}",
             metadata={
-                "internal_order_id": str(order.id),
+                "internal_order_id": str(data.order_id),
+                "customer_email": customer_email or "",
             },
         )
 
         return {
             "url": session.url,
+            "checkout_url": session.url,
             "session_id": session.id,
+            "order_id": data.order_id,
         }
 
-    except stripe.error.StripeError:
-        logger.exception(
-            "Product checkout session failed."
-        )
-
+    except stripe.error.StripeError as exc:
+        logger.exception("Product checkout session failed: %s", exc)
         raise HTTPException(
             status_code=502,
-            detail=(
-                "Unable to create Stripe "
-                "Checkout Session."
-            ),
+            detail="Unable to create Stripe Checkout Session.",
         )
 
 
@@ -634,15 +613,17 @@ def create_premium_billing_portal(
         )
 
 
-# Existing one-time payment status
+# Verify Stripe Checkout session & finalize order + email idempotently (Phase 2.1)
 @router.get("/api/payments/checkout-status")
-def checkout_status(session_id: str):
+@router.get("/api/v1/stripe/verify-session/{session_id}")
+async def verify_stripe_checkout_session(
+    session_id: str,
+    order_id: int | None = None,
+):
     require_stripe()
 
     try:
-        session = stripe.checkout.Session.retrieve(
-            session_id
-        )
+        session = stripe.checkout.Session.retrieve(session_id)
 
         if session.mode != "payment":
             raise HTTPException(
@@ -650,12 +631,35 @@ def checkout_status(session_id: str):
                 detail="Not a product payment session.",
             )
 
+        is_paid = session.payment_status == "paid"
+        metadata = session.get("metadata") or {}
+        resolved_order_id = order_id
+        if resolved_order_id is None and metadata.get("internal_order_id"):
+            try:
+                resolved_order_id = int(metadata["internal_order_id"])
+            except (TypeError, ValueError):
+                resolved_order_id = None
+
+        order_record = None
+        if is_paid and resolved_order_id is not None:
+            from app.routers.orders import finalize_paid_stripe_order
+
+            order_record = await finalize_paid_stripe_order(
+                order_id=resolved_order_id,
+                session_id=session_id,
+            )
+        elif resolved_order_id is not None:
+            from app.routers.orders import get_order_record
+
+            order_record = get_order_record(resolved_order_id)
+
         return {
+            "session_id": session_id,
+            "order_id": resolved_order_id,
             "payment_status": session.payment_status,
             "checkout_status": session.status,
-            "paid": (
-                session.payment_status == "paid"
-            ),
+            "paid": is_paid,
+            "order": order_record,
         }
 
     except HTTPException:
@@ -664,119 +668,30 @@ def checkout_status(session_id: str):
     except stripe.error.StripeError:
         raise HTTPException(
             status_code=400,
-            detail=(
-                "Unable to verify checkout session."
-            ),
+            detail="Unable to verify checkout session.",
         )
 
 
 async def _fulfill_paid_order(session_data):
     metadata = session_data.get("metadata") or {}
     order_id = metadata.get("internal_order_id")
+    session_id = session_data.get("id") or ""
 
     if not order_id:
-        logger.error(
-            "Product webhook missing order ID."
-        )
+        logger.error("Product webhook missing order ID.")
         return False
 
-    collected = (
-        session_data.get("collected_information")
-        or {}
-    )
-
-    details = (
-        collected.get("shipping_details")
-        or session_data.get("shipping_details")
-        or session_data.get("customer_details")
-        or {}
-    )
-
-    address = details.get("address") or {}
-
-    customer_name = (
-        details.get("name")
-        or "Valued Customer"
-    )
-
-    line1 = (
-        address.get("line1")
-        or "No Address Provided"
-    )
-
-    city = (
-        address.get("city")
-        or "No City Provided"
-    )
-
-    postal_code = (
-        address.get("postal_code")
-        or "00000"
-    )
-
-    db = SessionLocal()
-
     try:
-        order = db.query(Order).filter(
-            Order.id == int(order_id)
-        ).first()
+        from app.routers.orders import finalize_paid_stripe_order
 
-        if not order:
-            logger.error(
-                "Webhook order %s not found.",
-                order_id,
-            )
-            return False
-
-        adapter = DummyJSONAdapter()
-
-        for item in order.items:
-            if item.dispatch_status in (
-                "DISPATCHED",
-                "QUEUED_FOR_PACKING",
-            ):
-                continue
-
-            if item.fulfillment_type == "DROPSHIP":
-                dispatch_res = await adapter.place_order(
-                    supplier_sku=str(item.product_id),
-                    shipping_address={
-                        "recipient": customer_name,
-                        "address": line1,
-                        "city": city,
-                        "postal_code": postal_code,
-                    },
-                )
-
-                item.tracking_number = (
-                    dispatch_res.get("tracking_number")
-                )
-
-                item.dispatch_status = "DISPATCHED"
-
-            else:
-                item.dispatch_status = (
-                    "QUEUED_FOR_PACKING"
-                )
-
-        db.commit()
-
-        logger.info(
-            "Product order %s fulfilled.",
-            order_id,
+        record = await finalize_paid_stripe_order(
+            order_id=int(order_id),
+            session_id=str(session_id),
         )
-
-        return True
-
+        return record is not None
     except Exception:
-        db.rollback()
-        logger.exception(
-            "Order fulfillment failed."
-        )
-        raise
-
-    finally:
-        db.close()
+        logger.exception("Stripe webhook order fulfillment failed for order %s", order_id)
+        return False
 
 
 def _mark_subscription_canceled(subscription_data):
@@ -832,6 +747,7 @@ def _invoice_subscription_id(invoice):
 
 # Shared verified Stripe webhook
 @router.post("/webhook")
+@router.post("/api/v1/stripe/webhook")
 async def stripe_webhook(request: Request):
     if not STRIPE_WEBHOOK_SECRET:
         raise HTTPException(

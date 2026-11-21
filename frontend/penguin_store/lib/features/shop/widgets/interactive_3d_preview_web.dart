@@ -44,6 +44,24 @@ Widget buildInline3DCardViewer({
   );
 }
 
+Widget buildRemoteGlbStudio({
+  required String modelUrl,
+  required String productName,
+  required GlbStudioController controller,
+  ValueChanged<Uint8List>? onThumbnailCaptured,
+  ValueChanged<String>? onError,
+  VoidCallback? onModelLoaded,
+}) {
+  return _WebRemoteGlbStudio(
+    modelUrl: modelUrl,
+    productName: productName,
+    controller: controller,
+    onThumbnailCaptured: onThumbnailCaptured,
+    onError: onError,
+    onModelLoaded: onModelLoaded,
+  );
+}
+
 /// Builds a sleek icy-blue progress bar slotted inside `<model-viewer slot="progress-bar">`.
 web.HTMLDivElement _createProgressBarSlot(web.HTMLElement mv) {
   final wrapper = web.document.createElement('div') as web.HTMLDivElement;
@@ -358,6 +376,133 @@ class _WebInline3DCardViewerState extends State<_WebInline3DCardViewer> {
   void _cleanupDom() {
     if (_mvElement != null) {
       // Immediately clear src so browser releases WebGL context cleanly
+      _mvElement!.removeAttribute('src');
+      _mvElement!.textContent = '';
+      _mvElement = null;
+    }
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    _cleanupDom();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return HtmlElementView(
+      key: ValueKey(_viewType),
+      viewType: _viewType,
+    );
+  }
+}
+
+class _WebRemoteGlbStudio extends StatefulWidget {
+  final String modelUrl;
+  final String productName;
+  final GlbStudioController controller;
+  final ValueChanged<Uint8List>? onThumbnailCaptured;
+  final ValueChanged<String>? onError;
+  final VoidCallback? onModelLoaded;
+
+  const _WebRemoteGlbStudio({
+    required this.modelUrl,
+    required this.productName,
+    required this.controller,
+    this.onThumbnailCaptured,
+    this.onError,
+    this.onModelLoaded,
+  });
+
+  @override
+  State<_WebRemoteGlbStudio> createState() => _WebRemoteGlbStudioState();
+}
+
+class _WebRemoteGlbStudioState extends State<_WebRemoteGlbStudio> {
+  late String _viewType;
+  web.HTMLElement? _mvElement;
+  bool _disposed = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _initViewer();
+  }
+
+  @override
+  void didUpdateWidget(covariant _WebRemoteGlbStudio oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.modelUrl != widget.modelUrl) {
+      _cleanupDom();
+      _initViewer();
+    }
+  }
+
+  void _initViewer() {
+    _viewType = 'penguin-remote-glb-studio-${++_viewIdSeq}';
+
+    final mv = web.document.createElement('model-viewer') as web.HTMLElement;
+    mv.setAttribute('src', widget.modelUrl);
+    mv.setAttribute('crossorigin', 'anonymous');
+    mv.setAttribute('alt', widget.productName);
+    mv.setAttribute('camera-controls', '');
+    mv.setAttribute('auto-rotate', '');
+    mv.setAttribute('auto-rotate-delay', '1800');
+    mv.setAttribute('rotation-per-second', '16deg');
+    mv.setAttribute('shadow-intensity', '1');
+    mv.setAttribute('shadow-softness', '0.9');
+    mv.setAttribute('exposure', '1.08');
+    mv.setAttribute('environment-image', 'neutral');
+    mv.setAttribute('interaction-prompt', 'none');
+    mv.setAttribute('loading', 'eager');
+    mv.style
+      ..width = '100%'
+      ..height = '100%'
+      ..display = 'block'
+      ..background =
+          'radial-gradient(circle at 50% 40%, #F4F9FF 0%, #D4E8FA 100%)';
+
+    mv.appendChild(_createProgressBarSlot(mv));
+
+    mv.addEventListener(
+      'load',
+      ((web.Event _) {
+        if (_disposed) return;
+        widget.onModelLoaded?.call();
+        Future<void>.delayed(const Duration(milliseconds: 400), () async {
+          if (_disposed || _mvElement == null) return;
+          final png = await _captureModelViewerPng(_mvElement!);
+          if (!_disposed && png != null && png.isNotEmpty) {
+            widget.onThumbnailCaptured?.call(png);
+          }
+        });
+      }).toJS,
+    );
+
+    mv.addEventListener(
+      'error',
+      ((web.Event _) {
+        if (_disposed) return;
+        widget.onError?.call('Could not load remote 3D GLB model.');
+      }).toJS,
+    );
+
+    _mvElement = mv;
+    widget.controller.attach(() async {
+      if (_disposed || _mvElement == null) return null;
+      return _captureModelViewerPng(_mvElement!);
+    });
+
+    ui_web.platformViewRegistry.registerViewFactory(
+      _viewType,
+      (int _) => mv,
+    );
+  }
+
+  void _cleanupDom() {
+    widget.controller.attach(null);
+    if (_mvElement != null) {
       _mvElement!.removeAttribute('src');
       _mvElement!.textContent = '';
       _mvElement = null;

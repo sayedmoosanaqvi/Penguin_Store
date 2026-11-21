@@ -3,7 +3,9 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
+import 'package:penguin_store/features/shop/providers/currency_provider.dart';
 import 'package:penguin_store/features/shop/providers/product_provider.dart';
+import 'package:penguin_store/features/shop/widgets/studio_product_image.dart';
 
 class PersonalizedCarousel extends StatefulWidget {
   final String userEmail;
@@ -148,10 +150,11 @@ class _PersonalizedCarouselState extends State<PersonalizedCarousel> {
                   final parsedPrice = rawPrice is num
                       ? rawPrice.toDouble()
                       : double.tryParse(rawPrice?.toString() ?? '');
+                  final currency = context.watch<CurrencyProvider>();
 
                   final priceText = parsedPrice == null
                       ? null
-                      : '\$${parsedPrice.toStringAsFixed(2)}';
+                      : currency.format(parsedPrice);
 
                   return SizedBox(
                     width: cardWidth,
@@ -177,26 +180,19 @@ class _PersonalizedCarouselState extends State<PersonalizedCarousel> {
                                 child: Stack(
                                   fit: StackFit.expand,
                                   children: [
-                                    ClipRRect(
+                                    StudioProductImage(
+                                      productId: id is num
+                                          ? id.toInt()
+                                          : (int.tryParse(
+                                                  id?.toString() ?? '',
+                                                ) ??
+                                                0),
+                                      imageUrl: imageUrl,
                                       borderRadius:
                                           const BorderRadius.vertical(
                                         top: Radius.circular(10),
                                       ),
-                                      child: Image.network(
-                                        imageUrl,
-                                        fit: BoxFit.contain,
-                                        errorBuilder:
-                                            (context, error, stack) {
-                                          return Container(
-                                            color: primary.withOpacity(0.04),
-                                            child: Icon(
-                                              Icons.image_not_supported_outlined,
-                                              color: theme.colorScheme
-                                                  .onSurfaceVariant,
-                                            ),
-                                          );
-                                        },
-                                      ),
+                                      padding: 8.0,
                                     ),
                                     Positioned(
                                       top: 7,

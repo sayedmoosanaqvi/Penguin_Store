@@ -18,6 +18,7 @@ from fastapi import (
     UploadFile,
     status,
 )
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, Field
@@ -136,6 +137,7 @@ app = FastAPI(
 )
 
 configure_cors(app)
+app.add_middleware(GZipMiddleware, minimum_size=500)
 app.middleware("http")(security_and_rate_limit_middleware)
 
 
@@ -465,6 +467,61 @@ def delete_my_account_legacy_path(
     return delete_my_account(payload=payload, current_user=current_user, db=db)
 
 
+def _normalize_studio_image(raw_bytes: bytes, ext: str) -> tuple[bytes, str, str]:
+    """Center-fits an uploaded product image onto an 800x800 studio square canvas,
+    trims noisy outer borders, and optimizes file size using Pillow (PIL).
+    """
+    if ext == ".gif":
+        return raw_bytes, ext, ALLOWED_IMAGE_TYPES[ext]
+    try:
+        import io
+        from PIL import Image, ImageChops, ImageOps
+
+        with Image.open(io.BytesIO(raw_bytes)) as im:
+            im = ImageOps.exif_transpose(im)
+            has_alpha = im.mode in ("RGBA", "LA") or (
+                im.mode == "P" and "transparency" in im.info
+            )
+            rgba = im.convert("RGBA")
+
+            # Trim uniform solid outer borders if present
+            if has_alpha:
+                alpha_bbox = rgba.getchannel("A").getbbox()
+                if alpha_bbox:
+                    rgba = rgba.crop(alpha_bbox)
+            else:
+                bg_sample = Image.new("RGBA", rgba.size, rgba.getpixel((0, 0)))
+                diff = ImageChops.difference(rgba, bg_sample).convert("L")
+                bbox = diff.point(lambda p: 255 if p > 12 else 0).getbbox()
+                if bbox:
+                    bw = bbox[2] - bbox[0]
+                    bh = bbox[3] - bbox[1]
+                    if bw >= rgba.width * 0.25 and bh >= rgba.height * 0.25:
+                        rgba = rgba.crop(bbox)
+
+            canvas_size = 800
+            inner_max = 704  # 48px clean studio margin on each side
+            rgba.thumbnail((inner_max, inner_max), Image.Resampling.LANCZOS)
+
+            if has_alpha:
+                canvas = Image.new("RGBA", (canvas_size, canvas_size), (0, 0, 0, 0))
+            else:
+                canvas = Image.new(
+                    "RGBA", (canvas_size, canvas_size), (248, 250, 252, 255)
+                )
+
+            offset_x = (canvas_size - rgba.width) // 2
+            offset_y = (canvas_size - rgba.height) // 2
+            canvas.paste(rgba, (offset_x, offset_y), rgba)
+
+            out = io.BytesIO()
+            canvas.save(out, format="PNG", optimize=True)
+            return out.getvalue(), ".png", "image/png"
+    except Exception:
+        logger.debug("Pillow studio normalization fallback to original bytes.", exc_info=True)
+        return raw_bytes, ext, ALLOWED_IMAGE_TYPES[ext]
+
+
 @app.post("/upload-file/")
 async def upload_file_to_supabase(
     file: UploadFile = File(...),
@@ -490,12 +547,16 @@ async def upload_file_to_supabase(
                 detail="Image exceeds the 10 MB upload limit.",
             )
 
-        content_type = ALLOWED_IMAGE_TYPES[extension]
-        unique_filename = f"{uuid.uuid4().hex}{extension}"
+        norm_bytes, norm_ext, content_type = await run_in_threadpool(
+            _normalize_studio_image,
+            file_bytes,
+            extension,
+        )
+        unique_filename = f"{uuid.uuid4().hex}{norm_ext}"
 
         supabase.storage.from_(PUBLIC_ASSET_BUCKET).upload(
             path=unique_filename,
-            file=file_bytes,
+            file=norm_bytes,
             file_options={
                 "content-type": content_type,
                 "upsert": "false",

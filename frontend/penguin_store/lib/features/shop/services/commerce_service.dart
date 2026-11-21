@@ -346,7 +346,26 @@ class CommerceService {
     final headers = await _authHeaders();
     if (!headers.containsKey('Authorization')) return [];
     final res = await http
-        .get(Uri.parse('$_base/api/v1/wishlist/'), headers: headers)
+        .get(Uri.parse('$_base/api/v1/favorites'), headers: headers)
+        .timeout(_timeout);
+    if (res.statusCode != 200) return [];
+    final decoded = jsonDecode(res.body) as Map;
+    final items = decoded['items'] as List? ?? [];
+    return items
+        .whereType<Map>()
+        .map((m) => Product.fromJson(Map<String, dynamic>.from(m)))
+        .toList();
+  }
+
+  Future<List<Product>> syncFavorites(List<int> productIds) async {
+    final headers = await _authHeaders(jsonBody: true);
+    if (!headers.containsKey('Authorization')) return [];
+    final res = await http
+        .post(
+          Uri.parse('$_base/api/v1/favorites/sync'),
+          headers: headers,
+          body: jsonEncode({'product_ids': productIds}),
+        )
         .timeout(_timeout);
     if (res.statusCode != 200) return [];
     final decoded = jsonDecode(res.body) as Map;
@@ -511,5 +530,145 @@ class CommerceService {
     } catch (_) {
       return false;
     }
+  }
+
+  // =========================================================================
+  // PHASE 4: ALIBABA-STYLE REQUEST FOR QUOTATION (RFQ) B2B ENDPOINTS
+  // =========================================================================
+
+  Future<Map<String, dynamic>> submitRfq({
+    required int productId,
+    required String productName,
+    required String customerEmail,
+    required String customerName,
+    String companyName = '',
+    required int quantity,
+    required double targetUnitPrice,
+    String customizationNotes = '',
+    String deliveryDeadline = '',
+  }) async {
+    final headers = await _authHeaders(jsonBody: true);
+    final res = await http
+        .post(
+          Uri.parse('$_base/api/v1/rfq'),
+          headers: headers,
+          body: jsonEncode({
+            'product_id': productId,
+            'product_name': productName,
+            'customer_email': customerEmail.trim(),
+            'customer_name': customerName.trim(),
+            'company_name': companyName.trim(),
+            'quantity': quantity,
+            'target_unit_price': targetUnitPrice,
+            'customization_notes': customizationNotes.trim(),
+            'delivery_deadline': deliveryDeadline.trim(),
+          }),
+        )
+        .timeout(_timeout);
+
+    if (res.statusCode != 201 && res.statusCode != 200) {
+      throw Exception(ApiErrorHandler.fromStatus(res.statusCode, res.body));
+    }
+    return Map<String, dynamic>.from(jsonDecode(res.body) as Map);
+  }
+
+  Future<List<Map<String, dynamic>>> fetchMyRfqs({String? email}) async {
+    final headers = await _authHeaders();
+    final uri = Uri.parse('$_base/api/v1/rfq/my').replace(
+      queryParameters: {
+        if (email != null && email.trim().isNotEmpty) 'email': email.trim(),
+      },
+    );
+    final res = await http.get(uri, headers: headers).timeout(_timeout);
+    if (res.statusCode != 200) return const [];
+    final d = jsonDecode(res.body) as Map;
+    final items = d['items'] as List? ?? const [];
+    return items
+        .whereType<Map>()
+        .map((m) => Map<String, dynamic>.from(m))
+        .toList();
+  }
+
+  Future<List<Map<String, dynamic>>> fetchAdminRfqs({String? statusFilter}) async {
+    final headers = await _authHeaders();
+    final uri = Uri.parse('$_base/api/v1/admin/rfq').replace(
+      queryParameters: {
+        if (statusFilter != null && statusFilter.isNotEmpty)
+          'status_filter': statusFilter,
+      },
+    );
+    final res = await http.get(uri, headers: headers).timeout(_timeout);
+    if (res.statusCode != 200) {
+      throw Exception(ApiErrorHandler.fromStatus(res.statusCode, res.body));
+    }
+    final d = jsonDecode(res.body) as Map;
+    final items = d['items'] as List? ?? const [];
+    return items
+        .whereType<Map>()
+        .map((m) => Map<String, dynamic>.from(m))
+        .toList();
+  }
+
+  Future<List<Map<String, dynamic>>> fetchAdminOrders() async {
+    final headers = await _authHeaders();
+    final res = await http
+        .get(Uri.parse('$_base/api/orders/admin/all'), headers: headers)
+        .timeout(_timeout);
+    if (res.statusCode != 200) return const [];
+    final decoded = jsonDecode(res.body);
+    if (decoded is List) {
+      return decoded
+          .whereType<Map>()
+          .map((m) => Map<String, dynamic>.from(m))
+          .toList();
+    }
+    if (decoded is Map && decoded['orders'] is List) {
+      return (decoded['orders'] as List)
+          .whereType<Map>()
+          .map((m) => Map<String, dynamic>.from(m))
+          .toList();
+    }
+    return const [];
+  }
+
+  Future<bool> updateOrderStatus({
+    required int orderId,
+    required String status,
+  }) async {
+    final headers = await _authHeaders(jsonBody: true);
+    final res = await http
+        .put(
+          Uri.parse('$_base/api/orders/admin/$orderId/status'),
+          headers: headers,
+          body: jsonEncode({'status': status}),
+        )
+        .timeout(_timeout);
+    return res.statusCode == 200;
+  }
+
+  Future<Map<String, dynamic>> updateAdminRfq({
+    required int rfqId,
+    required String status,
+    double? adminQuotePrice,
+    String adminReply = '',
+  }) async {
+    final headers = await _authHeaders(jsonBody: true);
+    final res = await http
+        .patch(
+          Uri.parse('$_base/api/v1/admin/rfq/$rfqId'),
+          headers: headers,
+          body: jsonEncode({
+            'status': status,
+            if (adminQuotePrice != null && adminQuotePrice > 0)
+              'admin_quote_price': adminQuotePrice,
+            'admin_reply': adminReply.trim(),
+          }),
+        )
+        .timeout(_timeout);
+
+    if (res.statusCode != 200) {
+      throw Exception(ApiErrorHandler.fromStatus(res.statusCode, res.body));
+    }
+    return Map<String, dynamic>.from(jsonDecode(res.body) as Map);
   }
 }

@@ -4,7 +4,9 @@ import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 import 'package:shimmer/shimmer.dart';
 
+import 'package:penguin_store/features/shop/providers/currency_provider.dart';
 import 'package:penguin_store/features/shop/providers/product_provider.dart';
+import 'package:penguin_store/features/shop/widgets/studio_product_image.dart';
 
 class TrendingCarousel extends StatefulWidget {
   final String country;
@@ -167,8 +169,9 @@ class _TrendingCarouselState extends State<TrendingCarousel> {
                       (product['image_url'] ?? '').toString();
 
                   final price = product['price'];
+                  final currency = context.watch<CurrencyProvider>();
                   final priceText = price is num
-                      ? '\$${price.toStringAsFixed(2)}'
+                      ? currency.format(price.toDouble())
                       : null;
 
                   return SizedBox(
@@ -195,26 +198,19 @@ class _TrendingCarouselState extends State<TrendingCarousel> {
                                 child: Stack(
                                   fit: StackFit.expand,
                                   children: [
-                                    ClipRRect(
+                                    StudioProductImage(
+                                      productId: id is num
+                                          ? id.toInt()
+                                          : (int.tryParse(
+                                                  id?.toString() ?? '',
+                                                ) ??
+                                                0),
+                                      imageUrl: imageUrl,
                                       borderRadius:
                                           const BorderRadius.vertical(
                                         top: Radius.circular(10),
                                       ),
-                                      child: Image.network(
-                                        imageUrl,
-                                        fit: BoxFit.contain,
-                                        errorBuilder:
-                                            (context, error, stack) {
-                                          return Container(
-                                            color: primary.withOpacity(0.04),
-                                            child: Icon(
-                                              Icons.image_not_supported_outlined,
-                                              color: theme.colorScheme
-                                                  .onSurfaceVariant,
-                                            ),
-                                          );
-                                        },
-                                      ),
+                                      padding: 8.0,
                                     ),
                                     Positioned(
                                       left: 7,

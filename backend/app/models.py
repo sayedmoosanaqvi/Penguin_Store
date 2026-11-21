@@ -633,3 +633,29 @@ class AIMetricsLog(Base):
     metadata_json = Column(Text, nullable=False, default="{}")
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
 
+
+class RFQRequest(Base):
+    __tablename__ = "rfq_requests"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    customer_email = Column(String(254), nullable=False, index=True)
+    customer_name = Column(String(150), nullable=False, default="")
+    company_name = Column(String(150), nullable=False, default="")
+    product_id = Column(Integer, ForeignKey("products.id", ondelete="CASCADE"), nullable=False, index=True)
+    product_name = Column(String(200), nullable=False, default="")
+    quantity = Column(Integer, nullable=False, default=10)
+    target_unit_price = Column(Float, nullable=False)
+    customization_notes = Column(Text, nullable=False, default="")
+    delivery_deadline = Column(String(100), nullable=False, default="")
+    status = Column(String(32), nullable=False, default="Pending", index=True)
+    admin_quote_price = Column(Float, nullable=True)
+    admin_reply = Column(Text, nullable=False, default="")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+    updated_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+

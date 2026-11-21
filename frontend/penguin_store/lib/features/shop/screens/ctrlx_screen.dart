@@ -1,22 +1,29 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
-import 'package:penguin_store/config/api_config.dart';
-import 'package:uuid/uuid.dart';
-import '../models/product_model.dart';
-import 'package:penguin_store/features/shop/widgets/product_card.dart';
 import 'package:provider/provider.dart';
-import 'package:penguin_store/features/shop/providers/cart_provider.dart';
-import 'package:penguin_store/core/widgets/animated_widgets.dart';
+import 'package:uuid/uuid.dart';
 
-// 1. Custom model to handle multi-modal responses (Text, Products, Bundles, Cart, Orders, Reasoning Trace)
+import 'package:penguin_store/config/api_config.dart';
+import 'package:penguin_store/core/widgets/animated_widgets.dart';
+import 'package:penguin_store/features/shop/models/product_model.dart';
+import 'package:penguin_store/features/shop/providers/cart_provider.dart';
+import 'package:penguin_store/features/shop/providers/currency_provider.dart';
+import 'package:penguin_store/features/shop/services/showcase_3d_service.dart';
+import 'package:penguin_store/features/shop/widgets/custom_toast.dart';
+import 'package:penguin_store/features/shop/widgets/studio_product_image.dart';
+
 class AgentMessage {
   final String role; // "user" or "bot"
   final String text;
-  final String dataType; // "text", "product_list", "bundle", "cart_update", "order_tracker"
+  final String
+      dataType; // "text", "product_list", "bundle", "comparison", "cart_update", "order_tracker"
   final List<Product> suggestedProducts;
   final Map<String, dynamic>? orderAction;
   final Map<String, dynamic>? bundle;
+  final Map<String, dynamic>? comparison;
   final List<Map<String, dynamic>> reasoningSteps;
   final String routedAgent;
 
@@ -27,13 +34,16 @@ class AgentMessage {
     this.suggestedProducts = const [],
     this.orderAction,
     this.bundle,
+    this.comparison,
     this.reasoningSteps = const [],
     this.routedAgent = "CTRL-X",
   });
 }
 
 class CtrlXScreen extends StatefulWidget {
-  const CtrlXScreen({super.key});
+  final String? initialQuery;
+
+  const CtrlXScreen({super.key, this.initialQuery});
 
   @override
   State<CtrlXScreen> createState() => _CtrlXScreenState();
@@ -46,16 +56,39 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
   final List<AgentMessage> _messages = [];
   bool _isLoading = false;
 
-  // Unique session thread ID for LangGraph memory persistence
+  // Unique session thread ID for multi-turn LangGraph memory persistence
   final String _threadId = const Uuid().v4();
 
   static const List<String> _quickPrompts = [
-    'Build a phone + earbuds bundle under \$1,200',
-    'Build me a \$200 shirt + shoes outfit',
-    'Do you have shirts?',
-    'Recommend men shoes',
-    'What is your return policy?',
+    'Plan a party setup',
+    'Compare best audio',
+    'Top 3D products under \$500',
+    'Build a \$1,000 bundle',
+    'Gift for a gamer under \$300',
+    'Compare the first two',
   ];
+
+  static const List<IconData> _promptIcons = [
+    Icons.celebration_rounded,
+    Icons.compare_arrows_rounded,
+    Icons.view_in_ar_rounded,
+    Icons.auto_awesome_mosaic_rounded,
+    Icons.sports_esports_rounded,
+    Icons.balance_rounded,
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    final initQ = widget.initialQuery?.trim() ?? '';
+    if (initQ.isNotEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          _sendPromptText(initQ);
+        }
+      });
+    }
+  }
 
   @override
   void dispose() {
@@ -88,7 +121,7 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
       final response = await http
           .post(
             url,
-            headers: {
+            headers: const {
               'Content-Type': 'application/json',
               'Accept': 'application/json',
             },
@@ -111,6 +144,7 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
         List<Product> products = [];
         Map<String, dynamic>? orderData;
         Map<String, dynamic>? bundleData;
+        Map<String, dynamic>? comparisonData;
         List<Map<String, dynamic>> reasoningSteps = [];
 
         if (data['reasoning_steps'] is List) {
@@ -124,9 +158,11 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
           bundleData = Map<String, dynamic>.from(data['bundle'] as Map);
         }
 
-        // 1. Handle Product Search or Bundle Results
-        if ((dataType == "product_list" || dataType == "bundle") &&
-            data['suggested_products'] is List) {
+        if (data['comparison'] is Map) {
+          comparisonData = Map<String, dynamic>.from(data['comparison'] as Map);
+        }
+
+        if (data['suggested_products'] is List) {
           final List<dynamic> rawProducts = data['suggested_products'];
           products = rawProducts
               .whereType<Map>()
@@ -135,27 +171,25 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
                   id: (p['id'] as num?)?.toInt() ?? 0,
                   name: (p['name'] ?? 'Product').toString(),
                   price: (p['price'] as num?)?.toDouble() ?? 0.0,
-                  originalPrice:
-                      (p['original_price'] as num?)?.toDouble(),
+                  originalPrice: (p['original_price'] as num?)?.toDouble(),
                   category: (p['category'] ?? 'CATALOG').toString(),
                   isFeatured: p['is_featured'] == true,
-                  discountPercent:
-                      (p['discount_percent'] as num?)?.toInt(),
+                  discountPercent: (p['discount_percent'] as num?)?.toInt(),
                   imageUrl: (p['image_url'] ?? '').toString().trim(),
                   description:
-                      (p['description'] ?? 'Suggested by CTRL-X')
-                          .toString(),
-                  rating: ((p['trust_weighted_rating'] ?? p['rating']) as num?)
-                          ?.toDouble() ??
-                      4.8,
+                      (p['description'] ?? 'Suggested by CTRL-X').toString(),
+                  rating:
+                      ((p['trust_weighted_rating'] ?? p['rating']) as num?)
+                              ?.toDouble() ??
+                          4.8,
                   reviews: (p['reviews'] as num?)?.toInt() ?? 12,
+                  stock: (p['stock'] as num?)?.toInt() ?? 50,
                 ),
               )
               .toList();
         }
-        // 2. Handle Cart Actions
-        else if (dataType == "cart_update" &&
-            data['cart_action'] is Map) {
+
+        if (dataType == "cart_update" && data['cart_action'] is Map) {
           final cartAction =
               Map<String, dynamic>.from(data['cart_action'] as Map);
           if (cartAction['action'] == "add_to_cart" &&
@@ -163,60 +197,29 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
             final productData = Map<String, dynamic>.from(
               cartAction['product'] as Map,
             );
-            final int qty =
-                (cartAction['quantity'] as num?)?.toInt() ?? 1;
+            final int qty = (cartAction['quantity'] as num?)?.toInt() ?? 1;
 
             final aiProduct = Product(
               id: (productData['id'] as num?)?.toInt() ?? 0,
               name: (productData['name'] ?? 'Product').toString(),
               price: (productData['price'] as num?)?.toDouble() ?? 0.0,
-              category: 'AI_ADDED',
-              imageUrl:
-                  (productData['image_url'] ?? '').toString().trim(),
-              description: 'Added via CTRL-X',
-              rating: 5.0,
-              reviews: 1,
+              category: (productData['category'] ?? 'CATALOG').toString(),
+              imageUrl: (productData['image_url'] ?? '').toString().trim(),
+              description: 'Added via CTRL-X Autonomous Agent',
+              rating: 4.9,
+              reviews: 12,
             );
 
             if (mounted) {
-              final cart = Provider.of<CartProvider>(
+              context.read<CartProvider>().addToCart(aiProduct, quantity: qty);
+              CustomToast.show(
                 context,
-                listen: false,
-              );
-              for (int i = 0; i < qty; i++) {
-                cart.addToCart(aiProduct);
-              }
-
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Row(
-                    children: [
-                      const Icon(Icons.check_circle, color: Colors.white),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Text(
-                          "Added ${aiProduct.name} (x$qty) to cart!",
-                        ),
-                      ),
-                    ],
-                  ),
-                  backgroundColor: Theme.of(context).primaryColor,
-                  behavior: SnackBarBehavior.floating,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  duration: const Duration(seconds: 3),
-                ),
+                'CTRL-X added ${aiProduct.name} (×$qty) to your cart!',
               );
             }
           }
-        }
-        // 3. Handle Order Status Tracking
-        else if (dataType == "order_tracker" &&
-            data['order_action'] is Map) {
-          orderData = Map<String, dynamic>.from(
-            data['order_action'] as Map,
-          );
+        } else if (dataType == "order_tracker" && data['order_action'] is Map) {
+          orderData = Map<String, dynamic>.from(data['order_action'] as Map);
         }
 
         setState(() {
@@ -228,6 +231,7 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
               suggestedProducts: products,
               orderAction: orderData,
               bundle: bundleData,
+              comparison: comparisonData,
               reasoningSteps: reasoningSteps,
               routedAgent: routedAgent,
             ),
@@ -244,15 +248,10 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
         } catch (_) {}
 
         setState(() {
-          _messages.add(
-            AgentMessage(
-              role: "bot",
-              text: errorDetail,
-            ),
-          );
+          _messages.add(AgentMessage(role: "bot", text: errorDetail));
         });
       }
-    } catch (e) {
+    } catch (_) {
       if (!mounted) return;
       setState(() {
         _messages.add(
@@ -265,38 +264,519 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
       });
     } finally {
       if (mounted) {
-        setState(() {
-          _isLoading = false;
-        });
+        setState(() => _isLoading = false);
         _scrollToBottom();
       }
     }
   }
 
   void _scrollToBottom() {
-    Future.delayed(const Duration(milliseconds: 100), () {
+    Future.delayed(const Duration(milliseconds: 120), () {
       if (_scrollController.hasClients) {
         _scrollController.animateTo(
           _scrollController.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 300),
-          curve: Curves.easeOut,
+          duration: const Duration(milliseconds: 320),
+          curve: Curves.easeOutCubic,
         );
       }
     });
   }
 
-  // Helper widget to render a gorgeous Order Tracker Card inside the chat
+  /// Phase 1.2: Interactive Price & Feature Comparison Matrix Card inside CTRL-X Chat
+  Widget _buildComparisonMatrixCard(
+    Map<String, dynamic> comparison,
+    List<Product> products,
+    ThemeData theme,
+    CurrencyProvider currency,
+  ) {
+    final colors = theme.colorScheme;
+    final title =
+        (comparison['title'] ?? 'AI Side-by-Side Product Comparison').toString();
+    final rawRows = comparison['rows'] is List
+        ? List<Map<String, dynamic>>.from(
+            (comparison['rows'] as List)
+                .whereType<Map>()
+                .map((m) => Map<String, dynamic>.from(m)),
+          )
+        : const <Map<String, dynamic>>[];
+
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 18, top: 8),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: colors.surfaceContainerLowest,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: colors.primary.withValues(alpha: 0.35),
+          width: 1.5,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: colors.primary.withValues(alpha: 0.08),
+            blurRadius: 16,
+            offset: const Offset(0, 5),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: colors.primaryContainer,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Icon(
+                  Icons.compare_arrows_rounded,
+                  color: colors.onPrimaryContainer,
+                  size: 20,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: GoogleFonts.plusJakartaSans(
+                        fontWeight: FontWeight.w800,
+                        fontSize: 15.5,
+                        color: colors.onSurface,
+                      ),
+                    ),
+                    Text(
+                      'Normalized on Live Price, AI Trust Score, 3D Studio Twin & Stock',
+                      style: GoogleFonts.inter(
+                        fontSize: 11.5,
+                        color: colors.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: rawRows.map((row) {
+                final pid = (row['id'] as num?)?.toInt() ?? 0;
+                final name = (row['name'] ?? 'Product').toString();
+                final price = (row['price'] as num?)?.toDouble() ?? 0.0;
+                final trust = (row['trust_rating'] as num?)?.toDouble() ?? 4.8;
+                final has3D = row['has_3d'] == true || Catalog3D.has(pid);
+                final stockStatus =
+                    (row['stock_status'] ?? 'In Stock').toString();
+                final bestFor =
+                    (row['best_for'] ?? 'Verified Choice').toString();
+                final badge = row['badge']?.toString();
+                final imageUrl = (row['image_url'] ?? '').toString();
+                final matchingProd = products
+                    .where((p) => p.id == pid)
+                    .firstOrNull ??
+                    Product(
+                      id: pid,
+                      name: name,
+                      description: (row['key_features'] ?? '').toString(),
+                      price: price,
+                      imageUrl: imageUrl,
+                      category: (row['category'] ?? 'CATALOG').toString(),
+                      rating: trust,
+                      reviews: 12,
+                    );
+
+                final isTopBadge = badge != null && badge.contains('TOP');
+
+                return Container(
+                  width: 245,
+                  margin: const EdgeInsets.only(right: 12),
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: colors.surface,
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(
+                      color: badge != null
+                          ? (isTopBadge
+                                ? colors.primary
+                                : const Color(0xFF10B981))
+                          : colors.outlineVariant.withValues(alpha: 0.45),
+                      width: badge != null ? 1.8 : 1.0,
+                    ),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      if (badge != null)
+                        Container(
+                          margin: const EdgeInsets.only(bottom: 8),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 9,
+                            vertical: 4,
+                          ),
+                          decoration: BoxDecoration(
+                            color: isTopBadge
+                                ? colors.primary
+                                : const Color(0xFF10B981),
+                            borderRadius: BorderRadius.circular(999),
+                          ),
+                          child: Text(
+                            badge,
+                            style: GoogleFonts.plusJakartaSans(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w800,
+                              color: Colors.white,
+                            ),
+                          ),
+                        ),
+                      SizedBox(
+                        height: 110,
+                        width: double.infinity,
+                        child: StudioProductImage(
+                          productId: pid,
+                          imageUrl: imageUrl,
+                          padding: 8.0,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      Text(
+                        name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: GoogleFonts.plusJakartaSans(
+                          fontWeight: FontWeight.w800,
+                          fontSize: 14,
+                          color: colors.onSurface,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        currency.format(price),
+                        style: GoogleFonts.plusJakartaSans(
+                          fontWeight: FontWeight.w900,
+                          fontSize: 17,
+                          color: colors.primary,
+                        ),
+                      ),
+                      const Divider(height: 16),
+                      _cmpSpecRow(
+                        'AI Trust',
+                        '${trust.toStringAsFixed(1)} ★ Verified',
+                        colors,
+                        valueColor: const Color(0xFF10B981),
+                      ),
+                      _cmpSpecRow(
+                        '3D Studio',
+                        has3D ? '3D GLB Ready' : '2D Studio',
+                        colors,
+                        valueColor: has3D ? const Color(0xFF00ACC1) : null,
+                      ),
+                      _cmpSpecRow('Availability', stockStatus, colors),
+                      _cmpSpecRow('Best For', bestFor, colors),
+                      const SizedBox(height: 10),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: SizedBox(
+                              height: 34,
+                              child: FilledButton.icon(
+                                onPressed: () {
+                                  context
+                                      .read<CartProvider>()
+                                      .addToCart(matchingProd);
+                                  CustomToast.show(
+                                    context,
+                                    'Added "${matchingProd.name}" to cart!',
+                                  );
+                                },
+                                icon: const Icon(
+                                  Icons.add_shopping_cart_rounded,
+                                  size: 14,
+                                ),
+                                label: const Text(
+                                  'Add',
+                                  style: TextStyle(
+                                    fontSize: 11.5,
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                          SizedBox(
+                            height: 34,
+                            child: OutlinedButton(
+                              onPressed: () => context.push('/product/$pid'),
+                              child: Text(
+                                has3D ? '3D / View' : 'Details',
+                                style: const TextStyle(fontSize: 11.5),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                );
+              }).toList(),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _cmpSpecRow(
+    String label,
+    String value,
+    ColorScheme colors, {
+    Color? valueColor,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 5),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(
+            label,
+            style: GoogleFonts.inter(
+              fontSize: 11,
+              color: colors.onSurfaceVariant,
+            ),
+          ),
+          const SizedBox(width: 6),
+          Flexible(
+            child: Text(
+              value,
+              textAlign: TextAlign.end,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: GoogleFonts.plusJakartaSans(
+                fontSize: 11,
+                fontWeight: FontWeight.w800,
+                color: valueColor ?? colors.onSurface,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Phase 1.2: Rich Interactive Product Cards inside CTRL-X Chat
+  /// Includes thumbnail, live price, star/trust badge, one-tap "Add to Cart",
+  /// "3D View", and "Details" buttons.
+  Widget _buildInteractiveChatProductCard(
+    Product prod,
+    ThemeData theme,
+    CurrencyProvider currency,
+  ) {
+    final colors = theme.colorScheme;
+    final has3D = Catalog3D.has(prod.id);
+
+    return Container(
+      width: 228,
+      margin: const EdgeInsets.only(right: 14),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: colors.surfaceContainerLowest,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(
+          color: colors.outlineVariant.withValues(alpha: 0.45),
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.05),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: InkWell(
+              borderRadius: BorderRadius.circular(14),
+              onTap: () => context.push('/product/${prod.id}'),
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  StudioProductImage(
+                    productId: prod.id,
+                    imageUrl: prod.imageUrl,
+                    padding: 10.0,
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  Positioned(
+                    top: 7,
+                    left: 7,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 7,
+                        vertical: 3,
+                      ),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF10B981).withValues(alpha: 0.92),
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Text(
+                        '${prod.rating.toStringAsFixed(1)}★ Trust',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 10,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ),
+                  ),
+                  if (has3D)
+                    Positioned(
+                      top: 7,
+                      right: 7,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 7,
+                          vertical: 3,
+                        ),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF0B132B),
+                          borderRadius: BorderRadius.circular(6),
+                          border: Border.all(color: const Color(0xFF00E5FF)),
+                        ),
+                        child: const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.view_in_ar_rounded,
+                              size: 11,
+                              color: Color(0xFF00E5FF),
+                            ),
+                            SizedBox(width: 3),
+                            Text(
+                              '3D',
+                              style: TextStyle(
+                                color: Color(0xFF00E5FF),
+                                fontSize: 9.5,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 10),
+          Text(
+            prod.name,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: GoogleFonts.plusJakartaSans(
+              fontWeight: FontWeight.w800,
+              fontSize: 13.5,
+              color: colors.onSurface,
+            ),
+          ),
+          const SizedBox(height: 2),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                currency.format(prod.price),
+                style: GoogleFonts.plusJakartaSans(
+                  fontWeight: FontWeight.w900,
+                  fontSize: 15.5,
+                  color: colors.primary,
+                ),
+              ),
+              Text(
+                prod.stock > 0 ? 'In Stock (${prod.stock})' : 'Out of Stock',
+                style: GoogleFonts.inter(
+                  fontSize: 10.5,
+                  fontWeight: FontWeight.w600,
+                  color: prod.stock > 0
+                      ? const Color(0xFF10B981)
+                      : Colors.redAccent,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: SizedBox(
+                  height: 34,
+                  child: FilledButton.icon(
+                    onPressed: prod.stock <= 0
+                        ? null
+                        : () {
+                            context.read<CartProvider>().addToCart(prod);
+                            CustomToast.show(
+                              context,
+                              'Added "${prod.name}" to cart!',
+                            );
+                          },
+                    icon: const Icon(
+                      Icons.add_shopping_cart_rounded,
+                      size: 14,
+                    ),
+                    label: const Text(
+                      'Add to Cart',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 6),
+              SizedBox(
+                height: 34,
+                child: OutlinedButton(
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 10),
+                  ),
+                  onPressed: () => context.push('/product/${prod.id}'),
+                  child: Text(
+                    has3D ? '3D View' : 'Details',
+                    style: const TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildOrderTrackerCard(
     Map<String, dynamic> orderDetails,
     ThemeData theme,
+    CurrencyProvider currency,
   ) {
     final order = orderDetails['order'] is Map
         ? Map<String, dynamic>.from(orderDetails['order'] as Map)
         : <String, dynamic>{};
     final orderId = (order['order_id'] ?? 'N/A').toString();
     final status =
-        (order['overall_status'] ?? order['status'] ?? 'PROCESSING')
-            .toString();
+        (order['overall_status'] ?? order['status'] ?? 'PROCESSING').toString();
     final total = (order['total'] as num?)?.toDouble() ?? 0.0;
     final trackingNumbers = order['tracking_numbers'] is List
         ? List<dynamic>.from(order['tracking_numbers'] as List)
@@ -317,19 +797,12 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
       margin: const EdgeInsets.only(bottom: 16, top: 4),
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: theme.cardTheme.color ?? theme.colorScheme.surface,
+        color: theme.colorScheme.surfaceContainerLowest,
         borderRadius: BorderRadius.circular(16),
         border: Border.all(
-          color: theme.primaryColor.withOpacity(0.3),
+          color: theme.primaryColor.withValues(alpha: 0.3),
           width: 1.5,
         ),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.04),
-            blurRadius: 8,
-            offset: const Offset(0, 4),
-          ),
-        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -360,7 +833,7 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
                   vertical: 4,
                 ),
                 decoration: BoxDecoration(
-                  color: Colors.amber.withOpacity(0.2),
+                  color: Colors.amber.withValues(alpha: 0.2),
                   borderRadius: BorderRadius.circular(8),
                 ),
                 child: Text(
@@ -383,7 +856,7 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
                 style: TextStyle(color: Colors.grey, fontSize: 13),
               ),
               Text(
-                "\$${total.toStringAsFixed(2)}",
+                currency.format(total),
                 style: const TextStyle(
                   fontWeight: FontWeight.bold,
                   fontSize: 14,
@@ -439,8 +912,7 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
           if (items.isNotEmpty) ...[
             const Divider(height: 18),
             ...items.whereType<Map>().map((item) {
-              final pName =
-                  (item['product_name'] ?? 'Item').toString();
+              final pName = (item['product_name'] ?? 'Item').toString();
               final qty = (item['quantity'] ?? 1).toString();
               final fType =
                   (item['fulfillment_type'] ?? 'IN_HOUSE').toString();
@@ -451,7 +923,7 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
                   children: [
                     Expanded(
                       child: Text(
-                        '$pName (x$qty)',
+                        '$pName (×$qty)',
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
@@ -478,20 +950,14 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
     );
   }
 
-  static const List<IconData> _promptIcons = [
-    Icons.auto_awesome_rounded,
-    Icons.shopping_bag_outlined,
-    Icons.checkroom_rounded,
-    Icons.directions_run_rounded,
-    Icons.policy_outlined,
-  ];
-
   Widget _buildBundleCard(
     Map<String, dynamic> bundle,
     List<Product> bundleProducts,
     ThemeData theme,
+    CurrencyProvider currency,
   ) {
-    final title = (bundle['title'] ?? 'CTRL-X Trust-Verified Bundle').toString();
+    final title =
+        (bundle['title'] ?? 'CTRL-X Trust-Verified Bundle').toString();
     final totalPrice = (bundle['total_price'] as num?)?.toDouble() ?? 0.0;
     final budget = (bundle['budget'] as num?)?.toDouble();
     final budgetRemaining =
@@ -505,19 +971,12 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
       margin: const EdgeInsets.only(bottom: 20, top: 6),
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: theme.cardTheme.color ?? theme.colorScheme.surface,
+        color: theme.colorScheme.surfaceContainerLowest,
         borderRadius: BorderRadius.circular(18),
         border: Border.all(
           color: theme.primaryColor.withValues(alpha: 0.35),
           width: 1.5,
         ),
-        boxShadow: [
-          BoxShadow(
-            color: theme.primaryColor.withValues(alpha: 0.08),
-            blurRadius: 14,
-            offset: const Offset(0, 5),
-          ),
-        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -568,7 +1027,7 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
                 ),
                 child: Text(
                   budget != null
-                      ? '\$${budgetRemaining.toStringAsFixed(2)} Under Budget'
+                      ? '${currency.format(budgetRemaining)} Under Budget'
                       : 'Trust Verified',
                   style: const TextStyle(
                     color: Colors.green,
@@ -596,26 +1055,14 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
               padding: const EdgeInsets.only(bottom: 10),
               child: Row(
                 children: [
-                  Container(
-                    width: 46,
-                    height: 46,
-                    decoration: BoxDecoration(
-                      color: theme.colorScheme.surfaceContainerHighest
-                          .withValues(alpha: 0.4),
+                  SizedBox(
+                    width: 48,
+                    height: 48,
+                    child: StudioProductImage(
+                      productId: prod.id,
+                      imageUrl: prod.imageUrl,
+                      padding: 4.0,
                       borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(10),
-                      child: prod.imageUrl.isNotEmpty
-                          ? Image.network(
-                              prod.imageUrl,
-                              fit: BoxFit.contain,
-                              errorBuilder: (_, __, ___) => const Icon(
-                                Icons.inventory_2_outlined,
-                                size: 20,
-                              ),
-                            )
-                          : const Icon(Icons.inventory_2_outlined, size: 20),
                     ),
                   ),
                   const SizedBox(width: 10),
@@ -662,7 +1109,7 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
                     ),
                   ),
                   Text(
-                    '\$${prod.price.toStringAsFixed(2)}',
+                    currency.format(prod.price),
                     style: TextStyle(
                       fontSize: 13.5,
                       fontWeight: FontWeight.w800,
@@ -685,7 +1132,7 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
                     style: TextStyle(fontSize: 11, color: Colors.grey),
                   ),
                   Text(
-                    '\$${totalPrice.toStringAsFixed(2)}',
+                    currency.format(totalPrice),
                     style: TextStyle(
                       fontSize: 18,
                       fontWeight: FontWeight.w900,
@@ -694,7 +1141,7 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
                   ),
                 ],
               ),
-              ElevatedButton.icon(
+              FilledButton.icon(
                 onPressed: bundleProducts.isEmpty
                     ? null
                     : () {
@@ -702,14 +1149,9 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
                         for (final item in bundleProducts) {
                           cart.addToCart(item);
                         }
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content: Text(
-                              'Added all ${bundleProducts.length} bundle items (\$${totalPrice.toStringAsFixed(2)}) to cart!',
-                            ),
-                            backgroundColor: theme.primaryColor,
-                            behavior: SnackBarBehavior.floating,
-                          ),
+                        CustomToast.show(
+                          context,
+                          'Added all ${bundleProducts.length} bundle items (${currency.format(totalPrice)}) to cart!',
                         );
                       },
                 icon: const Icon(Icons.add_shopping_cart_rounded, size: 17),
@@ -733,8 +1175,11 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
           colors: [Color(0xFF42A5F5), Color(0xFF00ACC1)],
         ),
       ),
-      child: const Icon(Icons.auto_awesome_rounded,
-          color: Colors.white, size: 16),
+      child: const Icon(
+        Icons.auto_awesome_rounded,
+        color: Colors.white,
+        size: 16,
+      ),
     );
   }
 
@@ -745,7 +1190,7 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
     final bubble = Container(
       margin: const EdgeInsets.only(bottom: 8),
       padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 11),
-      constraints: BoxConstraints(maxWidth: maxWidth.clamp(220.0, 560.0)),
+      constraints: BoxConstraints(maxWidth: maxWidth.clamp(220.0, 580.0)),
       decoration: BoxDecoration(
         gradient: isUser
             ? const LinearGradient(
@@ -758,31 +1203,23 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
             ? null
             : (isDark
                 ? Colors.white.withValues(alpha: 0.08)
-                : Colors.white.withValues(alpha: 0.92)),
+                : Colors.white.withValues(alpha: 0.94)),
         border: isUser
             ? null
-            : Border.all(color: theme.primaryColor.withValues(alpha: 0.14)),
+            : Border.all(color: theme.primaryColor.withValues(alpha: 0.16)),
         borderRadius: BorderRadius.only(
           topLeft: const Radius.circular(18),
           topRight: const Radius.circular(18),
           bottomLeft: Radius.circular(isUser ? 18 : 4),
           bottomRight: Radius.circular(isUser ? 4 : 18),
         ),
-        boxShadow: [
-          BoxShadow(
-            color: (isUser ? const Color(0xFF1E88E5) : Colors.black)
-                .withValues(alpha: isUser ? 0.22 : 0.05),
-            blurRadius: 10,
-            offset: const Offset(0, 3),
-          ),
-        ],
       ),
       child: SelectableText(
         msg.text,
         style: TextStyle(
-          fontSize: 14.5,
-          height: 1.45,
-          color: isUser ? Colors.white : theme.textTheme.bodyLarge?.color,
+          fontSize: 14.2,
+          height: 1.48,
+          color: isUser ? Colors.white : theme.colorScheme.onSurface,
         ),
       ),
     );
@@ -828,19 +1265,19 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
             FadeSlideIn(
               delay: const Duration(milliseconds: 260),
               child: Text(
-                'Your AI shopping agent. Find products, build your cart,\n'
-                'track orders and learn store policies.',
+                'Occasion-aware AI shopping & comparison assistant.\n'
+                'Plan setups, compare live prices & 3D twins, build bundles, and track orders.',
                 textAlign: TextAlign.center,
                 style: TextStyle(
                   color: theme.colorScheme.onSurfaceVariant,
-                  fontSize: 12.5,
+                  fontSize: 12.8,
                   height: 1.5,
                 ),
               ),
             ),
             const SizedBox(height: 26),
             ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 520),
+              constraints: const BoxConstraints(maxWidth: 560),
               child: Wrap(
                 spacing: 10,
                 runSpacing: 10,
@@ -848,7 +1285,7 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
                 children: List.generate(_quickPrompts.length, (i) {
                   final prompt = _quickPrompts[i];
                   return FadeSlideIn(
-                    delay: Duration(milliseconds: 360 + i * 90),
+                    delay: Duration(milliseconds: 320 + i * 70),
                     child: PressableScale(
                       onTap: _isLoading ? null : () => _sendPromptText(prompt),
                       child: Container(
@@ -863,14 +1300,6 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
                           border: Border.all(
                             color: theme.primaryColor.withValues(alpha: 0.22),
                           ),
-                          boxShadow: [
-                            BoxShadow(
-                              color:
-                                  theme.primaryColor.withValues(alpha: 0.07),
-                              blurRadius: 10,
-                              offset: const Offset(0, 4),
-                            ),
-                          ],
                         ),
                         child: Row(
                           mainAxisSize: MainAxisSize.min,
@@ -885,7 +1314,7 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
                               prompt,
                               style: const TextStyle(
                                 fontSize: 12.5,
-                                fontWeight: FontWeight.w600,
+                                fontWeight: FontWeight.w700,
                               ),
                             ),
                           ],
@@ -902,10 +1331,42 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
     );
   }
 
+  Widget _buildQuickPromptBar(ThemeData theme) {
+    return SizedBox(
+      height: 38,
+      child: ListView.separated(
+        padding: const EdgeInsets.symmetric(horizontal: 14),
+        scrollDirection: Axis.horizontal,
+        itemCount: _quickPrompts.length,
+        separatorBuilder: (_, _) => const SizedBox(width: 8),
+        itemBuilder: (context, index) {
+          final prompt = _quickPrompts[index];
+          return ActionChip(
+            visualDensity: VisualDensity.compact,
+            avatar: Icon(
+              _promptIcons[index % _promptIcons.length],
+              size: 14,
+              color: theme.primaryColor,
+            ),
+            label: Text(
+              prompt,
+              style: const TextStyle(
+                fontSize: 11.5,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            onPressed: _isLoading ? null : () => _sendPromptText(prompt),
+          );
+        },
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
+    final currency = context.watch<CurrencyProvider>();
 
     return Scaffold(
       extendBodyBehindAppBar: true,
@@ -920,8 +1381,8 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
           mainAxisSize: MainAxisSize.min,
           children: [
             const Text(
-              'CTRL‑X Assistant',
-              style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16),
+              'CTRL‑X AI Shopping & Comparison Agent',
+              style: TextStyle(fontWeight: FontWeight.w800, fontSize: 15.5),
             ),
             Row(
               mainAxisSize: MainAxisSize.min,
@@ -929,14 +1390,18 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
                 Container(
                   width: 6,
                   height: 6,
-                  decoration: const BoxDecoration(
-                    color: Color(0xFF22C55E),
+                  decoration: BoxDecoration(
+                    color: _isLoading
+                        ? const Color(0xFF00E5FF)
+                        : const Color(0xFF22C55E),
                     shape: BoxShape.circle,
                   ),
                 ),
                 const SizedBox(width: 5),
                 Text(
-                  _isLoading ? 'thinking…' : 'online',
+                  _isLoading
+                      ? 'expanding query & ranking live catalog…'
+                      : 'online • Supabase grounded',
                   style: TextStyle(
                     fontSize: 10,
                     fontWeight: FontWeight.w600,
@@ -959,7 +1424,7 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
           ),
         ),
         child: SnowfallBackground(
-          flakes: 26,
+          flakes: 22,
           color: isDark ? Colors.white : const Color(0xFF9CC9F2),
           child: Column(
             children: [
@@ -977,7 +1442,7 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
                           return FadeSlideIn(
                             key: ValueKey('msg-$index'),
                             offset: Offset(isUser ? 0.06 : -0.06, 0.04),
-                            duration: const Duration(milliseconds: 380),
+                            duration: const Duration(milliseconds: 340),
                             child: Column(
                               crossAxisAlignment: isUser
                                   ? CrossAxisAlignment.end
@@ -990,7 +1455,16 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
                                   ),
                                 _buildBubble(msg, theme, isDark),
 
-                                // Bundle Card Injection (Phase 2)
+                                // 1. Side-by-Side Comparison Matrix Card (Phase 1.2)
+                                if (!isUser && msg.comparison != null)
+                                  _buildComparisonMatrixCard(
+                                    msg.comparison!,
+                                    msg.suggestedProducts,
+                                    theme,
+                                    currency,
+                                  ),
+
+                                // 2. Bundle Card Injection
                                 if (!isUser &&
                                     msg.bundle != null &&
                                     msg.suggestedProducts.isNotEmpty)
@@ -998,17 +1472,18 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
                                     msg.bundle!,
                                     msg.suggestedProducts,
                                     theme,
+                                    currency,
                                   ),
 
-                                // Product Carousel Injection
+                                // 3. Interactive Product Cards Carousel
                                 if (!isUser &&
-                                    msg.dataType == "product_list" &&
                                     msg.bundle == null &&
+                                    msg.comparison == null &&
                                     msg.suggestedProducts.isNotEmpty)
                                   Container(
-                                    height: 300,
+                                    height: 292,
                                     margin: const EdgeInsets.only(
-                                      bottom: 24,
+                                      bottom: 20,
                                       top: 8,
                                     ),
                                     child: ListView.builder(
@@ -1019,43 +1494,32 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
                                             msg.suggestedProducts[productIndex];
                                         return FadeSlideIn.staggered(
                                           index: productIndex,
-                                          child: Container(
-                                            width: 200,
-                                            margin: const EdgeInsets.only(
-                                              right: 16,
-                                            ),
-                                            child: ProductCard(
-                                              product: prod,
-                                              heroTag:
-                                                  'ctrlx-product-${prod.id}-$index-$productIndex',
-                                              onProductDeleted: () {},
-                                            ),
+                                          child:
+                                              _buildInteractiveChatProductCard(
+                                            prod,
+                                            theme,
+                                            currency,
                                           ),
                                         );
                                       },
                                     ),
                                   ),
 
-                                // Order Tracker Card Injection
+                                // 4. Order Tracker Card Injection
                                 if (!isUser &&
                                     msg.dataType == "order_tracker" &&
                                     msg.orderAction != null)
                                   _buildOrderTrackerCard(
                                     msg.orderAction!,
                                     theme,
+                                    currency,
                                   ),
-
-                                if (!isUser &&
-                                    msg.dataType != "product_list" &&
-                                    msg.dataType != "order_tracker")
-                                  const SizedBox(height: 10),
                               ],
                             ),
                           );
                         },
                       ),
               ),
-
               if (_isLoading)
                 Padding(
                   padding: const EdgeInsets.fromLTRB(14, 0, 14, 8),
@@ -1075,12 +1539,29 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
                             color: theme.primaryColor.withValues(alpha: 0.14),
                           ),
                         ),
-                        child: TypingDots(color: theme.primaryColor),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            TypingDots(color: theme.primaryColor),
+                            const SizedBox(width: 10),
+                            Text(
+                              'Running hybrid catalog & trust analysis…',
+                              style: TextStyle(
+                                fontSize: 11.5,
+                                fontWeight: FontWeight.w600,
+                                color: theme.colorScheme.onSurfaceVariant,
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
                     ],
                   ),
                 ),
-
+              if (_messages.isNotEmpty) ...[
+                _buildQuickPromptBar(theme),
+                const SizedBox(height: 6),
+              ],
               Container(
                 margin: const EdgeInsets.fromLTRB(12, 0, 12, 10),
                 padding: const EdgeInsets.fromLTRB(6, 6, 6, 6),
@@ -1090,13 +1571,6 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
                   border: Border.all(
                     color: theme.primaryColor.withValues(alpha: 0.2),
                   ),
-                  boxShadow: [
-                    BoxShadow(
-                      color: theme.primaryColor.withValues(alpha: 0.12),
-                      blurRadius: 20,
-                      offset: const Offset(0, 6),
-                    ),
-                  ],
                 ),
                 child: SafeArea(
                   top: false,
@@ -1114,9 +1588,9 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
                           },
                           decoration: InputDecoration(
                             hintText:
-                                'Ask about products, orders, or tracking...',
+                                'Ask "I need a party", "Compare best audio", or "Build a \$500 bundle"...',
                             hintStyle: TextStyle(
-                              fontSize: 13,
+                              fontSize: 12.8,
                               color: theme.textTheme.bodySmall?.color,
                             ),
                             filled: false,
@@ -1125,8 +1599,6 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
                               vertical: 12,
                             ),
                             border: InputBorder.none,
-                            enabledBorder: InputBorder.none,
-                            focusedBorder: InputBorder.none,
                           ),
                         ),
                       ),

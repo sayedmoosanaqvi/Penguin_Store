@@ -341,6 +341,10 @@ def _extract_agent_payload(
     if not isinstance(bundle, dict):
         bundle = None
 
+    comparison = result.get("comparison")
+    if not isinstance(comparison, dict):
+        comparison = None
+
     routed_agent = result.get("routed_agent") or result.get("next_agent") or "CTRL-X"
 
     return {
@@ -349,6 +353,7 @@ def _extract_agent_payload(
         "data_type": data_type,
         "suggested_products": suggested_products,
         "bundle": bundle,
+        "comparison": comparison,
         "cart_action": cart_action,
         "order_action": order_action,
         "routed_agent": routed_agent,

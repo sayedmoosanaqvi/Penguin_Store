@@ -111,6 +111,8 @@ class AgentState(TypedDict):
 
     bundle: Optional[dict[str, Any]]
 
+    comparison: Optional[dict[str, Any]]
+
     reasoning_steps: Optional[list[dict[str, Any]]]
 
     action_logs: Optional[list[dict[str, Any]]]
@@ -525,9 +527,18 @@ def _match_product_from_recent(
     if not recent_products:
         return None
 
-    # Check ordinal reference like 'first one'
-    if "first" in q_lower and len(recent_products) >= 1:
+    # Check ordinal reference like 'first one', 'second one', 'third one', 'last one'
+    if any(w in q_lower for w in ("first", "1st")) and len(recent_products) >= 1:
         pid = recent_products[0].get("id")
+        return int(pid) if pid is not None else None
+    if any(w in q_lower for w in ("second", "2nd")) and len(recent_products) >= 2:
+        pid = recent_products[1].get("id")
+        return int(pid) if pid is not None else None
+    if any(w in q_lower for w in ("third", "3rd")) and len(recent_products) >= 3:
+        pid = recent_products[2].get("id")
+        return int(pid) if pid is not None else None
+    if "last" in q_lower and len(recent_products) >= 1:
+        pid = recent_products[-1].get("id")
         return int(pid) if pid is not None else None
 
     # Check name token overlap
@@ -854,16 +865,22 @@ def _enrich_and_rank_by_trust(
     products: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     """
-    Enrich product dictionaries with Trust-Weighted Ratings and Verified-Authentic
-    percentages from `product_review_insights`, and sort descending by trust_weighted_rating.
+    Enrich product dictionaries with Trust-Weighted Ratings, 3D model flags,
+    and Verified-Authentic percentages without blocking on TCP port 5432.
     """
     if not products:
         return []
 
+    from app.core.supabase_rest import (
+        fetch_3d_catalog_ids_https,
+        is_pg_tcp_reachable,
+    )
+
+    active_3d_ids = set(fetch_3d_catalog_ids_https())
     pids = [int(p["id"]) for p in products if isinstance(p, dict) and p.get("id")]
     insights_map: dict[int, tuple[float, float]] = {}
 
-    if pids:
+    if pids and is_pg_tcp_reachable():
         db = SessionLocal()
         try:
             rows = (
@@ -897,6 +914,7 @@ def _enrich_and_rank_by_trust(
             auth_pct = 96.0
         item["trust_weighted_rating"] = tw_r
         item["verified_authentic_percent"] = auth_pct
+        item["has_3d_model"] = bool(item.get("has_3d_model")) or (pid in active_3d_ids)
         item["selection_reason"] = (
             f"Prioritized for {tw_r:.1f}★ Trust-Weighted Rating "
             f"({auth_pct:.0f}% verified authentic) at ${float(item.get('price') or 0):.2f}."
@@ -906,6 +924,7 @@ def _enrich_and_rank_by_trust(
     enriched.sort(
         key=lambda x: (
             float(x.get("trust_weighted_rating") or 0.0),
+            1 if x.get("has_3d_model") else 0,
             1 if x.get("is_featured") else 0,
             -float(x.get("price") or 0.0),
         ),
@@ -1020,51 +1039,13 @@ def _build_autonomous_bundle(
     )
 
     t1 = time.perf_counter()
-    db = SessionLocal()
-    catalog_rows: list[dict[str, Any]] = []
-    try:
-        prods = (
-            db.query(Product)
-            .options(
-                load_only(
-                    Product.id,
-                    Product.name,
-                    Product.description,
-                    Product.price,
-                    Product.original_price,
-                    Product.image_url,
-                    Product.category,
-                    Product.rating,
-                    Product.reviews,
-                    Product.discount_percent,
-                    Product.is_featured,
-                    Product.stock,
-                    Product.fulfillment_type,
-                )
-            )
-            .filter(Product.stock > 0)
-            .all()
-        )
-        for p in prods:
-            catalog_rows.append(
-                {
-                    "id": p.id,
-                    "name": p.name,
-                    "description": p.description or "",
-                    "price": float(p.price or 0.0),
-                    "original_price": float(p.original_price) if p.original_price is not None else None,
-                    "image_url": p.image_url or "",
-                    "category": p.category or "CATALOG",
-                    "rating": float(p.rating or 4.8),
-                    "reviews": int(p.reviews or 12),
-                    "discount_percent": p.discount_percent,
-                    "is_featured": bool(p.is_featured),
-                    "stock": int(p.stock or 10),
-                    "fulfillment_type": p.fulfillment_type or "IN_HOUSE",
-                }
-            )
-    finally:
-        db.close()
+    from app.core.supabase_rest import fetch_products_https
+
+    catalog_rows: list[dict[str, Any]] = [
+        dict(p)
+        for p in fetch_products_https()
+        if int(p.get("stock") if p.get("stock") is not None else 50) > 0
+    ]
 
     steps.append(
         _make_reasoning_step(
@@ -1461,7 +1442,7 @@ def retrieval_agent(
             }
 
     # -----------------------------------------------------------------------
-    # PRODUCT COMPARISON WORKFLOW
+    # PRODUCT COMPARISON WORKFLOW (PHASE 1.2)
     # -----------------------------------------------------------------------
     q_cmp = user_query.lower()
     if any(
@@ -1472,6 +1453,8 @@ def retrieval_agent(
             "difference between",
             " vs ",
             "which is better",
+            "which headphones are better",
+            "better for the price",
             "side by side",
         )
     ):
@@ -1479,39 +1462,69 @@ def retrieval_agent(
         recent = state.get("suggested_products") or []
         use_recent_ids = (
             len(recent) >= 2
-            and any(w in q_cmp for w in ("these", "them", "above", "shown", "suggested"))
+            and any(
+                w in q_cmp
+                for w in (
+                    "these",
+                    "them",
+                    "above",
+                    "shown",
+                    "suggested",
+                    "first two",
+                    "top 2",
+                    "top 3",
+                )
+            )
         )
+        limit_cnt = 2 if "first two" in q_cmp or "top 2" in q_cmp else 3
         clean_query = re.sub(
-            r"\b(compare|comparison|difference|between|which|is|better|side|by|vs|products|items|please|the|and)\b",
+            r"\b(compare|comparison|difference|between|which|is|are|better|for|price|side|by|vs|products|items|please|the|and|top)\b",
             " ",
             q_cmp,
         )
         clean_query = " ".join(clean_query.split())
         raw_cmp = compare_products.invoke(
             {
-                "product_ids": [p["id"] for p in recent[:4] if isinstance(p, dict) and p.get("id")]
+                "product_ids": [
+                    p["id"]
+                    for p in recent[:limit_cnt]
+                    if isinstance(p, dict) and p.get("id")
+                ]
                 if use_recent_ids
                 else None,
                 "query": None if use_recent_ids else (clean_query or user_query),
-                "limit": 4,
+                "limit": limit_cnt,
             }
         )
         cmp_data = _parse_json_dict(raw_cmp)
         compared_products = _enrich_and_rank_by_trust(cmp_data.get("products") or [])
+
         reasoning_steps.append(
             _make_reasoning_step(
-                "Price & Trust Comparison",
-                f"Compared {len(compared_products)} products on price, 3D support, and Trust-Weighted Rating",
+                "Price & Trust Comparison Matrix",
+                f"Compared {len(compared_products)} products on live price, 3D support, stock, and Trust-Weighted Rating",
                 (time.perf_counter() - t_cmp) * 1000.0,
             )
         )
 
         if compared_products:
             t_llm = time.perf_counter()
+            top_rated = max(
+                compared_products,
+                key=lambda x: (
+                    float(x.get("trust_weighted_rating") or 4.8),
+                    -float(x.get("price") or 0.0),
+                ),
+            )
+            cheapest = min(
+                compared_products,
+                key=lambda x: float(x.get("price") or 999999.0),
+            )
+
             cmp_prompt = (
                 "You are the Shopping Agent for Penguin Store. Compare the real database products below "
-                "concisely on price, discount, trust_weighted_rating, stock, fulfillment (IN_HOUSE vs DROPSHIP), and 3D availability. "
-                "Explicitly mention why the top product is recommended based on its Trust-Weighted Rating and value."
+                "concisely on price, trust_weighted_rating, stock, and 3D availability. "
+                "Explicitly highlight the Top Rated winner and Best Value option using ONLY the database facts."
             )
             cmp_reply = _invoke_llm_safe(
                 [
@@ -1527,31 +1540,74 @@ def retrieval_agent(
             )
             final_cmp_text = _message_text(cmp_reply) if cmp_reply is not None else ""
             if not final_cmp_text:
-                lines = ["Here is a side-by-side comparison prioritized by AI Trust-Weighted Rating:"]
+                lines = [
+                    f"I compared **{len(compared_products)} in-stock products** side-by-side. "
+                    f"**{top_rated.get('name')}** leads in AI Trust Rating (**{top_rated.get('trust_weighted_rating', 4.8)}★**), "
+                    f"while **{cheapest.get('name')}** (**${float(cheapest.get('price', 0)):.2f}**) is the Best Value pick:"
+                ]
                 for p in compared_products:
-                    view_3d = "3D Available" if p.get("has_3d_model") else "Standard View"
+                    view_3d = "3D Twin Ready" if p.get("has_3d_model") else "2D Studio"
                     lines.append(
-                        f"- **{p.get('name')}**: ${float(p.get('price', 0)):.2f} "
-                        f"| Trust Rating **{p.get('trust_weighted_rating', p.get('rating', 4.8))}★** "
-                        f"({p.get('reviews', 0)} reviews) "
-                        f"| Stock: {p.get('stock', 0)} | {p.get('fulfillment_type', 'IN_HOUSE')} | {view_3d}"
+                        f"- **{p.get('name')}** (${float(p.get('price', 0)):.2f}) — "
+                        f"**{p.get('trust_weighted_rating', 4.8)}★ Trust** | Stock: {p.get('stock', 50)} | {view_3d}"
                     )
                 final_cmp_text = "\n".join(lines)
+
+            comparison_rows = []
+            for p in compared_products:
+                pid = int(p.get("id") or 0)
+                is_top = pid == int(top_rated.get("id") or -1)
+                is_val = pid == int(cheapest.get("id") or -2) and not is_top
+                badge = "TOP RATED ★" if is_top else ("BEST VALUE" if is_val else None)
+                best_for = (
+                    "Highest AI Trust & Quality"
+                    if is_top
+                    else ("Best Price-to-Performance" if is_val else f"Verified {p.get('category', 'Pick')}")
+                )
+                stock_cnt = int(p.get("stock") if p.get("stock") is not None else 50)
+                comparison_rows.append(
+                    {
+                        "id": pid,
+                        "name": p.get("name"),
+                        "price": float(p.get("price") or 0.0),
+                        "category": p.get("category") or "CATALOG",
+                        "image_url": p.get("image_url") or "",
+                        "trust_rating": float(p.get("trust_weighted_rating") or 4.8),
+                        "verified_percent": float(p.get("verified_authentic_percent") or 96.0),
+                        "has_3d": bool(p.get("has_3d_model")),
+                        "stock": stock_cnt,
+                        "stock_status": "In Stock" if stock_cnt >= 10 else f"Only {stock_cnt} Left",
+                        "key_features": (str(p.get("description") or "Studio verified quality"))[:110],
+                        "best_for": best_for,
+                        "badge": badge,
+                    }
+                )
+
+            comparison_obj = {
+                "title": f"AI Side-by-Side Comparison ({len(compared_products)} Products)",
+                "winner_id": int(top_rated.get("id") or 0),
+                "winner_name": top_rated.get("name"),
+                "best_value_id": int(cheapest.get("id") or 0),
+                "best_value_name": cheapest.get("name"),
+                "verdict": final_cmp_text,
+                "rows": comparison_rows,
+            }
 
             reasoning_steps.append(
                 _make_reasoning_step(
                     "Grounded Comparison Synthesis",
-                    f"Recommended {compared_products[0].get('name', 'top match')} with {compared_products[0].get('trust_weighted_rating', 4.8)}★ trust score",
+                    f"Selected {top_rated.get('name')} as Top Rated ({top_rated.get('trust_weighted_rating', 4.8)}★) and {cheapest.get('name')} as Best Value",
                     (time.perf_counter() - t_llm) * 1000.0,
                 )
             )
 
             return {
                 "messages": [AIMessage(content=final_cmp_text)],
-                "routed_agent": "ShoppingAgent",
-                "data_type": "product_list",
+                "routed_agent": "ShoppingAgent (ComparisonEngine)",
+                "data_type": "comparison",
                 "suggested_products": compared_products,
                 "bundle": None,
+                "comparison": comparison_obj,
                 "cart_action": None,
                 "order_action": None,
                 "reasoning_steps": reasoning_steps,

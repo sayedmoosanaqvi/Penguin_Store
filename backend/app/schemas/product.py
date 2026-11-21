@@ -18,10 +18,10 @@ class ProductBase(BaseModel):
     reviews: Optional[int] = Field(default=0, ge=0)
     discount_percent: Optional[int] = Field(default=None, ge=0, le=95)
     is_featured: Optional[bool] = False
+    stock: Optional[int] = Field(default=50, ge=0, le=1_000_000)
 
 
 class ProductCreate(ProductBase):
-    stock: Optional[int] = Field(default=50, ge=0, le=1_000_000)
     fulfillment_type: Optional[str] = Field(default="IN_HOUSE", max_length=32)
 
 

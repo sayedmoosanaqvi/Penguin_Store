@@ -11,6 +11,11 @@ class Admin3DModelRow {
   final int id;
   final int productId;
   final String productName;
+  final String productImageUrl;
+  final double productPrice;
+  final String productCategory;
+  final int productStock;
+  final String productDescription;
   final String displayName;
   final String? variantName;
   final int? fileSizeBytes;
@@ -20,6 +25,11 @@ class Admin3DModelRow {
     required this.id,
     required this.productId,
     required this.productName,
+    this.productImageUrl = '',
+    this.productPrice = 0.0,
+    this.productCategory = '3D Models',
+    this.productStock = 50,
+    this.productDescription = '',
     required this.displayName,
     required this.variantName,
     required this.fileSizeBytes,
@@ -30,6 +40,11 @@ class Admin3DModelRow {
         id: (j['id'] as num).toInt(),
         productId: (j['product_id'] as num).toInt(),
         productName: (j['product_name'] ?? '').toString(),
+        productImageUrl: (j['product_image_url'] ?? '').toString(),
+        productPrice: (j['product_price'] as num?)?.toDouble() ?? 0.0,
+        productCategory: (j['product_category'] ?? '3D Models').toString(),
+        productStock: (j['product_stock'] as num?)?.toInt() ?? 50,
+        productDescription: (j['product_description'] ?? '').toString(),
         displayName: (j['display_name'] ?? '3D model').toString(),
         variantName: j['variant_name']?.toString(),
         fileSizeBytes: (j['file_size_bytes'] as num?)?.toInt(),
@@ -247,5 +262,35 @@ class Admin3DService {
       (d['file_size_bytes'] as num?)?.toInt() ?? 0,
       imageUrl: d['poster_url']?.toString(),
     );
+  }
+
+  /// Replaces an existing 3D product's 2D poster image in Supabase Storage
+  /// with a newly captured `<model-viewer>` studio thumbnail.
+  Future<String> updateProductPoster({
+    required int productId,
+    required Uint8List posterBytes,
+    String fileName = 'regenerated_3d_poster.png',
+  }) async {
+    final res = await sendMultipartWithProgress(
+      uri: Uri.parse('$_base/api/premium-3d/admin/products/$productId/poster'),
+      headers: await _headers(),
+      fields: const {},
+      files: [
+        MultipartUploadFile(
+          fieldName: 'poster',
+          fileName: fileName,
+          bytes: posterBytes,
+          contentType: 'image/png',
+        ),
+      ],
+      timeout: _timeout,
+    );
+
+    if (res.statusCode != 200) {
+      throw Exception(_detailFromBody(res.statusCode, res.body));
+    }
+
+    final d = jsonDecode(res.body) as Map;
+    return (d['image_url'] ?? '').toString();
   }
 }

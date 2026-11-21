@@ -200,6 +200,7 @@ def _normalize_product_dict(row: dict[str, Any]) -> dict[str, Any]:
         "reviews": int(row.get("reviews") or 0),
         "discount_percent": row.get("discount_percent"),
         "is_featured": bool(row.get("is_featured", False)),
+        "stock": int(row["stock"]) if row.get("stock") is not None else 50,
     }
 
 

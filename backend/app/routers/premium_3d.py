@@ -42,10 +42,10 @@ router = APIRouter(
 BUCKET = "penguin-store-3d"
 PUBLIC_IMAGE_BUCKET = "penguin-store-assets"
 
-# Signed URLs live 15 minutes and are cached server-side for 10 minutes so
-# opening a 3D model does not need a Supabase round-trip every time.
-SIGNED_URL_LIFETIME = 900
-SIGNED_URL_CACHE_SECONDS = 600
+# Signed URLs live 60 minutes (1 hour) and are cached server-side for 55 minutes
+# so opening or orbiting a 3D model never incurs redundant Supabase signing round-trips.
+SIGNED_URL_LIFETIME = 3600
+SIGNED_URL_CACHE_SECONDS = 3300
 _signed_url_cache: dict[int, tuple[str, float]] = {}
 _signed_url_lock = Lock()
 
@@ -1326,69 +1326,119 @@ def list_admin_models(
 ):
     from sqlalchemy.exc import OperationalError
     from app.core.supabase_rest import (
-        fetch_3d_showcase_https,
+        _get_all_3d_assets_cached,
+        _get_all_products_cached,
         is_pg_tcp_reachable,
         mark_pg_tcp_unreachable,
     )
 
-    if not is_pg_tcp_reachable():
-        showcase = fetch_3d_showcase_https(bucket=BUCKET)
+    def _build_from_https():
+        products_by_id = {int(p["id"]): p for p in _get_all_products_cached()}
+        assets = sorted(
+            _get_all_3d_assets_cached(),
+            key=lambda a: int(a.get("id") or 0),
+            reverse=True,
+        )
         items = []
-        for p in showcase.get("items", []):
-            for m in p.get("models", []):
-                items.append(
-                    {
-                        "id": m["id"],
-                        "product_id": p["id"],
-                        "product_name": p.get("name"),
-                        "display_name": m.get("display_name") or "3D View",
-                        "variant_name": m.get("variant_name") or "Default",
-                        "file_size_bytes": m.get("file_size_bytes"),
-                        "is_active": True,
-                        "created_at": None,
-                    }
-                )
+        for a in assets:
+            pid = int(a.get("product_id") or 0)
+            p = products_by_id.get(pid, {})
+            items.append(
+                {
+                    "id": int(a["id"]),
+                    "product_id": pid,
+                    "product_name": p.get("name") or f"Product #{pid}",
+                    "product_image_url": p.get("image_url") or "",
+                    "product_price": float(p.get("price") or 0.0),
+                    "product_category": p.get("category") or "3D Models",
+                    "product_stock": int(p.get("stock") if p.get("stock") is not None else 50),
+                    "product_description": p.get("description") or "",
+                    "display_name": a.get("display_name") or "3D View",
+                    "variant_name": a.get("variant_name") or "Default",
+                    "file_size_bytes": a.get("file_size_bytes"),
+                    "is_active": bool(a.get("is_active", True)),
+                    "created_at": a.get("created_at"),
+                }
+            )
         return {"items": items}
 
+    if not is_pg_tcp_reachable():
+        return _build_from_https()
+
     try:
-        rows = db.query(Product3DAsset, Product.name).join(
+        rows = db.query(Product3DAsset, Product).join(
             Product, Product.id == Product3DAsset.product_id
         ).order_by(Product3DAsset.id.desc()).all()
     except OperationalError:
         db.rollback()
         mark_pg_tcp_unreachable()
-        showcase = fetch_3d_showcase_https(bucket=BUCKET)
-        items = []
-        for p in showcase.get("items", []):
-            for m in p.get("models", []):
-                items.append(
-                    {
-                        "id": m["id"],
-                        "product_id": p["id"],
-                        "product_name": p.get("name"),
-                        "display_name": m.get("display_name") or "3D View",
-                        "variant_name": m.get("variant_name") or "Default",
-                        "file_size_bytes": m.get("file_size_bytes"),
-                        "is_active": True,
-                        "created_at": None,
-                    }
-                )
-        return {"items": items}
+        return _build_from_https()
 
     return {
         "items": [
             {
                 "id": a.id,
                 "product_id": a.product_id,
-                "product_name": name,
+                "product_name": p.name,
+                "product_image_url": p.image_url or "",
+                "product_price": float(p.price or 0.0),
+                "product_category": p.category or "3D Models",
+                "product_stock": int(p.stock if p.stock is not None else 50),
+                "product_description": p.description or "",
                 "display_name": a.display_name,
                 "variant_name": a.variant_name,
                 "file_size_bytes": a.file_size_bytes,
                 "is_active": bool(a.is_active),
                 "created_at": a.created_at.isoformat() if a.created_at else None,
             }
-            for a, name in rows
+            for a, p in rows
         ]
+    }
+
+
+@router.post("/admin/products/{product_id}/poster")
+def update_3d_product_poster(
+    product_id: int,
+    poster: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    admin: User = Depends(get_current_admin_user),
+):
+    """Replaces an existing 3D product's 2D thumbnail with a newly captured
+    <model-viewer> studio render and updates products.image_url in Supabase.
+    """
+    from app.core.supabase_rest import (
+        fetch_product_by_id_https,
+        get_supabase_client,
+        invalidate_supabase_rest_cache,
+    )
+
+    existing = fetch_product_by_id_https(product_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Product not found.")
+
+    poster_url = _upload_poster_image(poster)
+    if not poster_url:
+        raise HTTPException(
+            status_code=422,
+            detail="Could not process the captured 3D studio thumbnail.",
+        )
+
+    try:
+        get_supabase_client().table("products").update(
+            {"image_url": poster_url}
+        ).eq("id", product_id).execute()
+        invalidate_supabase_rest_cache()
+    except Exception:
+        logger.exception("Failed updating product #%s poster URL", product_id)
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to update product thumbnail in Supabase.",
+        )
+
+    return {
+        "product_id": product_id,
+        "image_url": poster_url,
+        "updated": True,
     }
 
 

@@ -1,65 +1,250 @@
 import json
 import logging
 import re
-from typing import Optional, Union
+from typing import Any, Optional, Union
 
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
-from sqlalchemy import or_
-from sqlalchemy.orm import Session, load_only
+from sqlalchemy.orm import Session
 
-from app.database import SessionLocal
-from app.models import Product, Product3DAsset, Order, OrderItem
 from app.agent.rag import retrieve_store_knowledge
-
-
-# ===========================================================================
-# LOGGING
-# ===========================================================================
+from app.core.supabase_rest import (
+    fetch_3d_catalog_ids_https,
+    fetch_product_by_id_https,
+    fetch_products_https,
+    get_supabase_client,
+)
+from app.database import SessionLocal
+from app.models import Order, OrderItem, Product
 
 logger = logging.getLogger("uvicorn.error")
 
+# ===========================================================================
+# OCCASION, LIFESTYLE & INTENT QUERY EXPANSION DICTIONARY (PHASE 1.1)
+# ===========================================================================
+OCCASION_EXPANSION_MAP: dict[str, list[str]] = {
+    "party": [
+        "speaker",
+        "audio",
+        "headphone",
+        "earbuds",
+        "lighting",
+        "lamp",
+        "camera",
+        "shirt",
+        "dress",
+        "shoes",
+        "watch",
+        "fragrance",
+        "perfume",
+        "sunglasses",
+        "bag",
+        "accessories",
+        "electronics",
+    ],
+    "celebration": [
+        "shirt",
+        "dress",
+        "shoes",
+        "watch",
+        "fragrance",
+        "speaker",
+        "audio",
+        "accessories",
+    ],
+    "wedding": [
+        "shirt",
+        "dress",
+        "shoes",
+        "watch",
+        "fragrance",
+        "perfume",
+        "handbag",
+        "bag",
+        "jewelry",
+        "formal",
+        "accessories",
+    ],
+    "formal": [
+        "shirt",
+        "shoes",
+        "watch",
+        "fragrance",
+        "suit",
+        "leather",
+        "dress",
+    ],
+    "date": [
+        "shirt",
+        "dress",
+        "watch",
+        "fragrance",
+        "perfume",
+        "shoes",
+        "handbag",
+    ],
+    "gamer": [
+        "gaming",
+        "headphone",
+        "audio",
+        "laptop",
+        "phone",
+        "smartphone",
+        "earbuds",
+        "watch",
+        "lamp",
+        "electronics",
+        "accessories",
+    ],
+    "gaming": [
+        "gaming",
+        "headphone",
+        "audio",
+        "laptop",
+        "phone",
+        "smartphone",
+        "earbuds",
+        "electronics",
+        "accessories",
+    ],
+    "remote": [
+        "laptop",
+        "phone",
+        "smartphone",
+        "tablet",
+        "watch",
+        "lamp",
+        "desk",
+        "furniture",
+        "decor",
+        "electronics",
+        "accessories",
+    ],
+    "office": [
+        "laptop",
+        "shirt",
+        "shoes",
+        "watch",
+        "bag",
+        "lamp",
+        "desk",
+        "furniture",
+        "accessories",
+    ],
+    "work": [
+        "laptop",
+        "shirt",
+        "shoes",
+        "watch",
+        "bag",
+        "phone",
+        "accessories",
+    ],
+    "setup": [
+        "laptop",
+        "phone",
+        "smartphone",
+        "watch",
+        "lamp",
+        "audio",
+        "headphone",
+        "furniture",
+        "decor",
+        "electronics",
+        "accessories",
+    ],
+    "gift": [
+        "watch",
+        "fragrance",
+        "perfume",
+        "sunglasses",
+        "handbag",
+        "bag",
+        "smartphone",
+        "earbuds",
+        "shirt",
+        "shoes",
+        "accessories",
+    ],
+    "workout": [
+        "shoes",
+        "sneakers",
+        "watch",
+        "shirt",
+        "earbuds",
+        "sports",
+        "running",
+    ],
+    "gym": [
+        "shoes",
+        "sneakers",
+        "watch",
+        "shirt",
+        "earbuds",
+        "sports",
+    ],
+    "travel": [
+        "bag",
+        "sunglasses",
+        "watch",
+        "shoes",
+        "sneakers",
+        "phone",
+        "earbuds",
+        "camera",
+        "accessories",
+    ],
+    "summer": [
+        "shirt",
+        "sunglasses",
+        "dress",
+        "shoes",
+        "sneakers",
+        "fragrance",
+    ],
+    "winter": [
+        "jacket",
+        "shirt",
+        "boots",
+        "shoes",
+        "watch",
+        "fragrance",
+    ],
+    "audio": [
+        "audio",
+        "speaker",
+        "headphone",
+        "earbuds",
+        "airpods",
+        "pods",
+        "music",
+        "sound",
+        "electronics",
+        "accessories",
+    ],
+    "outfit": [
+        "shirt",
+        "shoes",
+        "watch",
+        "pants",
+        "dress",
+        "bag",
+        "sunglasses",
+        "accessories",
+    ],
+}
 
-# ===========================================================================
-# INTERNAL SEARCH HELPERS
-# ===========================================================================
 
 def _normalize_text(value: Optional[str]) -> str:
-    """
-    Normalize product/search text for lightweight relevance scoring.
-    """
-
     if not value:
         return ""
-
     value = value.lower()
-
-    # Examples:
-    # MENS-SHIRTS -> mens shirts
-    # WOMEN_ACCESSORIES -> women accessories
-    value = re.sub(
-        r"[^a-z0-9]+",
-        " ",
-        value,
-    )
-
-    return " ".join(
-        value.split()
-    )
+    value = re.sub(r"[^a-z0-9]+", " ", value)
+    return " ".join(value.split())
 
 
-def _search_tokens(
-    value: Optional[str],
-) -> list[str]:
-    """
-    Extract meaningful searchable terms while removing common
-    conversational filler.
-    """
-
-    text = _normalize_text(
-        value
-    )
-
+def _search_tokens(value: Optional[str]) -> list[str]:
+    text = _normalize_text(value)
     if not text:
         return []
 
@@ -86,144 +271,173 @@ def _search_tokens(
         "products",
         "item",
         "items",
+        "plan",
+        "best",
+        "top",
+        "under",
+        "below",
+        "around",
+        "please",
+        "can",
+        "you",
+        "recommend",
+        "suggest",
     }
 
     return [
         token
         for token in text.split()
-        if len(token) > 1
-        and token not in stop_words
+        if len(token) > 1 and token not in stop_words
     ]
 
 
-def _score_product(
-    product: Product,
+def expand_query_concepts(raw_query: Optional[str]) -> tuple[list[str], list[str]]:
+    """
+    Expand a user's raw or occasion-based query (e.g., 'I need a party',
+    'gift for a gamer', 'remote work setup') into:
+      (direct_tokens, expanded_concept_tokens)
+    """
+    direct = _search_tokens(raw_query)
+    expanded: list[str] = []
+    seen: set[str] = set()
+
+    q_norm = _normalize_text(raw_query)
+    for trigger, concepts in OCCASION_EXPANSION_MAP.items():
+        if trigger in q_norm or trigger in direct:
+            for c in concepts:
+                if c not in seen:
+                    seen.add(c)
+                    expanded.append(c)
+
+    return direct, expanded
+
+
+def _score_product_dict(
+    product: dict[str, Any],
     search_term: Optional[str],
     category: Optional[str],
-) -> float:
+    active_3d_ids: set[int],
+) -> tuple[float, str]:
     """
-    Lightweight product relevance score.
-
-    Priority:
-    1. Exact/category relevance
-    2. Product-name relevance
-    3. Description relevance
-    4. Featured status as a small tie-breaker
-
-    This avoids loading another AI model on the 512 MB Render server.
+    Hybrid relevance scorer over normalized product dicts from Supabase.
+    Returns (score, match_explanation).
     """
+    pid = int(product.get("id") or 0)
+    name = _normalize_text(str(product.get("name") or ""))
+    product_category = _normalize_text(str(product.get("category") or ""))
+    description = _normalize_text(str(product.get("description") or ""))
+    haystack = f"{name} {product_category} {description}"
 
-    name = _normalize_text(
-        product.name
-    )
-
-    product_category = _normalize_text(
-        product.category
-    )
-
-    description = _normalize_text(
-        product.description
-    )
-
-    search_text = _normalize_text(
-        search_term
-    )
-
-    requested_category = _normalize_text(
-        category
-    )
+    search_text = _normalize_text(search_term)
+    requested_category = _normalize_text(category)
 
     score = 0.0
+    matched_concepts: list[str] = []
 
-    # -----------------------------------------------------------------------
-    # Category relevance
-    # -----------------------------------------------------------------------
-
+    # 1. Category relevance
     if requested_category:
         if requested_category == product_category:
-            score += 30.0
-
+            score += 32.0
+            matched_concepts.append(f"category:{product.get('category')}")
         elif requested_category in product_category:
             score += 24.0
+            matched_concepts.append(f"category:{product.get('category')}")
 
-        category_tokens = _search_tokens(
-            requested_category
-        )
-
-        for token in category_tokens:
+        for token in _search_tokens(requested_category):
             if token in product_category:
-                score += 8.0
+                score += 10.0
+            elif token in name:
+                score += 5.0
 
-            if token in name:
-                score += 3.0
-
-    # -----------------------------------------------------------------------
-    # Search-term relevance
-    # -----------------------------------------------------------------------
+    # 2. Direct search-term relevance
+    direct_tokens, expanded_tokens = expand_query_concepts(search_term)
 
     if search_text:
         if search_text in name:
-            score += 30.0
-
+            score += 35.0
+            matched_concepts.append("exact title match")
         if search_text in product_category:
-            score += 20.0
-
+            score += 22.0
         if search_text in description:
             score += 12.0
 
-        search_tokens = _search_tokens(
-            search_text
-        )
-
-        for token in search_tokens:
+        for token in direct_tokens:
+            if token == "3d" and pid in active_3d_ids:
+                score += 40.0
+                matched_concepts.append("Interactive 3D GLB model")
+                continue
             if token in name:
+                score += 14.0
+                matched_concepts.append(token)
+            elif token in product_category:
+                score += 10.0
+                matched_concepts.append(token)
+            elif token in description:
+                score += 4.5
+                matched_concepts.append(token)
+
+    # 3. Occasion & Lifestyle Expanded Concept Matching ("I need a party", "gamer gift", etc.)
+    if expanded_tokens:
+        for concept in expanded_tokens:
+            if concept == "3d" and pid in active_3d_ids:
+                score += 15.0
+                matched_concepts.append("3D studio ready")
+            elif concept in name:
+                score += 9.5
+                if concept not in matched_concepts:
+                    matched_concepts.append(concept)
+            elif concept in product_category:
                 score += 8.0
+                if concept not in matched_concepts:
+                    matched_concepts.append(concept)
+            elif concept in haystack:
+                score += 3.5
 
-            if token in product_category:
-                score += 6.0
+    # 4. 3D & Quality tie-breakers
+    if pid in active_3d_ids:
+        score += 2.0
+    if product.get("is_featured"):
+        score += 1.5
 
-            if token in description:
-                score += 3.0
-
-    # Small tie-breaker only.
-    if product.is_featured:
-        score += 1.0
-
-    return score
+    reason = (
+        f"Matched {', '.join(matched_concepts[:3])}"
+        if matched_concepts
+        else f"Top-rated in {product.get('category', 'Store')}"
+    )
+    return score, reason
 
 
-def _product_to_public_dict(
-    product: Product,
-) -> dict:
-    """
-    Convert a Product ORM object into customer-safe JSON.
-
-    Internal supplier information, cost prices, and embedding vectors
-    are deliberately excluded.
-    """
-
+def _enrich_public_product_dict(
+    row: dict[str, Any],
+    active_3d_ids: set[int],
+    match_reason: str = "",
+) -> dict[str, Any]:
+    pid = int(row.get("id") or 0)
     return {
-        "id": product.id,
-        "name": product.name,
-        "description": product.description,
-        "price": product.price,
-        "original_price": product.original_price,
-        "image_url": product.image_url,
-        "category": product.category,
-        "rating": product.rating,
-        "reviews": product.reviews,
-        "discount_percent": product.discount_percent,
-        "is_featured": product.is_featured,
-        "stock": product.stock,
-        "fulfillment_type": (
-            product.fulfillment_type
-            or "IN_HOUSE"
+        "id": pid,
+        "name": str(row.get("name") or ""),
+        "description": str(row.get("description") or ""),
+        "price": float(row.get("price") or 0.0),
+        "original_price": (
+            float(row["original_price"])
+            if row.get("original_price") is not None
+            else None
         ),
+        "image_url": str(row.get("image_url") or ""),
+        "category": str(row.get("category") or "CATALOG"),
+        "rating": float(row.get("rating") or 4.8),
+        "reviews": int(row.get("reviews") or 12),
+        "discount_percent": row.get("discount_percent"),
+        "is_featured": bool(row.get("is_featured", False)),
+        "stock": int(row["stock"]) if row.get("stock") is not None else 50,
+        "fulfillment_type": str(row.get("fulfillment_type") or "IN_HOUSE"),
+        "has_3d_model": pid in active_3d_ids,
+        "match_reason": match_reason,
     }
 
 
 # ===========================================================================
-# PRODUCT SEARCH TOOL
+# PRODUCT SEARCH TOOL (Hybrid Occasion-Aware + Supabase HTTPS Fast Path)
 # ===========================================================================
 
 class ProductSearchInput(BaseModel):
@@ -231,41 +445,25 @@ class ProductSearchInput(BaseModel):
         default=None,
         description=(
             "A product keyword, style, color, brand, material, occasion, "
-            "or descriptive search term. Examples: black, floral, shirt, "
-            "party, wedding, running, leather."
+            "or descriptive search term. Examples: party, gamer gift, "
+            "remote work setup, 3d, black shirt, running shoes."
         ),
     )
-
     category: Optional[str] = Field(
         default=None,
-        description=(
-            "A product category that should be searched. "
-            "Only use a category when reasonably confident it exists. "
-            "If uncertain about the real catalog taxonomy, use "
-            "inspect_catalog first."
-        ),
+        description="Optional product category filter.",
     )
-
     max_price: Optional[float] = Field(
         default=None,
-        description=(
-            "Maximum price the customer is willing to pay."
-        ),
+        description="Maximum price the customer is willing to pay.",
     )
-
     is_featured: Optional[bool] = Field(
         default=None,
-        description=(
-            "Set to true only when the customer specifically requests "
-            "featured, popular, or trending products."
-        ),
+        description="Set to true only when customer specifically requests featured items.",
     )
 
 
-@tool(
-    "search_inventory",
-    args_schema=ProductSearchInput,
-)
+@tool("search_inventory", args_schema=ProductSearchInput)
 def search_inventory(
     search_term: Optional[str] = None,
     category: Optional[str] = None,
@@ -273,319 +471,144 @@ def search_inventory(
     is_featured: Optional[bool] = None,
 ) -> str:
     """
-    Search Penguin Store's live PostgreSQL product inventory.
-
-    Use for:
-    - product discovery
-    - recommendations
-    - price searches
-    - categories
-    - product availability
-    - shopping requests
-    - styles
-    - occasion-based shopping
-
-    If the direct search produces no useful products, the agent should
-    inspect the real catalog before attempting one fallback search.
+    Search Penguin Store's live Supabase product inventory using occasion-aware
+    query expansion, category matching, 3D model awareness, and stock filtering.
     """
-
     logger.info(
-        "[TOOL CALLED] search_inventory | "
-        "search_term=%s | category=%s | "
-        "max_price=%s | is_featured=%s",
+        "[TOOL CALLED] search_inventory | search_term=%s | category=%s | max_price=%s | is_featured=%s",
         search_term,
         category,
         max_price,
         is_featured,
     )
 
-    db: Session = SessionLocal()
-
     try:
-        # -------------------------------------------------------------------
-        # Load only customer-facing fields.
-        #
-        # IMPORTANT:
-        # Do not load image_embedding/image_embedding_v2 because those
-        # vectors are large and unnecessary for conversational search.
-        # -------------------------------------------------------------------
+        all_products = fetch_products_https()
+        active_3d_ids = set(fetch_3d_catalog_ids_https())
 
-        query = (
-            db.query(Product)
-            .options(
-                load_only(
-                    Product.id,
-                    Product.name,
-                    Product.description,
-                    Product.price,
-                    Product.original_price,
-                    Product.image_url,
-                    Product.category,
-                    Product.rating,
-                    Product.reviews,
-                    Product.discount_percent,
-                    Product.is_featured,
-                    Product.stock,
-                    Product.fulfillment_type,
-                )
-            )
-        )
-
-        # Only recommend available inventory.
-        query = query.filter(
-            Product.stock > 0
-        )
-
-        # -------------------------------------------------------------------
-        # Hard deterministic constraints
-        # -------------------------------------------------------------------
+        # Filter in-stock products
+        in_stock = [
+            p for p in all_products if int(p.get("stock") if p.get("stock") is not None else 50) > 0
+        ]
 
         if max_price is not None:
-            query = query.filter(
-                Product.price <= max_price
-            )
+            in_stock = [p for p in in_stock if float(p.get("price") or 0.0) <= float(max_price)]
 
-        if is_featured is not None:
-            query = query.filter(
-                Product.is_featured == is_featured
-            )
+        if is_featured is True:
+            featured_subset = [p for p in in_stock if bool(p.get("is_featured"))]
+            if featured_subset:
+                in_stock = featured_subset
 
-        # -------------------------------------------------------------------
-        # Broad lexical candidate retrieval
-        # -------------------------------------------------------------------
+        # Check if user explicitly asked for 3D products
+        q_norm = _normalize_text(f"{search_term or ''} {category or ''}")
+        wants_3d_only = "3d" in q_norm.split()
+        if wants_3d_only:
+            only_3d = [p for p in in_stock if int(p.get("id") or 0) in active_3d_ids]
+            if only_3d:
+                in_stock = only_3d
 
-        candidate_conditions = []
+        scored_items: list[tuple[float, str, dict[str, Any]]] = []
+        for p in in_stock:
+            score, reason = _score_product_dict(p, search_term, category, active_3d_ids)
+            scored_items.append((score, reason, p))
 
-        search_tokens = _search_tokens(
-            search_term
-        )
+        # Keep items with positive relevance score (> 2.5); if none matched (e.g., very broad
+        # lifestyle query with no direct keyword hit), return top diverse in-stock catalog items
+        # so CTRL-X always grounds its answer in real available store products.
+        positive_matches = [item for item in scored_items if item[0] > 3.5]
 
-        for token in search_tokens:
-            pattern = f"%{token}%"
-
-            candidate_conditions.append(
-                or_(
-                    Product.name.ilike(pattern),
-                    Product.category.ilike(pattern),
-                    Product.description.ilike(pattern),
-                )
-            )
-
-        category_tokens = _search_tokens(
-            category
-        )
-
-        for token in category_tokens:
-            pattern = f"%{token}%"
-
-            candidate_conditions.append(
-                or_(
-                    Product.category.ilike(pattern),
-                    Product.name.ilike(pattern),
-                    Product.description.ilike(pattern),
-                )
-            )
-
-        if candidate_conditions:
-            query = query.filter(
-                or_(
-                    *candidate_conditions
-                )
-            )
-
-        else:
-            # No textual criteria:
-            # return generally useful products rather than random rows.
-            query = query.order_by(
-                Product.is_featured.desc(),
-                Product.rating.desc(),
-                Product.reviews.desc(),
-            )
-
-        # Current catalog is small, so a bounded set is inexpensive.
-        candidates = (
-            query
-            .limit(60)
-            .all()
-        )
-
-        # -------------------------------------------------------------------
-        # Relevance ranking
-        # -------------------------------------------------------------------
-
-        ranked_products = sorted(
-            candidates,
-            key=lambda product: (
-                _score_product(
-                    product,
-                    search_term,
-                    category,
+        if positive_matches:
+            positive_matches.sort(
+                key=lambda item: (
+                    item[0],
+                    float(item[2].get("rating") or 4.8),
+                    int(item[2].get("reviews") or 0),
                 ),
-                product.rating or 0.0,
-                product.reviews or 0,
-            ),
-            reverse=True,
-        )
-
-        selected_products = (
-            ranked_products[:5]
-        )
+                reverse=True,
+            )
+            chosen = positive_matches[:6]
+        else:
+            # Grounded diverse catalog fallback across top categories
+            scored_items.sort(
+                key=lambda item: (
+                    1 if int(item[2].get("id") or 0) in active_3d_ids else 0,
+                    1 if item[2].get("is_featured") else 0,
+                    float(item[2].get("rating") or 4.8),
+                ),
+                reverse=True,
+            )
+            seen_cats: set[str] = set()
+            chosen = []
+            for score, reason, prod in scored_items:
+                cat = str(prod.get("category") or "")
+                if cat not in seen_cats or len(chosen) < 6:
+                    seen_cats.add(cat)
+                    chosen.append((score, f"Popular in {cat}", prod))
+                if len(chosen) >= 6:
+                    break
 
         results = [
-            _product_to_public_dict(
-                product
-            )
-            for product in selected_products
+            _enrich_public_product_dict(prod, active_3d_ids, reason)
+            for _, reason, prod in chosen
         ]
 
         logger.info(
-            "[TOOL RESULT] Found %s products: %s",
+            "[TOOL RESULT] search_inventory found %d grounded products",
             len(results),
-            [
-                {
-                    "id": product["id"],
-                    "name": product["name"],
-                    "category": product["category"],
-                }
-                for product in results
-            ],
         )
-
-        return json.dumps(
-            results,
-            ensure_ascii=False,
-        )
-
+        return json.dumps(results, ensure_ascii=False)
     except Exception:
-        logger.exception(
-            "[TOOL ERROR] search_inventory failed"
-        )
-
+        logger.exception("[TOOL ERROR] search_inventory failed")
         return "[]"
-
-    finally:
-        db.close()
 
 
 # ===========================================================================
 # CATALOG DISCOVERY TOOL
-#
-# Lets the AI inspect Penguin Store's REAL taxonomy instead of inventing
-# generic categories that may not exist in PostgreSQL.
 # ===========================================================================
 
 @tool("inspect_catalog")
 def inspect_catalog() -> str:
     """
-    Inspect currently available Penguin Store categories and representative
-    products.
-
-    Use when:
-    - direct search returns no products
-    - the request is vague
-    - the request is occasion-based
-    - the database category is uncertain
-    - the requested item does not exist
-    - alternatives are needed
-
-    After inspecting the catalog, the agent should perform one grounded
-    fallback search using terms actually supported by the catalog.
+    Inspect currently available Penguin Store categories and representative products.
     """
-
-    logger.info(
-        "[TOOL CALLED] inspect_catalog"
-    )
-
-    db: Session = SessionLocal()
-
+    logger.info("[TOOL CALLED] inspect_catalog")
     try:
-        rows = (
-            db.query(
-                Product.category,
-                Product.name,
-            )
-            .filter(
-                Product.stock > 0
-            )
-            .order_by(
-                Product.category.asc(),
-                Product.name.asc(),
-            )
-            .all()
-        )
+        all_products = fetch_products_https()
+        catalog: dict[str, dict[str, Any]] = {}
 
-        catalog = {}
-
-        for category, name in rows:
-            if not category:
+        for p in all_products:
+            if int(p.get("stock") if p.get("stock") is not None else 50) <= 0:
                 continue
-
+            category = str(p.get("category") or "CATALOG").strip()
+            name = str(p.get("name") or "Product").strip()
             if category not in catalog:
-                catalog[category] = {
-                    "count": 0,
-                    "examples": [],
-                }
-
+                catalog[category] = {"count": 0, "examples": []}
             catalog[category]["count"] += 1
-
-            # Keep LLM context small.
-            if (
-                len(
-                    catalog[category]["examples"]
-                )
-                < 3
-            ):
-                catalog[category]["examples"].append(
-                    name
-                )
+            if len(catalog[category]["examples"]) < 3:
+                catalog[category]["examples"].append(name)
 
         categories = [
             {
-                "category": category,
-                "available_product_count": (
-                    data["count"]
-                ),
-                "example_products": (
-                    data["examples"]
-                ),
+                "category": cat,
+                "available_product_count": data["count"],
+                "example_products": data["examples"],
             }
-            for category, data
-            in catalog.items()
+            for cat, data in sorted(catalog.items())
         ]
-
-        result = {
-            "instruction": (
-                "These are the real categories currently available "
-                "in Penguin Store. Use these categories and example "
-                "products for grounded fallback searches. Never invent "
-                "products or categories."
-            ),
-            "available_categories": categories,
-        }
-
-        logger.info(
-            "[TOOL RESULT] inspect_catalog found %s categories",
-            len(categories),
-        )
-
-        return json.dumps(
-            result,
-            ensure_ascii=False,
-        )
-
-    except Exception:
-        logger.exception(
-            "[TOOL ERROR] inspect_catalog failed"
-        )
 
         return json.dumps(
             {
-                "available_categories": [],
-            }
+                "instruction": (
+                    "These are the real categories currently available in Penguin Store. "
+                    "Use these categories and example products for grounded searches."
+                ),
+                "available_categories": categories,
+            },
+            ensure_ascii=False,
         )
-
-    finally:
-        db.close()
+    except Exception:
+        logger.exception("[TOOL ERROR] inspect_catalog failed")
+        return json.dumps({"available_categories": []})
 
 
 # ===========================================================================
@@ -593,416 +616,163 @@ def inspect_catalog() -> str:
 # ===========================================================================
 
 class AddToCartInput(BaseModel):
-    product_id: int = Field(
-        ...,
-        description=(
-            "Exact product ID to add to the cart."
-        ),
-    )
-
-    quantity: int = Field(
-        default=1,
-        ge=1,
-        description=(
-            "Number of units requested."
-        ),
-    )
+    product_id: int = Field(..., description="Exact product ID to add to the cart.")
+    quantity: int = Field(default=1, ge=1, description="Number of units requested.")
 
 
-@tool(
-    "add_to_cart",
-    args_schema=AddToCartInput,
-)
-def add_to_cart(
-    product_id: int,
-    quantity: int = 1,
-) -> str:
+@tool("add_to_cart", args_schema=AddToCartInput)
+def add_to_cart(product_id: int, quantity: int = 1) -> str:
     """
-    Prepare a customer cart action for an exact product.
-
-    The product must exist and the requested quantity must be available.
+    Prepare a customer cart action for an exact product from Supabase.
     """
-
-    logger.info(
-        "[TOOL CALLED] add_to_cart | "
-        "product_id=%s | quantity=%s",
-        product_id,
-        quantity,
-    )
-
-    db: Session = SessionLocal()
-
+    logger.info("[TOOL CALLED] add_to_cart | product_id=%s | quantity=%s", product_id, quantity)
     try:
-        product = (
-            db.query(Product)
-            .options(
-                load_only(
-                    Product.id,
-                    Product.name,
-                    Product.price,
-                    Product.image_url,
-                    Product.stock,
-                )
-            )
-            .filter(
-                Product.id == product_id
-            )
-            .first()
-        )
-
+        product = fetch_product_by_id_https(product_id)
         if not product:
+            return json.dumps({"error": f"Product #{product_id} not found."})
+
+        avail_stock = int(product.get("stock") if product.get("stock") is not None else 50)
+        if avail_stock < quantity:
             return json.dumps(
                 {
-                    "error": "Product not found.",
+                    "error": "Requested quantity is not available.",
+                    "available_stock": avail_stock,
                 }
             )
-
-        if (
-            product.stock is not None
-            and product.stock < quantity
-        ):
-            return json.dumps(
-                {
-                    "error": (
-                        "Requested quantity is not available."
-                    ),
-                    "available_stock": product.stock,
-                }
-            )
-
-        result = {
-            "action": "add_to_cart",
-            "product": {
-                "id": product.id,
-                "name": product.name,
-                "price": product.price,
-                "image_url": product.image_url,
-            },
-            "quantity": quantity,
-        }
-
-        logger.info(
-            "[TOOL RESULT] Cart action prepared | "
-            "product_id=%s | quantity=%s",
-            product.id,
-            quantity,
-        )
-
-        return json.dumps(
-            result,
-            ensure_ascii=False,
-        )
-
-    except Exception:
-        logger.exception(
-            "[TOOL ERROR] add_to_cart failed"
-        )
 
         return json.dumps(
             {
-                "error": (
-                    "Unable to prepare cart action."
-                ),
-            }
+                "action": "add_to_cart",
+                "product": {
+                    "id": int(product["id"]),
+                    "name": product.get("name"),
+                    "price": float(product.get("price") or 0.0),
+                    "image_url": product.get("image_url"),
+                    "category": product.get("category") or "CATALOG",
+                },
+                "quantity": quantity,
+            },
+            ensure_ascii=False,
         )
-
-    finally:
-        db.close()
+    except Exception:
+        logger.exception("[TOOL ERROR] add_to_cart failed")
+        return json.dumps({"error": "Unable to prepare cart action."})
 
 
 # ===========================================================================
 # ORDER STATUS TOOL
-#
-# Uses REAL fulfillment data from OrderItem rather than allowing the LLM
-# to invent shipment or tracking information.
 # ===========================================================================
 
 class OrderStatusInput(BaseModel):
     order_id: Union[str, int] = Field(
         ...,
-        description=(
-            "Exact Penguin Store order ID supplied by the customer."
-        ),
+        description="Exact Penguin Store order ID supplied by the customer.",
     )
 
 
-@tool(
-    "check_order_status",
-    args_schema=OrderStatusInput,
-)
-def check_order_status(
-    order_id: Union[str, int],
-) -> str:
+@tool("check_order_status", args_schema=OrderStatusInput)
+def check_order_status(order_id: Union[str, int]) -> str:
     """
-    Retrieve the real fulfillment state of a Penguin Store order.
-
-    Order information comes from the orders table.
-
-    Fulfillment state comes from order_items:
-    - fulfillment_type
-    - dispatch_status
-    - tracking_number
-
-    Never invent shipment or tracking information.
+    Retrieve the real fulfillment state of a Penguin Store order over Supabase HTTPS.
     """
+    logger.info("[TOOL CALLED] check_order_status | order_id=%s", order_id)
+    clean_id = str(order_id).strip().lstrip("#")
+    if not clean_id.isdigit():
+        return json.dumps({"error": "Order ID must be numeric."})
 
-    logger.info(
-        "[TOOL CALLED] check_order_status | order_id=%s",
-        order_id,
-    )
+    query_id = int(clean_id)
 
-    db: Session = SessionLocal()
-
+    # 1. Check in-memory recent orders cache first
     try:
-        # -------------------------------------------------------------------
-        # Validate ID
-        # -------------------------------------------------------------------
+        from app.routers.orders import get_order_record
 
-        clean_id = str(
-            order_id
-        ).strip()
-
-        if not clean_id.isdigit():
+        mem_order = get_order_record(query_id)
+        if mem_order is not None:
+            items = mem_order.get("items") or []
+            tracking_numbers = [
+                i.get("tracking_number") for i in items if i.get("tracking_number")
+            ]
             return json.dumps(
                 {
-                    "error": (
-                        "Order ID must be numeric."
-                    ),
-                }
+                    "action": "order_status",
+                    "order": {
+                        "order_id": str(query_id),
+                        "created_at": mem_order.get("created_at"),
+                        "total": float(mem_order.get("total_amount") or 0.0),
+                        "overall_status": mem_order.get("payment_status", "CONFIRMED").upper(),
+                        "tracking_numbers": tracking_numbers,
+                        "items": items,
+                    },
+                },
+                ensure_ascii=False,
             )
+    except Exception:
+        pass
 
-        query_id = int(
-            clean_id
+    # 2. Query Supabase HTTPS REST
+    try:
+        client = get_supabase_client()
+        ord_res = client.table("orders").select("*").eq("id", query_id).limit(1).execute()
+        rows = ord_res.data or []
+        if not rows:
+            return json.dumps({"error": f"Order {query_id} could not be found."})
+
+        order_row = rows[0]
+        items_res = (
+            client.table("order_items")
+            .select("*")
+            .eq("order_id", query_id)
+            .execute()
         )
-
-        # -------------------------------------------------------------------
-        # Retrieve order
-        # -------------------------------------------------------------------
-
-        order = (
-            db.query(Order)
-            .filter(
-                Order.id == query_id
-            )
-            .first()
-        )
-
-        if not order:
-            logger.info(
-                "[TOOL RESULT] Order %s not found",
-                query_id,
-            )
-
-            return json.dumps(
-                {
-                    "error": (
-                        f"Order {query_id} could not be found."
-                    ),
-                }
-            )
-
-        # -------------------------------------------------------------------
-        # Retrieve real item-level fulfillment state
-        # -------------------------------------------------------------------
-
-        order_items = (
-            db.query(OrderItem)
-            .filter(
-                OrderItem.order_id == query_id
-            )
-            .order_by(
-                OrderItem.id.asc()
-            )
-            .all()
-        )
-
-        # -------------------------------------------------------------------
-        # Resolve product names.
-        #
-        # Query columns directly so vector embedding fields are never loaded.
-        # -------------------------------------------------------------------
-
-        product_ids = [
-            item.product_id
-            for item in order_items
-            if item.product_id is not None
-        ]
-
-        product_names = {}
-
-        if product_ids:
-            product_rows = (
-                db.query(
-                    Product.id,
-                    Product.name,
-                )
-                .filter(
-                    Product.id.in_(
-                        product_ids
-                    )
-                )
-                .all()
-            )
-
-            product_names = {
-                product_id: product_name
-                for product_id, product_name
-                in product_rows
-            }
-
-        # -------------------------------------------------------------------
-        # Build customer-safe fulfillment details
-        # -------------------------------------------------------------------
-
+        raw_items = items_res.data or []
         items = []
+        tracking_numbers = []
+        statuses = set()
 
-        for item in order_items:
+        for item in raw_items:
+            pid = item.get("product_id")
+            p_dict = fetch_product_by_id_https(int(pid)) if pid else None
+            d_status = str(item.get("dispatch_status") or "QUEUED_FOR_PACKING").upper()
+            statuses.add(d_status)
+            trk = item.get("tracking_number")
+            if trk:
+                tracking_numbers.append(str(trk))
             items.append(
                 {
-                    "order_item_id": (
-                        item.id
-                    ),
-
-                    "product_id": (
-                        item.product_id
-                    ),
-
-                    "product_name": (
-                        product_names.get(
-                            item.product_id,
-                            "Unknown product",
-                        )
-                    ),
-
-                    "quantity": (
-                        item.quantity
-                    ),
-
-                    "unit_price": (
-                        item.unit_price
-                    ),
-
-                    "fulfillment_type": (
-                        item.fulfillment_type
-                    ),
-
-                    "dispatch_status": (
-                        item.dispatch_status
-                        or "PENDING"
-                    ),
-
-                    "tracking_number": (
-                        item.tracking_number
-                    ),
+                    "order_item_id": item.get("id"),
+                    "product_id": pid,
+                    "product_name": (p_dict or {}).get("name") or f"Product #{pid}",
+                    "quantity": item.get("quantity", 1),
+                    "unit_price": float(item.get("unit_price") or 0.0),
+                    "fulfillment_type": item.get("fulfillment_type") or "IN_HOUSE",
+                    "dispatch_status": d_status,
+                    "tracking_number": trk,
                 }
             )
 
-        # -------------------------------------------------------------------
-        # Derive order-level status strictly from actual OrderItem statuses.
-        # -------------------------------------------------------------------
-
-        statuses = {
-            str(
-                item.dispatch_status
-                or "PENDING"
-            ).upper()
-            for item in order_items
-        }
-
-        if not order_items:
-            overall_status = (
-                "NO_FULFILLMENT_DATA"
-            )
-
-        elif len(statuses) == 1:
-            overall_status = next(
-                iter(statuses)
-            )
-
-        else:
-            overall_status = (
-                "PARTIALLY_FULFILLED"
-            )
-
-        # -------------------------------------------------------------------
-        # Only expose tracking numbers that actually exist.
-        # -------------------------------------------------------------------
-
-        tracking_numbers = [
-            item.tracking_number
-            for item in order_items
-            if item.tracking_number
-        ]
-
-        # -------------------------------------------------------------------
-        # Privacy:
-        #
-        # Do NOT expose customer email/name/address through a simple order-ID
-        # lookup because ownership is not yet authenticated by this endpoint.
-        # -------------------------------------------------------------------
-
-        result = {
-            "action": "order_status",
-
-            "order": {
-                "order_id": str(
-                    order.id
-                ),
-
-                "created_at": (
-                    order.created_at.isoformat()
-                    if order.created_at
-                    else None
-                ),
-
-                "total": (
-                    order.total_amount
-                ),
-
-                "overall_status": (
-                    overall_status
-                ),
-
-                "tracking_numbers": (
-                    tracking_numbers
-                ),
-
-                "items": items,
-            },
-        }
-
-        logger.info(
-            "[TOOL RESULT] "
-            "Order %s | "
-            "status=%s | "
-            "items=%s | "
-            "tracking_numbers=%s",
-            order.id,
-            overall_status,
-            len(items),
-            len(tracking_numbers),
-        )
-
-        return json.dumps(
-            result,
-            ensure_ascii=False,
-        )
-
-    except Exception:
-        logger.exception(
-            "[TOOL ERROR] check_order_status failed"
+        overall_status = (
+            "NO_FULFILLMENT_DATA"
+            if not statuses
+            else (next(iter(statuses)) if len(statuses) == 1 else "PARTIALLY_FULFILLED")
         )
 
         return json.dumps(
             {
-                "error": (
-                    "Unable to retrieve order status."
-                ),
-            }
+                "action": "order_status",
+                "order": {
+                    "order_id": str(query_id),
+                    "created_at": order_row.get("created_at"),
+                    "total": float(order_row.get("total_amount") or 0.0),
+                    "overall_status": overall_status,
+                    "tracking_numbers": tracking_numbers,
+                    "items": items,
+                },
+            },
+            ensure_ascii=False,
         )
-
-    finally:
-        db.close()
+    except Exception:
+        logger.exception("[TOOL ERROR] check_order_status failed")
+        return json.dumps({"error": "Unable to retrieve order status."})
 
 
 # ===========================================================================
@@ -1012,69 +782,28 @@ def check_order_status(
 class KnowledgeBaseSearchInput(BaseModel):
     query: str = Field(
         ...,
-        description=(
-            "Question about Penguin Store policies, returns, refunds, "
-            "warranties, payments, shipping rules, fulfillment, or "
-            "other official store information."
-        ),
+        description="Question about Penguin Store policies, returns, refunds, warranties, or payments.",
     )
 
 
-@tool(
-    "search_knowledge_base",
-    args_schema=KnowledgeBaseSearchInput,
-)
-def search_knowledge_base(
-    query: str,
-) -> str:
+@tool("search_knowledge_base", args_schema=KnowledgeBaseSearchInput)
+def search_knowledge_base(query: str) -> str:
     """
     Search Penguin Store's official knowledge base.
-
-    This tool should be used for:
-    - returns
-    - refunds
-    - warranties
-    - payment information
-    - shipping policies
-    - fulfillment policies
-    - store rules
-
-    The knowledge base is the source of truth.
     """
-
-    logger.info(
-        "[TOOL CALLED] search_knowledge_base | query=%s",
-        query,
-    )
-
+    logger.info("[TOOL CALLED] search_knowledge_base | query=%s", query)
     try:
-        context = (
-            retrieve_store_knowledge(
-                query
-            )
-        )
-
+        context = retrieve_store_knowledge(query)
         if not context:
-            return (
-                "No matching information was found "
-                "in the Penguin Store knowledge base."
-            )
-
+            return "No matching information was found in the Penguin Store knowledge base."
         return context
-
     except Exception:
-        logger.exception(
-            "[TOOL ERROR] search_knowledge_base failed"
-        )
-
-        return (
-            "Unable to retrieve Penguin Store "
-            "policy information."
-        )
+        logger.exception("[TOOL ERROR] search_knowledge_base failed")
+        return "Unable to retrieve Penguin Store policy information."
 
 
 # ===========================================================================
-# PRODUCT COMPARISON TOOL (Shopping Agent)
+# PRODUCT COMPARISON TOOL (Phase 1.2 Interactive Price & Feature Comparison)
 # ===========================================================================
 
 class CompareProductsInput(BaseModel):
@@ -1084,190 +813,126 @@ class CompareProductsInput(BaseModel):
     )
     query: Optional[str] = Field(
         default=None,
-        description="Search keyword or product category to find top products to compare.",
+        description="Search keyword, category, or occasion to find top products to compare.",
     )
     limit: int = Field(
-        default=4,
+        default=3,
         ge=2,
-        le=6,
+        le=5,
         description="Maximum number of products to compare side-by-side.",
     )
 
 
-@tool(
-    "compare_products",
-    args_schema=CompareProductsInput,
-)
+@tool("compare_products", args_schema=CompareProductsInput)
 def compare_products(
     product_ids: Optional[list[int]] = None,
     query: Optional[str] = None,
-    limit: int = 4,
+    limit: int = 3,
 ) -> str:
     """
-    Compare products side-by-side using real PostgreSQL catalog and 3D asset data.
+    Compare products side-by-side using real Supabase catalog and 3D asset data.
     """
-    logger.info(
-        "[TOOL CALLED] compare_products | ids=%s | query=%s",
-        product_ids,
-        query,
-    )
-
-    db: Session = SessionLocal()
+    logger.info("[TOOL CALLED] compare_products | ids=%s | query=%s", product_ids, query)
     try:
-        cols = (
-            Product.id,
-            Product.name,
-            Product.description,
-            Product.price,
-            Product.original_price,
-            Product.image_url,
-            Product.category,
-            Product.rating,
-            Product.reviews,
-            Product.discount_percent,
-            Product.is_featured,
-            Product.stock,
-            Product.fulfillment_type,
-        )
+        all_products = fetch_products_https()
+        active_3d_ids = set(fetch_3d_catalog_ids_https())
 
-        candidates: list[Product] = []
+        candidates: list[dict[str, Any]] = []
         if product_ids:
-            clean_ids = [int(pid) for pid in product_ids if isinstance(pid, (int, str)) and str(pid).isdigit()]
-            if clean_ids:
-                candidates = (
-                    db.query(Product)
-                    .options(load_only(*cols))
-                    .filter(Product.id.in_(clean_ids))
-                    .all()
-                )
+            clean_ids = {
+                int(pid)
+                for pid in product_ids
+                if isinstance(pid, (int, str)) and str(pid).isdigit()
+            }
+            candidates = [p for p in all_products if int(p.get("id") or 0) in clean_ids]
 
         if not candidates and query:
-            all_rows = (
-                db.query(Product)
-                .options(load_only(*cols))
-                .all()
-            )
-            tokens = _search_tokens(query)
             scored = []
-            for p in all_rows:
-                s = _score_product(p, query, None)
-                if s <= 0 and tokens:
-                    hay = _normalize_text(f"{p.name} {p.category} {p.description}")
-                    if any(t in hay for t in tokens):
-                        s = 5.0
-                if s > 0:
-                    scored.append((s, p))
-            scored.sort(key=lambda pair: (-pair[0], -(pair[1].rating or 0.0)))
-            candidates = [pair[1] for pair in scored[:limit]]
-
-        if not candidates:
-            candidates = (
-                db.query(Product)
-                .options(load_only(*cols))
-                .filter(Product.stock > 0)
-                .order_by(Product.rating.desc(), Product.id.desc())
-                .limit(limit)
-                .all()
+            for p in all_products:
+                if int(p.get("stock") if p.get("stock") is not None else 50) <= 0:
+                    continue
+                s, reason = _score_product_dict(p, query, None, active_3d_ids)
+                if s > 2.0:
+                    scored.append((s, reason, p))
+            scored.sort(
+                key=lambda item: (item[0], float(item[2].get("rating") or 4.8)),
+                reverse=True,
             )
+            candidates = [item[2] for item in scored[:limit]]
 
-        selected_ids = [p.id for p in candidates]
-        active_3d_ids: set[int] = set()
-        if selected_ids:
-            rows_3d = (
-                db.query(Product3DAsset.product_id)
-                .filter(
-                    Product3DAsset.product_id.in_(selected_ids),
-                    Product3DAsset.is_active.is_(True),
-                )
-                .distinct()
-                .all()
+        if len(candidates) < 2:
+            in_stock = [
+                p
+                for p in all_products
+                if int(p.get("stock") if p.get("stock") is not None else 50) > 0
+                and p not in candidates
+            ]
+            in_stock.sort(
+                key=lambda p: (
+                    1 if int(p.get("id") or 0) in active_3d_ids else 0,
+                    float(p.get("rating") or 4.8),
+                ),
+                reverse=True,
             )
-            active_3d_ids = {r[0] for r in rows_3d}
+            candidates.extend(in_stock[: max(0, limit - len(candidates))])
 
-        comparison = []
-        for p in candidates[:limit]:
-            item = _product_to_public_dict(p)
-            item["has_3d_model"] = p.id in active_3d_ids
-            comparison.append(item)
-
+        comparison = [
+            _enrich_public_product_dict(p, active_3d_ids)
+            for p in candidates[:limit]
+        ]
         return json.dumps({"products": comparison}, ensure_ascii=False)
     except Exception:
         logger.exception("[TOOL ERROR] compare_products failed")
         return json.dumps({"products": [], "error": "Unable to compare products."})
-    finally:
-        db.close()
 
 
 # ===========================================================================
-# OPERATIONS OVERVIEW TOOL (Operations Agent)
+# OPERATIONS OVERVIEW TOOL
 # ===========================================================================
 
 @tool("operations_overview")
 def operations_overview() -> str:
     """
-    Retrieve live store operational telemetry from PostgreSQL (inventory counts,
-    low-stock alerts, active 3D models, fulfillment split, and total orders).
+    Retrieve live store operational telemetry from Supabase over HTTPS.
     """
     logger.info("[TOOL CALLED] operations_overview")
-
-    db: Session = SessionLocal()
     try:
-        total_products = db.query(Product.id).count()
-        in_house_count = (
-            db.query(Product.id)
-            .filter(Product.fulfillment_type == "IN_HOUSE")
-            .count()
-        )
-        dropship_count = (
-            db.query(Product.id)
-            .filter(Product.fulfillment_type == "DROPSHIP")
-            .count()
-        )
-        active_3d_models = (
-            db.query(Product3DAsset.product_id)
-            .filter(Product3DAsset.is_active.is_(True))
-            .distinct()
-            .count()
-        )
-        total_orders = db.query(Order.id).count()
+        all_products = fetch_products_https()
+        active_3d_ids = fetch_3d_catalog_ids_https()
 
-        low_stock_rows = (
-            db.query(Product.id, Product.name, Product.stock, Product.category)
-            .filter(Product.stock < 10)
-            .order_by(Product.stock.asc())
-            .limit(10)
-            .all()
+        total_products = len(all_products)
+        in_house_count = sum(
+            1 for p in all_products if str(p.get("fulfillment_type") or "IN_HOUSE") == "IN_HOUSE"
         )
+        dropship_count = total_products - in_house_count
 
-        cat_rows = (
-            db.query(Product.category)
-            .all()
-        )
+        low_stock_items = [
+            {
+                "id": p["id"],
+                "name": p["name"],
+                "stock": int(p.get("stock") or 0),
+                "category": p.get("category"),
+            }
+            for p in all_products
+            if int(p.get("stock") if p.get("stock") is not None else 50) < 10
+        ][:10]
+
         category_breakdown: dict[str, int] = {}
-        for (cat,) in cat_rows:
-            key = (cat or "OTHER").strip()
+        for p in all_products:
+            key = str(p.get("category") or "OTHER").strip()
             category_breakdown[key] = category_breakdown.get(key, 0) + 1
 
-        payload = {
-            "total_products": total_products,
-            "in_house_count": in_house_count,
-            "dropship_count": dropship_count,
-            "active_3d_models": active_3d_models,
-            "total_orders": total_orders,
-            "low_stock_items": [
-                {
-                    "id": r.id,
-                    "name": r.name,
-                    "stock": int(r.stock or 0),
-                    "category": r.category,
-                }
-                for r in low_stock_rows
-            ],
-            "category_breakdown": category_breakdown,
-        }
-        return json.dumps(payload, ensure_ascii=False)
+        return json.dumps(
+            {
+                "total_products": total_products,
+                "in_house_count": in_house_count,
+                "dropship_count": dropship_count,
+                "active_3d_models": len(active_3d_ids),
+                "low_stock_items": low_stock_items,
+                "category_breakdown": category_breakdown,
+            },
+            ensure_ascii=False,
+        )
     except Exception:
         logger.exception("[TOOL ERROR] operations_overview failed")
         return json.dumps({"error": "Unable to fetch operational overview."})
-    finally:
-        db.close()

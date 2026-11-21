@@ -79,3 +79,21 @@ Widget buildInline3DCardViewer({
     ar: false,
   );
 }
+
+Widget buildRemoteGlbStudio({
+  required String modelUrl,
+  required String productName,
+  required GlbStudioController controller,
+  ValueChanged<Uint8List>? onThumbnailCaptured,
+  ValueChanged<String>? onError,
+  VoidCallback? onModelLoaded,
+}) {
+  return ModelViewer(
+    src: modelUrl,
+    alt: productName,
+    backgroundColor: const Color(0xFFEAF4FE),
+    cameraControls: true,
+    autoRotate: true,
+    shadowIntensity: 1,
+  );
+}

@@ -58,6 +58,39 @@ class GlbThumbnailStudioWidget extends StatelessWidget {
   }
 }
 
+/// Renders an existing remote `.glb` URL in an interactive studio `<model-viewer>`
+/// so the Admin can orbit to the sharpest angle and snap a new 3D Studio Thumbnail.
+class RemoteGlbStudioWidget extends StatelessWidget {
+  final String modelUrl;
+  final String productName;
+  final GlbStudioController controller;
+  final ValueChanged<Uint8List>? onThumbnailCaptured;
+  final ValueChanged<String>? onError;
+  final VoidCallback? onModelLoaded;
+
+  const RemoteGlbStudioWidget({
+    super.key,
+    required this.modelUrl,
+    required this.productName,
+    required this.controller,
+    this.onThumbnailCaptured,
+    this.onError,
+    this.onModelLoaded,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return impl.buildRemoteGlbStudio(
+      modelUrl: modelUrl,
+      productName: productName,
+      controller: controller,
+      onThumbnailCaptured: onThumbnailCaptured,
+      onError: onError,
+      onModelLoaded: onModelLoaded,
+    );
+  }
+}
+
 /// Sketchfab-style live interactive `<model-viewer>` mounted directly inside a
 /// 3D Showcase card with `camera-controls`, `auto-rotate`, `shadow-intensity="1"`,
 /// and a sleek custom `slot="progress-bar"`.

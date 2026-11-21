@@ -17,6 +17,7 @@ class ShopStateProvider with ChangeNotifier {
 
   List<Product> _wishlist = [];
   List<Product> _recentlyViewed = [];
+  List<Product> _compareList = [];
   List<String> _recentSearches = [];
   List<SavedAddress> _addresses = [];
   String _savedCategory = 'All';
@@ -28,6 +29,7 @@ class ShopStateProvider with ChangeNotifier {
 
   List<Product> get wishlist => List.unmodifiable(_wishlist);
   List<Product> get recentlyViewed => List.unmodifiable(_recentlyViewed);
+  List<Product> get compareList => List.unmodifiable(_compareList);
   List<String> get recentSearches => List.unmodifiable(_recentSearches);
   List<SavedAddress> get addresses => List.unmodifiable(_addresses);
   String get savedCategory => _savedCategory;
@@ -35,6 +37,31 @@ class ShopStateProvider with ChangeNotifier {
 
   bool isWishlisted(int productId) =>
       _wishlist.any((p) => p.id == productId);
+
+  bool isComparing(int productId) =>
+      _compareList.any((p) => p.id == productId);
+
+  /// Toggles a product in the Side-by-Side Comparison tray (up to 3 products).
+  String toggleCompare(Product product) {
+    final existingIdx = _compareList.indexWhere((p) => p.id == product.id);
+    if (existingIdx != -1) {
+      _compareList.removeAt(existingIdx);
+      notifyListeners();
+      return 'Removed "${product.name}" from comparison.';
+    }
+    if (_compareList.length >= 3) {
+      return 'Comparison tray holds up to 3 products. Remove one first.';
+    }
+    _compareList.add(product);
+    notifyListeners();
+    return 'Added "${product.name}" to comparison (${_compareList.length}/3).';
+  }
+
+  void clearCompare() {
+    if (_compareList.isEmpty) return;
+    _compareList = [];
+    notifyListeners();
+  }
 
   Future<void> _loadLocal() async {
     try {
@@ -143,7 +170,10 @@ class ShopStateProvider with ChangeNotifier {
 
   Future<void> syncFromServer({String? userEmail}) async {
     try {
-      final serverWish = await _commerce.fetchWishlist();
+      final localIds = _wishlist.map((p) => p.id).toList();
+      final serverWish = localIds.isNotEmpty
+          ? await _commerce.syncFavorites(localIds)
+          : await _commerce.fetchWishlist();
       if (serverWish.isNotEmpty) {
         _wishlist = serverWish;
         await _saveWishlistLocal();

@@ -1194,17 +1194,40 @@ class _HomeScreenState extends State<HomeScreen>
                 textAlign: TextAlign.center,
                 style: const TextStyle(fontSize: 12),
               ),
-              const SizedBox(height: 10),
-              TextButton(
-                onPressed: () {
-                  _searchController.clear();
-                  _selectCategory('All');
-                  setState(() {
-                    _searchQuery = '';
-                    _adv = const ProductFilters();
-                  });
-                },
-                child: const Text('Clear Filters'),
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 10,
+                runSpacing: 10,
+                alignment: WrapAlignment.center,
+                children: [
+                  FilledButton.icon(
+                    onPressed: () {
+                      final q = _searchQuery.trim();
+                      context.push(
+                        q.isNotEmpty
+                            ? '/ctrlx?q=${Uri.encodeComponent(q)}'
+                            : '/ctrlx',
+                      );
+                    },
+                    icon: const Icon(Icons.auto_awesome_rounded, size: 17),
+                    label: Text(
+                      _searchQuery.trim().isNotEmpty
+                          ? 'Ask CTRL-X AI: "${_searchQuery.trim()}"'
+                          : 'Ask CTRL-X AI Assistant',
+                    ),
+                  ),
+                  OutlinedButton(
+                    onPressed: () {
+                      _searchController.clear();
+                      _selectCategory('All');
+                      setState(() {
+                        _searchQuery = '';
+                        _adv = const ProductFilters();
+                      });
+                    },
+                    child: const Text('Clear Filters'),
+                  ),
+                ],
               ),
             ],
           ),

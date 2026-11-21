@@ -6,8 +6,10 @@ import 'package:penguin_store/helpers/theme_provider.dart';
 import 'package:penguin_store/core/widgets/animated_widgets.dart';
 import 'package:penguin_store/features/shop/providers/auth_provider.dart';
 import 'package:penguin_store/features/shop/providers/cart_provider.dart';
+import 'package:penguin_store/features/shop/providers/currency_provider.dart';
 import 'package:penguin_store/features/shop/providers/shop_state_provider.dart';
 import 'package:penguin_store/features/shop/services/showcase_3d_service.dart';
+import 'package:penguin_store/features/shop/widgets/product_comparison_sheet.dart';
 
 class RightDrawer extends StatelessWidget {
   const RightDrawer({super.key});
@@ -286,6 +288,112 @@ class RightDrawer extends StatelessWidget {
                     onChanged: (_) => themeProvider.toggleTheme(),
                   ),
                 ),
+                Consumer<CurrencyProvider>(
+                  builder: (context, currencyProvider, _) {
+                    return Container(
+                      margin: const EdgeInsets.only(bottom: 10),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 10,
+                      ),
+                      decoration: BoxDecoration(
+                        color: cardBg,
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(
+                          color: isDark
+                              ? Colors.white.withValues(alpha: 0.06)
+                              : const Color(0xFFE2E8F0),
+                        ),
+                      ),
+                      child: Row(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.all(8),
+                            decoration: BoxDecoration(
+                              color: const Color(
+                                0xFF10B981,
+                              ).withValues(alpha: 0.12),
+                              borderRadius: BorderRadius.circular(11),
+                            ),
+                            child: const Icon(
+                              Icons.currency_exchange_rounded,
+                              color: Color(0xFF10B981),
+                              size: 20,
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              'Store Currency',
+                              style: TextStyle(
+                                color: textColor,
+                                fontWeight: FontWeight.w700,
+                                fontSize: 13.5,
+                              ),
+                            ),
+                          ),
+                          DropdownButton<String>(
+                            value: currencyProvider.code,
+                            underline: const SizedBox.shrink(),
+                            dropdownColor: cardBg,
+                            style: TextStyle(
+                              color: textColor,
+                              fontWeight: FontWeight.w800,
+                              fontSize: 13,
+                            ),
+                            items: CurrencyProvider.supported
+                                .map(
+                                  (c) => DropdownMenuItem<String>(
+                                    value: c.code,
+                                    child: Text(c.code),
+                                  ),
+                                )
+                                .toList(),
+                            onChanged: (next) {
+                              if (next != null) {
+                                currencyProvider.setCurrency(next);
+                              }
+                            },
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+                if (shopState.compareList.isNotEmpty)
+                  Container(
+                    margin: const EdgeInsets.only(bottom: 10),
+                    decoration: BoxDecoration(
+                      color: cardBg,
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(
+                        color: const Color(0xFF1E88E5).withValues(alpha: 0.4),
+                      ),
+                    ),
+                    child: ListTile(
+                      dense: true,
+                      leading: const Icon(
+                        Icons.compare_arrows_rounded,
+                        color: Color(0xFF1E88E5),
+                      ),
+                      title: Text(
+                        'Compare Products (${shopState.compareList.length}/3)',
+                        style: TextStyle(
+                          color: textColor,
+                          fontWeight: FontWeight.w700,
+                          fontSize: 13.5,
+                        ),
+                      ),
+                      subtitle: Text(
+                        'View side-by-side matrix',
+                        style: TextStyle(color: subTextColor, fontSize: 11.5),
+                      ),
+                      onTap: () {
+                        Navigator.pop(context);
+                        showProductComparisonSheet(context);
+                      },
+                    ),
+                  ),
                 _buildNavTile(
                   context: context,
                   icon: Icons.support_agent_rounded,

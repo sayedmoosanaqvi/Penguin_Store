@@ -1,7 +1,7 @@
 import 'package:penguin_store/config/api_config.dart';
 
 class Product {
-  final int id; 
+  final int id;
   final String name;
   final String description;
   final double price;
@@ -12,6 +12,7 @@ class Product {
   final int reviews;
   final int? discountPercent;
   final bool isFeatured;
+  final int stock;
 
   Product({
     required this.id,
@@ -25,6 +26,7 @@ class Product {
     required this.reviews,
     this.discountPercent,
     this.isFeatured = false,
+    this.stock = 50,
   });
 
   /// Backend-generated assets (e.g. 3D poster images) are stored as
@@ -40,19 +42,20 @@ class Product {
 
   factory Product.fromJson(Map<String, dynamic> json) {
     return Product(
-      id: json['id'],
-      name: json['name'],
-      description: json['description'] ?? "",
-      price: (json['price'] as num).toDouble(),
-      originalPrice: json['original_price'] != null 
-          ? (json['original_price'] as num).toDouble() 
+      id: (json['id'] as num).toInt(),
+      name: (json['name'] ?? '').toString(),
+      description: (json['description'] ?? '').toString(),
+      price: (json['price'] as num?)?.toDouble() ?? 0.0,
+      originalPrice: json['original_price'] != null
+          ? (json['original_price'] as num).toDouble()
           : null,
       imageUrl: resolveImageUrl(json['image_url']?.toString()),
-      category: json['category'],
+      category: (json['category'] ?? 'CATALOG').toString(),
       rating: (json['rating'] as num?)?.toDouble() ?? 0.0,
       reviews: (json['reviews'] as num?)?.toInt() ?? 0,
-      discountPercent: json['discount_percent'],
-      isFeatured: json['is_featured'] ?? false,
+      discountPercent: (json['discount_percent'] as num?)?.toInt(),
+      isFeatured: json['is_featured'] == true,
+      stock: (json['stock'] as num?)?.toInt() ?? 50,
     );
   }
 
@@ -69,6 +72,7 @@ class Product {
       'reviews': reviews,
       'discount_percent': discountPercent,
       'is_featured': isFeatured,
+      'stock': stock,
     };
   }
 }

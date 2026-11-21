@@ -2,6 +2,7 @@
 import 'package:flutter/material.dart';
 import 'package:penguin_store/features/shop/providers/auth_provider.dart';
 import 'package:penguin_store/features/shop/providers/cart_provider.dart';
+import 'package:penguin_store/features/shop/providers/currency_provider.dart';
 import 'package:penguin_store/features/shop/providers/product_provider.dart';
 import 'package:penguin_store/features/shop/providers/shop_state_provider.dart';
 import 'package:penguin_store/helpers/shared_preferences.dart';
@@ -48,6 +49,9 @@ Future<void> main() async {
   runApp(
     MultiProvider(
       providers: [
+        ChangeNotifierProvider(
+          create: (_) => CurrencyProvider(),
+        ),
         ChangeNotifierProvider(
           create: (_) => ProductProvider(),
         ),
