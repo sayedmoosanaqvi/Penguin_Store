@@ -274,6 +274,12 @@ class TopNavBar extends StatelessWidget implements PreferredSizeWidget {
                             onPressed: voice.stopSpeaking,
                             icon: const Icon(Icons.stop_rounded, size: 16),
                             label: const Text('Stop Audio'),
+                          )
+                        else
+                          FilledButton.tonalIcon(
+                            onPressed: voice.testVoice,
+                            icon: const Icon(Icons.play_arrow_rounded, size: 16),
+                            label: const Text('Test Voice'),
                           ),
                       ],
                     ),

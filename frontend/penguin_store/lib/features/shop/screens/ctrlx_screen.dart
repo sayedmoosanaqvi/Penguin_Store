@@ -103,6 +103,10 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
   Future<void> _handleMicTap() async {
     if (_isLoading) return;
     final voice = context.read<VoiceProvider>();
+    if (voice.isTranscribing) return;
+    // Dismiss mobile soft keyboard & synchronously unlock speech on gesture
+    FocusScope.of(context).unfocus();
+    voice.primeSpeech();
     final transcript = await voice.toggleRecordingAndTranscribe(
       context: context,
     );
@@ -159,6 +163,8 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
     final text = _controller.text.trim();
     if (text.isEmpty || _isLoading) return;
 
+    // Synchronously unlock speech synthesis inside user send/tap gesture
+    context.read<VoiceProvider>().primeSpeech();
     final bool triggeredByVoice = _lastQueryWasVoice;
     _lastQueryWasVoice = false;
 
@@ -306,12 +312,21 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
             );
             if (summary.trim().isNotEmpty) {
               _speakingMsgKey = '${aiReply.hashCode}';
-              voice.speakText(
-                summary,
-                label: 'CTRL-X speaking...',
-                preferNeural: summary.length <= 185,
-                forceEvenIfMuted: triggeredByVoice,
-              );
+              voice
+                  .speakText(
+                    summary,
+                    label: 'CTRL-X speaking...',
+                    preferNeural: summary.length <= 185,
+                    forceEvenIfMuted: triggeredByVoice,
+                  )
+                  .then((outcome) {
+                if (mounted && outcome.autoplayBlocked) {
+                  CustomToast.show(
+                    context,
+                    'Tap "Listen" on the message to hear CTRL-X aloud.',
+                  );
+                }
+              });
             }
           }
         }
@@ -1835,41 +1850,49 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
                           ),
                           Consumer<VoiceProvider>(
                             builder: (context, voice, _) {
+                              final canTapMic =
+                                  !_isLoading && !voice.isTranscribing;
                               return Padding(
                                 padding: const EdgeInsets.only(right: 6),
-                                child: PressableScale(
-                                  onTap: _isLoading ? null : _handleMicTap,
-                                  child: AnimatedContainer(
-                                    duration: const Duration(milliseconds: 220),
-                                    width: 40,
-                                    height: 40,
-                                    decoration: BoxDecoration(
-                                      shape: BoxShape.circle,
-                                      color: voice.isRecording
-                                          ? theme.colorScheme.error
-                                          : theme.colorScheme.primaryContainer
-                                              .withValues(alpha: 0.75),
-                                    ),
-                                    child: voice.isTranscribing
-                                        ? Center(
-                                            child: SizedBox(
-                                              width: 18,
-                                              height: 18,
-                                              child: CircularProgressIndicator(
-                                                strokeWidth: 2,
-                                                color: theme.colorScheme.primary,
+                                child: Tooltip(
+                                  message: voice.isRecording
+                                      ? 'Stop & Send Voice Query'
+                                      : 'Speak to CTRL-X',
+                                  child: Material(
+                                    color: voice.isRecording
+                                        ? theme.colorScheme.error
+                                        : theme.colorScheme.primaryContainer
+                                            .withValues(alpha: 0.78),
+                                    shape: const CircleBorder(),
+                                    clipBehavior: Clip.antiAlias,
+                                    child: InkWell(
+                                      onTap: canTapMic ? _handleMicTap : null,
+                                      child: SizedBox(
+                                        width: 44,
+                                        height: 44,
+                                        child: voice.isTranscribing
+                                            ? Center(
+                                                child: SizedBox(
+                                                  width: 18,
+                                                  height: 18,
+                                                  child: CircularProgressIndicator(
+                                                    strokeWidth: 2,
+                                                    color: theme
+                                                        .colorScheme.primary,
+                                                  ),
+                                                ),
+                                              )
+                                            : Icon(
+                                                voice.isRecording
+                                                    ? Icons.stop_rounded
+                                                    : Icons.mic_rounded,
+                                                size: 21,
+                                                color: voice.isRecording
+                                                    ? Colors.white
+                                                    : theme.colorScheme.primary,
                                               ),
-                                            ),
-                                          )
-                                        : Icon(
-                                            voice.isRecording
-                                                ? Icons.stop_rounded
-                                                : Icons.mic_rounded,
-                                            size: 20,
-                                            color: voice.isRecording
-                                                ? Colors.white
-                                                : theme.colorScheme.primary,
-                                          ),
+                                      ),
+                                    ),
                                   ),
                                 ),
                               );

@@ -48,13 +48,19 @@ class VoiceSpeakOutcome {
 /// Centralized, singleton-backed Voice Intelligence Engine (Phase 2).
 ///
 /// Handles:
-/// - Cross-platform microphone recording (echo cancellation + noise suppression)
-///   uploading to `POST /api/v1/ai/transcribe` (Groq Whisper `whisper-large-v3-turbo`)
-/// - Hybrid Text-to-Speech: Groq Orpheus Neural WAV (`POST /api/v1/ai/speak`) for short
-///   announcements + `FlutterTts` with <=165-char sentence chunking to avoid Web cutoff.
+/// - Cross-platform microphone recording (native browser `MediaRecorder` on
+///   Web/Mobile Web; `AudioRecorder` on Android/iOS) uploading to
+///   `POST /api/v1/ai/transcribe` (Groq Whisper `whisper-large-v3-turbo`)
+/// - Cross-platform Text-to-Speech: native browser `window.speechSynthesis`
+///   with gesture priming on Web/Mobile Safari/Chrome, and `FlutterTts` with
+///   iOS playback audio-session & Android queue configuration on mobile apps.
 class VoiceService {
   VoiceService._() {
-    _initTts();
+    if (kIsWeb) {
+      platform_audio.initWebAudio();
+    } else {
+      _initNativeTts();
+    }
   }
 
   static final VoiceService instance = VoiceService._();
@@ -65,21 +71,53 @@ class VoiceService {
   bool _ttsInitialized = false;
   bool _isRecording = false;
   bool _cancelSpeakRequested = false;
+  String _nativeRecordingExt = 'm4a';
+  String? _lastRecordError;
   Completer<void>? _chunkCompleter;
 
   bool get isRecording => _isRecording;
+  String? get lastRecordError => _lastRecordError;
 
   static String get _base =>
       ApiConfig.baseUrl.replaceFirst(RegExp(r'/$'), '');
 
-  Future<void> _initTts() async {
-    if (_ttsInitialized) return;
+  /// Must be called synchronously inside a user tap/click handler on Web
+  /// (especially Mobile Safari / Chrome) so delayed async replies can speak.
+  void primeSpeechOnUserGesture() {
+    platform_audio.primeWebSpeechOnUserGesture();
+  }
+
+  Future<void> _configureIosPlaybackSession() async {
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.iOS) return;
+    try {
+      await _tts.setSharedInstance(true);
+      await _tts.setIosAudioCategory(
+        IosTextToSpeechAudioCategory.playback,
+        [
+          IosTextToSpeechAudioCategoryOptions.allowBluetooth,
+          IosTextToSpeechAudioCategoryOptions.allowBluetoothA2DP,
+          IosTextToSpeechAudioCategoryOptions.mixWithOthers,
+        ],
+        IosTextToSpeechAudioMode.spokenAudio,
+      );
+    } catch (e) {
+      debugPrint('VoiceService iOS audio category notice: $e');
+    }
+  }
+
+  Future<void> _initNativeTts() async {
+    if (kIsWeb || _ttsInitialized) return;
     _ttsInitialized = true;
     try {
+      await _configureIosPlaybackSession();
       await _tts.setLanguage('en-US');
       await _tts.setPitch(1.0);
       await _tts.setVolume(1.0);
-      await _tts.awaitSpeakCompletion(true);
+      if (defaultTargetPlatform == TargetPlatform.android) {
+        await _tts.setQueueMode(0);
+      }
+      await _tts.awaitSpeakCompletion(false);
+
       _tts.setCompletionHandler(() {
         final c = _chunkCompleter;
         if (c != null && !c.isCompleted) c.complete();
@@ -106,7 +144,6 @@ class VoiceService {
   static String cleanTextForSpeech(String raw) {
     var text = raw;
 
-    // Remove fenced code blocks & markdown links
     text = text.replaceAll(RegExp(r'```[\s\S]*?```'), ' ');
     text = text.replaceAllMapped(
       RegExp(r'\[([^\]]+)\]\([^)]+\)'),
@@ -114,7 +151,6 @@ class VoiceService {
     );
     text = text.replaceAll(RegExp(r'https?://\S+'), '');
 
-    // Format Order IDs like #PS-4829 or Order #144 -> spaced characters/digits
     text = text.replaceAllMapped(
       RegExp(r'(?:Order\s*#\s*|#)([A-Za-z0-9-]+)', caseSensitive: false),
       (m) {
@@ -124,7 +160,6 @@ class VoiceService {
       },
     );
 
-    // Format USD prices: $1,299.00 -> 1,299 dollars; $24.50 -> 24 dollars and 50 cents
     text = text.replaceAllMapped(
       RegExp(r'\$\s*([0-9][0-9,]*)(?:\.(\d{2}))?'),
       (m) {
@@ -137,7 +172,6 @@ class VoiceService {
       },
     );
 
-    // Format EUR and PKR
     text = text.replaceAllMapped(
       RegExp(r'€\s*([0-9][0-9,]*(?:\.\d{2})?)'),
       (m) => '${m.group(1)} euros',
@@ -147,7 +181,6 @@ class VoiceService {
       (m) => '${m.group(1)} rupees',
     );
 
-    // Friendly symbol replacements & Markdown stripping
     text = text.replaceAll('★', ' star ');
     text = text.replaceAll('&', ' and ');
     text = text.replaceAll('•', '. ');
@@ -161,10 +194,10 @@ class VoiceService {
   }
 
   /// Splits text into crisp chunks (`<= maxChunkLength` chars) at sentence
-  /// boundaries so Chrome `speechSynthesis` never truncates long utterances.
+  /// boundaries so browser `speechSynthesis` never truncates long utterances.
   static List<String> splitIntoSpeechChunks(
     String cleanedText, {
-    int maxChunkLength = 165,
+    int maxChunkLength = 160,
   }) {
     final text = cleanedText.trim();
     if (text.isEmpty) return const [];
@@ -186,7 +219,6 @@ class VoiceService {
 
       if (sentence.length > maxChunkLength) {
         flushCurrent();
-        // Split long sentence by comma or word boundary
         final words = sentence.split(RegExp(r'\s+'));
         for (final w in words) {
           if (current.length + w.length + 1 > maxChunkLength &&
@@ -216,8 +248,22 @@ class VoiceService {
   // -------------------------------------------------------------------------
 
   Future<bool> startRecording() async {
-    await stopSpeaking();
+    _lastRecordError = null;
+    stopSpeakingSync();
+    if (!kIsWeb) {
+      await stopSpeaking();
+    }
     if (_isRecording) return true;
+
+    if (platform_audio.usesPlatformWebRecorder) {
+      final res = await platform_audio.startWebRecording();
+      if (!res.started) {
+        _lastRecordError = res.errorMessage;
+        return false;
+      }
+      _isRecording = true;
+      return true;
+    }
 
     try {
       final recorder = AudioRecorder();
@@ -225,18 +271,23 @@ class VoiceService {
 
       final hasPerm = await recorder.hasPermission();
       if (!hasPerm) {
+        _lastRecordError =
+            'Microphone permission denied. Please grant Microphone access in your device settings.';
         await recorder.dispose();
         _recorder = null;
         return false;
       }
 
-      final path = await platform_audio.createTempRecordingPath();
-      final encoder = kIsWeb ? AudioEncoder.opus : AudioEncoder.aacLc;
-      final supported = await recorder.isEncoderSupported(encoder);
+      final aacSupported = await recorder.isEncoderSupported(AudioEncoder.aacLc);
+      final chosenEncoder = aacSupported ? AudioEncoder.aacLc : AudioEncoder.wav;
+      _nativeRecordingExt = aacSupported ? 'm4a' : 'wav';
+      final path = await platform_audio.createTempRecordingPath(
+        extension: _nativeRecordingExt,
+      );
 
       await recorder.start(
         RecordConfig(
-          encoder: supported ? encoder : AudioEncoder.wav,
+          encoder: chosenEncoder,
           echoCancel: true,
           noiseSuppress: true,
           autoGain: true,
@@ -250,12 +301,30 @@ class VoiceService {
       return true;
     } catch (e) {
       debugPrint('VoiceService startRecording error: $e');
+      _lastRecordError = 'Unable to start native microphone recording.';
       await cancelRecording();
       return false;
     }
   }
 
   Future<VoiceTranscriptionResult> stopRecordingAndTranscribe() async {
+    if (platform_audio.usesPlatformWebRecorder) {
+      _isRecording = false;
+      final captured = await platform_audio.stopWebRecording();
+      if (captured == null || captured.bytes.length < 128) {
+        return const VoiceTranscriptionResult(
+          emptyClip: true,
+          errorMessage:
+              'Clip was too short or silent. Tap the mic, speak clearly, then tap stop.',
+        );
+      }
+      return transcribeAudioBytes(
+        captured.bytes,
+        filename: captured.filename,
+        mimeType: captured.mimeType,
+      );
+    }
+
     final recorder = _recorder;
     _isRecording = false;
     _recorder = null;
@@ -289,18 +358,23 @@ class VoiceService {
     if (bytes == null || bytes.length < 128) {
       return const VoiceTranscriptionResult(
         emptyClip: true,
-        errorMessage: 'Clip was too short or silent. Tap the mic and speak.',
+        errorMessage:
+            'Clip was too short or silent. Tap the mic, speak clearly, then tap stop.',
       );
     }
 
     return transcribeAudioBytes(
       bytes,
-      filename: kIsWeb ? 'speech.webm' : 'speech.m4a',
+      filename: 'speech.$_nativeRecordingExt',
     );
   }
 
   Future<void> cancelRecording() async {
     _isRecording = false;
+    if (platform_audio.usesPlatformWebRecorder) {
+      await platform_audio.cancelWebRecording();
+      return;
+    }
     final recorder = _recorder;
     _recorder = null;
     if (recorder != null) {
@@ -313,9 +387,28 @@ class VoiceService {
     }
   }
 
+  MediaType _resolveAudioMediaType(String filename, String? mimeType) {
+    final hint = (mimeType ?? '').toLowerCase();
+    final ext = filename.split('.').last.toLowerCase();
+    if (hint.contains('mp4') || ext == 'mp4' || ext == 'm4a') {
+      return MediaType('audio', 'mp4');
+    }
+    if (hint.contains('wav') || ext == 'wav') {
+      return MediaType('audio', 'wav');
+    }
+    if (hint.contains('ogg') || ext == 'ogg') {
+      return MediaType('audio', 'ogg');
+    }
+    if (hint.contains('mpeg') || ext == 'mp3') {
+      return MediaType('audio', 'mpeg');
+    }
+    return MediaType('audio', 'webm');
+  }
+
   Future<VoiceTranscriptionResult> transcribeAudioBytes(
     Uint8List audioBytes, {
     String filename = 'speech.webm',
+    String? mimeType,
   }) async {
     try {
       final request = http.MultipartRequest(
@@ -323,19 +416,14 @@ class VoiceService {
         Uri.parse('$_base/api/v1/ai/transcribe'),
       );
       request.headers['Accept'] = 'application/json';
-      final ext = filename.split('.').last.toLowerCase();
-      final mime = ext == 'wav'
-          ? MediaType('audio', 'wav')
-          : (ext == 'm4a'
-                ? MediaType('audio', 'mp4')
-                : MediaType('audio', 'webm'));
+      final mediaType = _resolveAudioMediaType(filename, mimeType);
 
       request.files.add(
         http.MultipartFile.fromBytes(
           'file',
           audioBytes,
           filename: filename,
-          contentType: mime,
+          contentType: mediaType,
         ),
       );
 
@@ -377,7 +465,7 @@ class VoiceService {
   }
 
   // -------------------------------------------------------------------------
-  // HYBRID TEXT-TO-SPEECH (GROQ ORPHEUS WAV + FLUTTER_TTS CHUNKED)
+  // CROSS-PLATFORM TEXT-TO-SPEECH
   // -------------------------------------------------------------------------
 
   Future<VoiceSpeakOutcome> speak(
@@ -388,69 +476,46 @@ class VoiceService {
     VoidCallback? onComplete,
     VoidCallback? onAutoplayBlocked,
   }) async {
-    await stopSpeaking();
-    await _initTts();
-
     final cleaned = cleanTextForSpeech(rawText);
     if (cleaned.isEmpty) {
       onComplete?.call();
       return const VoiceSpeakOutcome(completed: true);
     }
 
+    // Web Fast Path: execute window.speechSynthesis synchronously in user gesture!
+    if (platform_audio.usesPlatformWebSpeech) {
+      _cancelSpeakRequested = false;
+      final chunks = splitIntoSpeechChunks(cleaned, maxChunkLength: 160);
+      final status = await platform_audio.speakWebChunks(
+        chunks,
+        rate: speechRate.clamp(0.7, 1.45),
+        onStart: onStart,
+      );
+      if (status == platform_audio.VoiceAudioPlayStatus.autoplayBlocked) {
+        onAutoplayBlocked?.call();
+        onComplete?.call();
+        return const VoiceSpeakOutcome(autoplayBlocked: true);
+      }
+      onComplete?.call();
+      final wasStopped =
+          status == platform_audio.VoiceAudioPlayStatus.stopped ||
+          _cancelSpeakRequested;
+      return VoiceSpeakOutcome(
+        completed: !wasStopped,
+        stopped: wasStopped,
+      );
+    }
+
+    // Native Android / iOS / Desktop path via FlutterTts
+    await stopSpeaking();
+    await _initNativeTts();
+    await _configureIosPlaybackSession();
+
     _cancelSpeakRequested = false;
     onStart?.call();
 
-    // 1. Optional Expressive Neural TTS for short announcements (<= 195 chars)
-    if (preferNeuralTts && cleaned.length <= 195) {
-      try {
-        final res = await http
-            .post(
-              Uri.parse('$_base/api/v1/ai/speak'),
-              headers: const {'Content-Type': 'application/json'},
-              body: jsonEncode({'text': cleaned, 'voice': 'troy'}),
-            )
-            .timeout(const Duration(seconds: 4));
-
-        if (_cancelSpeakRequested) {
-          onComplete?.call();
-          return const VoiceSpeakOutcome(stopped: true);
-        }
-
-        final contentType = res.headers['content-type'] ?? '';
-        if (res.statusCode == 200 &&
-            contentType.contains('audio/wav') &&
-            res.bodyBytes.length > 44) {
-          final status = await platform_audio.playWavBytesPlatform(
-            res.bodyBytes,
-          );
-          if (status == platform_audio.VoiceAudioPlayStatus.autoplayBlocked) {
-            onAutoplayBlocked?.call();
-            onComplete?.call();
-            return const VoiceSpeakOutcome(autoplayBlocked: true);
-          }
-          if (status == platform_audio.VoiceAudioPlayStatus.completed) {
-            onComplete?.call();
-            return const VoiceSpeakOutcome(
-              completed: true,
-              usedNeuralTts: true,
-            );
-          }
-          if (status == platform_audio.VoiceAudioPlayStatus.stopped) {
-            onComplete?.call();
-            return const VoiceSpeakOutcome(stopped: true);
-          }
-        }
-      } catch (_) {
-        // Silently fall back to FlutterTts
-      }
-    }
-
-    // 2. Client/Browser FlutterTts with sentence chunking (<= 165 chars each)
-    final chunks = splitIntoSpeechChunks(cleaned);
-    // Normalize rate into flutter_tts range (Web 0.5–1.5; Native 0.4–0.65)
-    final effectiveRate = kIsWeb
-        ? speechRate.clamp(0.65, 1.45)
-        : (speechRate * 0.5).clamp(0.35, 0.75);
+    final chunks = splitIntoSpeechChunks(cleaned, maxChunkLength: 165);
+    final effectiveRate = (speechRate * 0.5).clamp(0.35, 0.75);
 
     try {
       await _tts.setSpeechRate(effectiveRate);
@@ -462,11 +527,9 @@ class VoiceService {
       _chunkCompleter = completer;
 
       try {
-        final speakResult = await _tts.speak(chunk);
-        // If platform returned synchronously or error (e.g. Web autoplay blocked without gesture)
+        await _tts.speak(chunk, focus: true);
         if (!completer.isCompleted) {
-          // Wait up to a reasonable ceiling for this chunk so it can't hang forever
-          final maxWaitMs = (chunk.length * 95).clamp(2500, 16000);
+          final maxWaitMs = (chunk.length * 105).clamp(3000, 18000);
           await completer.future.timeout(
             Duration(milliseconds: maxWaitMs),
             onTimeout: () {
@@ -474,18 +537,8 @@ class VoiceService {
             },
           );
         }
-        if (speakResult == 0 && kIsWeb && chunks.first == chunk) {
-          onAutoplayBlocked?.call();
-          onComplete?.call();
-          return const VoiceSpeakOutcome(autoplayBlocked: true);
-        }
       } catch (e) {
-        final msg = e.toString().toLowerCase();
-        if (msg.contains('notallowed') || msg.contains('autoplay')) {
-          onAutoplayBlocked?.call();
-          onComplete?.call();
-          return const VoiceSpeakOutcome(autoplayBlocked: true);
-        }
+        debugPrint('Native TTS speak chunk error: $e');
       } finally {
         _chunkCompleter = null;
       }
@@ -498,14 +551,21 @@ class VoiceService {
     );
   }
 
-  Future<void> stopSpeaking() async {
+  void stopSpeakingSync() {
     _cancelSpeakRequested = true;
     final c = _chunkCompleter;
     if (c != null && !c.isCompleted) c.complete();
     _chunkCompleter = null;
+    platform_audio.stopWebSpeechSync();
+  }
+
+  Future<void> stopSpeaking() async {
+    stopSpeakingSync();
     await platform_audio.stopWavAudioPlatform();
-    try {
-      await _tts.stop();
-    } catch (_) {}
+    if (!kIsWeb) {
+      try {
+        await _tts.stop();
+      } catch (_) {}
+    }
   }
 }

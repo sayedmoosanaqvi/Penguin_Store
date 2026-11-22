@@ -7,14 +7,14 @@ import 'package:penguin_store/core/services/voice_service.dart';
 class VoiceProvider with ChangeNotifier {
   static const String _keyVoiceEnabled = 'penguin_voice_enabled_v1';
   static const String _keyAutoOrder = 'penguin_voice_auto_order_v1';
-  static const String _keyAutoCtrlX = 'penguin_voice_auto_ctrlx_v1';
+  static const String _keyAutoCtrlX = 'penguin_voice_auto_ctrlx_v2';
   static const String _keyRatePreset = 'penguin_voice_rate_preset_v1';
 
   final VoiceService _voice = VoiceService.instance;
 
   bool _voiceEnabled = true;
   bool _autoSpeakOrderConfirmation = true;
-  bool _autoSpeakCtrlX = false;
+  bool _autoSpeakCtrlX = true;
   String _speechRatePreset = 'Normal'; // 'Slow' | 'Normal' | 'Fast'
 
   bool _isRecording = false;
@@ -56,7 +56,7 @@ class VoiceProvider with ChangeNotifier {
       final prefs = await SharedPreferences.getInstance();
       _voiceEnabled = prefs.getBool(_keyVoiceEnabled) ?? true;
       _autoSpeakOrderConfirmation = prefs.getBool(_keyAutoOrder) ?? true;
-      _autoSpeakCtrlX = prefs.getBool(_keyAutoCtrlX) ?? false;
+      _autoSpeakCtrlX = prefs.getBool(_keyAutoCtrlX) ?? true;
       final savedRate = prefs.getString(_keyRatePreset) ?? 'Normal';
       if (const {'Slow', 'Normal', 'Fast'}.contains(savedRate)) {
         _speechRatePreset = savedRate;
@@ -65,9 +65,23 @@ class VoiceProvider with ChangeNotifier {
     } catch (_) {}
   }
 
+  /// Synchronously unlocks speech synthesis inside a user gesture handler so
+  /// delayed async responses (CTRL-X / checkout) are permitted to speak.
+  void primeSpeech() => _voice.primeSpeechOnUserGesture();
+
+  Future<VoiceSpeakOutcome> testVoice() {
+    return speakText(
+      'Hello! Penguin Store voice assistant is ready and working clearly.',
+      label: 'Voice Check',
+      forceEvenIfMuted: true,
+    );
+  }
+
   Future<void> setVoiceEnabled(bool value) async {
     _voiceEnabled = value;
-    if (!value) {
+    if (value) {
+      _voice.primeSpeechOnUserGesture();
+    } else {
       await stopSpeaking();
     }
     notifyListeners();
@@ -90,6 +104,9 @@ class VoiceProvider with ChangeNotifier {
 
   Future<void> setAutoSpeakCtrlX(bool value) async {
     _autoSpeakCtrlX = value;
+    if (value) {
+      _voice.primeSpeechOnUserGesture();
+    }
     notifyListeners();
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -112,12 +129,16 @@ class VoiceProvider with ChangeNotifier {
   /// - Second call stops recording, releases browser mic tracks immediately,
   ///   transcribes via Groq Whisper (`/api/v1/ai/transcribe`), and returns the transcript.
   Future<String?> toggleRecordingAndTranscribe({BuildContext? context}) async {
+    if (_isTranscribing) return null;
     _lastError = null;
+    _voice.primeSpeechOnUserGesture();
+
     if (!_isRecording) {
       final started = await _voice.startRecording();
       if (!started) {
         _isRecording = false;
         _lastError =
+            _voice.lastRecordError ??
             'Microphone access was denied or unavailable. Enable mic permission in your browser/device settings.';
         notifyListeners();
         if (context != null && context.mounted) {
@@ -125,6 +146,7 @@ class VoiceProvider with ChangeNotifier {
             SnackBar(
               content: Text(_lastError!),
               backgroundColor: Colors.redAccent,
+              behavior: SnackBarBehavior.floating,
             ),
           );
         }
@@ -147,7 +169,10 @@ class VoiceProvider with ChangeNotifier {
       notifyListeners();
       if (context != null && context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(result.errorMessage!)),
+          SnackBar(
+            content: Text(result.errorMessage!),
+            behavior: SnackBarBehavior.floating,
+          ),
         );
       }
       return null;
@@ -172,6 +197,10 @@ class VoiceProvider with ChangeNotifier {
   }) async {
     if (!forceEvenIfMuted && !_voiceEnabled) {
       return const VoiceSpeakOutcome();
+    }
+
+    if (forceEvenIfMuted) {
+      _voice.primeSpeechOnUserGesture();
     }
 
     _autoplayBlocked = false;

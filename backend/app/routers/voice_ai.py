@@ -43,6 +43,47 @@ ALLOWED_AUDIO_EXTENSIONS = {
     ".flac",
 }
 
+# Circuit-breaker timestamp when Groq Orpheus TTS requires playground terms acceptance
+_orpheus_blocked_until: float = 0.0
+
+
+def _detect_audio_extension(
+    audio_bytes: bytes,
+    filename: str,
+    content_type: Optional[str] = None,
+) -> str:
+    """Resolve accurate container extension from magic bytes, Content-Type, or filename."""
+    if len(audio_bytes) >= 12:
+        if audio_bytes[:4] == b"RIFF" and audio_bytes[8:12] == b"WAVE":
+            return ".wav"
+        if audio_bytes[:4] == b"\x1a\x45\xdf\xa3":
+            return ".webm"
+        if audio_bytes[4:8] == b"ftyp":
+            return ".mp4"
+        if audio_bytes[:4] == b"OggS":
+            return ".ogg"
+        if audio_bytes[:4] == b"fLaC":
+            return ".flac"
+    if audio_bytes[:3] == b"ID3" or audio_bytes[:2] in {b"\xff\xfb", b"\xff\xf3", b"\xff\xf2"}:
+        return ".mp3"
+
+    ct = (content_type or "").lower()
+    if "mp4" in ct or "m4a" in ct or "aac" in ct:
+        return ".mp4"
+    if "ogg" in ct:
+        return ".ogg"
+    if "wav" in ct or "wave" in ct:
+        return ".wav"
+    if "webm" in ct:
+        return ".webm"
+    if "mpeg" in ct or "mp3" in ct:
+        return ".mp3"
+
+    ext = os.path.splitext(filename or "")[1].lower()
+    if ext in ALLOWED_AUDIO_EXTENSIONS:
+        return ext
+    return ".webm"
+
 
 class SpeakRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=1200)
@@ -131,12 +172,18 @@ async def transcribe_audio(
         }
 
     filename = (file.filename or "voice_query.webm").strip() or "voice_query.webm"
+    detected_ext = _detect_audio_extension(
+        audio_bytes=audio_bytes,
+        filename=filename,
+        content_type=file.content_type,
+    )
+    resolved_filename = f"speech{detected_ext}"
 
     try:
         transcript, detected_lang = await run_in_threadpool(
             _transcribe_with_groq_sync,
             audio_bytes=audio_bytes,
-            filename=filename,
+            filename=resolved_filename,
             language=language,
         )
         latency_ms = round((time.perf_counter() - started) * 1000.0, 2)
@@ -181,6 +228,7 @@ async def synthesize_speech(payload: SpeakRequest):
     `canopylabs/orpheus-v1-english` with a strict 4-second timeout and seamless
     client-TTS fallback JSON response on long text or rate limits.
     """
+    global _orpheus_blocked_until
     started = time.perf_counter()
     clean_text = _strip_markdown_for_tts(payload.text)
     api_key = (os.getenv("GROQ_API_KEY") or "").strip()
@@ -191,6 +239,15 @@ async def synthesize_speech(payload: SpeakRequest):
             content={
                 "fallback_to_client_tts": True,
                 "reason": "length_exceeded" if len(clean_text) > 195 else "unconfigured",
+            },
+        )
+
+    if time.monotonic() < _orpheus_blocked_until:
+        return JSONResponse(
+            status_code=200,
+            content={
+                "fallback_to_client_tts": True,
+                "reason": "terms_not_accepted",
             },
         )
 
@@ -232,6 +289,17 @@ async def synthesize_speech(payload: SpeakRequest):
                 headers={
                     "X-TTS-Engine": "groq-orpheus",
                     "Cache-Control": "no-store",
+                },
+            )
+
+        if resp.status_code == 400 and "terms" in resp.text.lower():
+            _orpheus_blocked_until = time.monotonic() + 600.0
+            logger.info("Groq Orpheus TTS terms not accepted; caching fallback for 10m")
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "fallback_to_client_tts": True,
+                    "reason": "terms_not_accepted",
                 },
             )
 

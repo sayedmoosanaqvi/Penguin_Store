@@ -635,6 +635,28 @@ class ProfileScreen extends StatelessWidget {
                       ],
                     ),
                   ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                    child: SizedBox(
+                      width: double.infinity,
+                      child: FilledButton.tonalIcon(
+                        onPressed: voice.isSpeaking
+                            ? voice.stopSpeaking
+                            : voice.testVoice,
+                        icon: Icon(
+                          voice.isSpeaking
+                              ? Icons.stop_rounded
+                              : Icons.play_arrow_rounded,
+                          size: 18,
+                        ),
+                        label: Text(
+                          voice.isSpeaking
+                              ? 'Stop Test Audio'
+                              : 'Test Spoken Voice Audio',
+                        ),
+                      ),
+                    ),
+                  ),
                 ],
               ),
 
