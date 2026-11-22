@@ -61,6 +61,7 @@ from .routers import (  # noqa: E402
     supplier,
     trending,
     visual_search,
+    voice_ai,
 )
 
 logger = logging.getLogger(__name__)
@@ -161,6 +162,7 @@ app.include_router(trending.router)
 app.include_router(recommendations.router)
 app.include_router(notifications.router)
 app.include_router(visual_search.router)
+app.include_router(voice_ai.router)
 app.include_router(premium_3d.router)
 
 

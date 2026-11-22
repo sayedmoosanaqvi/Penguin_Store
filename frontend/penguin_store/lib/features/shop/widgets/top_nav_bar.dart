@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
+import 'package:penguin_store/core/providers/voice_provider.dart';
 import 'package:penguin_store/core/widgets/animated_widgets.dart';
 import 'package:penguin_store/features/shop/providers/auth_provider.dart';
 import 'package:penguin_store/features/shop/providers/currency_provider.dart';
@@ -133,6 +134,30 @@ class TopNavBar extends StatelessWidget implements PreferredSizeWidget {
           ),
         ),
 
+        // Voice Control Pill (Mute / Settings)
+        Consumer<VoiceProvider>(
+          builder: (context, voice, _) {
+            return IconButton(
+              visualDensity: VisualDensity.compact,
+              tooltip: voice.voiceEnabled
+                  ? 'Voice Mode On (${voice.speechRatePreset}) • Tap for settings'
+                  : 'Voice Mode Muted • Tap to enable',
+              onPressed: () => _showVoiceSettingsSheet(context),
+              icon: Icon(
+                voice.isSpeaking
+                    ? Icons.graphic_eq_rounded
+                    : (voice.voiceEnabled
+                          ? Icons.volume_up_rounded
+                          : Icons.volume_off_rounded),
+                color: voice.isSpeaking
+                    ? const Color(0xFF00E5FF)
+                    : (voice.voiceEnabled ? Colors.white : Colors.white60),
+                size: 20,
+              ),
+            );
+          },
+        ),
+
         // Side-by-Side Compare Tray button
         if (compareCount > 0)
           IconButton(
@@ -211,6 +236,105 @@ class TopNavBar extends StatelessWidget implements PreferredSizeWidget {
           ),
         ),
       ],
+    );
+  }
+
+  void _showVoiceSettingsSheet(BuildContext context) {
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetCtx) {
+        return Consumer<VoiceProvider>(
+          builder: (ctx, voice, _) {
+            final colors = Theme.of(ctx).colorScheme;
+            return SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(Icons.record_voice_over_rounded,
+                            color: colors.primary),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            'Voice Intelligence Controls',
+                            style: TextStyle(
+                              fontSize: 17,
+                              fontWeight: FontWeight.w800,
+                              color: colors.onSurface,
+                            ),
+                          ),
+                        ),
+                        if (voice.isSpeaking)
+                          FilledButton.tonalIcon(
+                            onPressed: voice.stopSpeaking,
+                            icon: const Icon(Icons.stop_rounded, size: 16),
+                            label: const Text('Stop Audio'),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    SwitchListTile(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('Enable Spoken Feedback (TTS)'),
+                      subtitle: const Text(
+                        'Allow Penguin Store to read confirmations and summaries aloud',
+                      ),
+                      value: voice.voiceEnabled,
+                      onChanged: voice.setVoiceEnabled,
+                    ),
+                    SwitchListTile(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('Auto-Speak Order Confirmation'),
+                      subtitle: const Text(
+                        'Speak Order ID & total after Stripe/COD checkout',
+                      ),
+                      value: voice.autoSpeakOrderConfirmation,
+                      onChanged: voice.setAutoSpeakOrderConfirmation,
+                    ),
+                    SwitchListTile(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('Always Auto-Speak CTRL-X Replies'),
+                      subtitle: const Text(
+                        'Also read typed chat replies aloud (mic prompts always auto-speak)',
+                      ),
+                      value: voice.autoSpeakCtrlX,
+                      onChanged: voice.setAutoSpeakCtrlX,
+                    ),
+                    const SizedBox(height: 10),
+                    Text(
+                      'Speech Speed',
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                        color: colors.onSurface,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    SegmentedButton<String>(
+                      segments: const [
+                        ButtonSegment(value: 'Slow', label: Text('Slow')),
+                        ButtonSegment(value: 'Normal', label: Text('Normal')),
+                        ButtonSegment(value: 'Fast', label: Text('Fast')),
+                      ],
+                      selected: {voice.speechRatePreset},
+                      onSelectionChanged: (sel) =>
+                          voice.setSpeechRatePreset(sel.first),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
     );
   }
 }

@@ -3,6 +3,7 @@ import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
 
+import 'package:penguin_store/core/providers/voice_provider.dart';
 import 'package:penguin_store/features/shop/models/product_model.dart';
 import 'package:penguin_store/features/shop/providers/auth_provider.dart';
 import 'package:penguin_store/features/shop/providers/cart_provider.dart';
@@ -1455,7 +1456,100 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
             ),
           ],
         ),
+        const SizedBox(height: 12),
+        _buildProductAudioSummaryPill(
+          context,
+          product,
+          currency,
+          effectiveUnitPrice,
+        ),
       ],
+    );
+  }
+
+  String _buildProductSpokenSummary(
+    Product product,
+    CurrencyProvider currency,
+    double effectiveUnitPrice,
+  ) {
+    final priceSpoken = currency.format(effectiveUnitPrice);
+    final stockPhrase = product.stock <= 0
+        ? 'Currently out of stock.'
+        : (product.stock < 10
+              ? 'Only ${product.stock} left in stock.'
+              : 'In stock and ready to ship.');
+    final verdict = _aiReviewInsights?.verdict.trim() ?? '';
+    final ratingPhrase = _weightedTrustRating > 0
+        ? 'AI Review Trust rating is ${_weightedTrustRating.toStringAsFixed(1)} out of 5.'
+        : 'Rated ${product.rating.toStringAsFixed(1)} stars.';
+    final rawDesc = product.description.trim();
+    final descSnippet = rawDesc.isNotEmpty
+        ? (rawDesc.length > 140 ? '${rawDesc.substring(0, 140)}...' : rawDesc)
+        : '';
+
+    return '${product.name}. Priced at $priceSpoken. $stockPhrase $ratingPhrase ${verdict.isNotEmpty ? verdict : descSnippet}';
+  }
+
+  Widget _buildProductAudioSummaryPill(
+    BuildContext context,
+    Product product,
+    CurrencyProvider currency,
+    double effectiveUnitPrice,
+  ) {
+    final colors = Theme.of(context).colorScheme;
+    return Consumer<VoiceProvider>(
+      builder: (context, voice, _) {
+        final isPlayingProduct =
+            voice.isSpeaking &&
+            voice.activeLabel == 'Product Summary: ${product.id}';
+        return OutlinedButton.icon(
+          onPressed: () {
+            if (isPlayingProduct) {
+              voice.stopSpeaking();
+            } else {
+              final text = _buildProductSpokenSummary(
+                product,
+                currency,
+                effectiveUnitPrice,
+              );
+              voice.speakText(
+                text,
+                label: 'Product Summary: ${product.id}',
+                preferNeural: text.length <= 185,
+                forceEvenIfMuted: true,
+              );
+            }
+          },
+          icon: Icon(
+            isPlayingProduct
+                ? Icons.stop_circle_rounded
+                : Icons.volume_up_rounded,
+            size: 18,
+            color: isPlayingProduct ? colors.error : colors.primary,
+          ),
+          label: Text(
+            isPlayingProduct
+                ? 'Stop Product Audio'
+                : 'Listen to Product Summary',
+            style: GoogleFonts.plusJakartaSans(
+              fontSize: 12.5,
+              fontWeight: FontWeight.w700,
+              color: isPlayingProduct ? colors.error : colors.primary,
+            ),
+          ),
+          style: OutlinedButton.styleFrom(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+            side: BorderSide(
+              color: isPlayingProduct
+                  ? colors.error.withValues(alpha: 0.5)
+                  : colors.primary.withValues(alpha: 0.35),
+            ),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(999),
+            ),
+          ),
+        );
+      },
     );
   }
 
@@ -2372,6 +2466,48 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
                     color: colors.onSurface,
                   ),
                 ),
+              ),
+              Consumer<VoiceProvider>(
+                builder: (context, voice, _) {
+                  final pid = _product?.id ?? 0;
+                  final isPlayingVerdict =
+                      voice.isSpeaking &&
+                      voice.activeLabel == 'AI Verdict: $pid';
+                  return Padding(
+                    padding: const EdgeInsets.only(right: 6),
+                    child: IconButton.filledTonal(
+                      tooltip: isPlayingVerdict
+                          ? 'Stop Verdict Audio'
+                          : 'Listen to AI Review Verdict',
+                      onPressed: () {
+                        if (isPlayingVerdict) {
+                          voice.stopSpeaking();
+                        } else {
+                          final prosText = pros.isNotEmpty
+                              ? 'Strengths: ${pros.take(2).join(', ')}.'
+                              : '';
+                          final consText = cons.isNotEmpty
+                              ? 'Trade-offs: ${cons.take(2).join(', ')}.'
+                              : '';
+                          final spoken =
+                              'Weighted trust score is ${_weightedTrustRating.toStringAsFixed(1)} stars. $summary $prosText $consText';
+                          voice.speakText(
+                            spoken,
+                            label: 'AI Verdict: $pid',
+                            preferNeural: spoken.length <= 185,
+                            forceEvenIfMuted: true,
+                          );
+                        }
+                      },
+                      icon: Icon(
+                        isPlayingVerdict
+                            ? Icons.stop_rounded
+                            : Icons.volume_up_rounded,
+                        size: 18,
+                      ),
+                    ),
+                  );
+                },
               ),
               Container(
                 padding: const EdgeInsets.symmetric(

@@ -33,6 +33,8 @@ dependencies:
   flutter_secure_storage: ^11.2.0
   cached_network_image: ^3.4.1
   web: ^1.1.1
+  flutter_tts: ^4.2.5
+  record: ^6.2.1
 
 dev_dependencies:
   flutter_test:

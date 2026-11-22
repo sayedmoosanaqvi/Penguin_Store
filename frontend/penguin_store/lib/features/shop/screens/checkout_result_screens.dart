@@ -6,6 +6,7 @@ import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
 
+import 'package:penguin_store/core/providers/voice_provider.dart';
 import 'package:penguin_store/features/shop/providers/cart_provider.dart';
 import 'package:penguin_store/features/shop/providers/currency_provider.dart';
 import 'package:penguin_store/features/shop/providers/product_provider.dart';
@@ -72,6 +73,16 @@ class _CheckoutSuccessScreenState extends State<CheckoutSuccessScreen> {
             'Stripe Payment Verified!',
             'Order #${ord?['order_id'] ?? orderId ?? ''} is confirmed and a receipt email has been sent.',
           );
+          final resolvedOid =
+              (ord?['order_id'] ?? orderId ?? '').toString();
+          final totalUsd = (ord?['total_amount'] as num?)?.toDouble() ?? 0.0;
+          final formattedTotal =
+              context.read<CurrencyProvider>().format(totalUsd);
+          context.read<VoiceProvider>().speakOrderConfirmation(
+                orderId: resolvedOid.isEmpty ? 'confirmed' : resolvedOid,
+                formattedTotal: formattedTotal,
+                isStripe: true,
+              );
         }
         setState(() {
           _orderRecord = ord;
@@ -92,6 +103,14 @@ class _CheckoutSuccessScreenState extends State<CheckoutSuccessScreen> {
           'Order Confirmed!',
           'Order #$orderId has been placed and queued for dispatch.',
         );
+        final totalUsd = (ord?['total_amount'] as num?)?.toDouble() ?? 0.0;
+        final formattedTotal =
+            context.read<CurrencyProvider>().format(totalUsd);
+        context.read<VoiceProvider>().speakOrderConfirmation(
+              orderId: orderId.toString(),
+              formattedTotal: formattedTotal,
+              isStripe: false,
+            );
         setState(() {
           _orderRecord = ord;
           _isVerifying = false;
@@ -316,6 +335,93 @@ class _CheckoutSuccessScreenState extends State<CheckoutSuccessScreen> {
                         color: colors.onSurfaceVariant,
                       ),
                     ),
+                    const SizedBox(height: 14),
+                    Consumer<VoiceProvider>(
+                      builder: (context, voice, _) {
+                        final oidStr = (orderId ?? 'confirmed').toString();
+                        final formattedTotal = currency.format(total);
+                        final isBlocked = voice.autoplayBlocked;
+                        return Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 14,
+                            vertical: 10,
+                          ),
+                          decoration: BoxDecoration(
+                            color: isBlocked
+                                ? colors.primaryContainer.withValues(alpha: 0.7)
+                                : colors.surfaceContainerHighest.withValues(
+                                    alpha: 0.45,
+                                  ),
+                            borderRadius: BorderRadius.circular(14),
+                            border: Border.all(
+                              color: isBlocked
+                                  ? colors.primary
+                                  : colors.outlineVariant.withValues(
+                                      alpha: 0.4,
+                                    ),
+                            ),
+                          ),
+                          child: Wrap(
+                            spacing: 10,
+                            runSpacing: 8,
+                            alignment: WrapAlignment.center,
+                            crossAxisAlignment: WrapCrossAlignment.center,
+                            children: [
+                              Icon(
+                                voice.isSpeaking
+                                    ? Icons.graphic_eq_rounded
+                                    : Icons.volume_up_rounded,
+                                color: colors.primary,
+                                size: 20,
+                              ),
+                              Text(
+                                isBlocked
+                                    ? 'Browser paused auto-audio after Stripe redirect'
+                                    : (voice.isSpeaking
+                                          ? 'Reading your order confirmation aloud...'
+                                          : 'Spoken Order & Payment Confirmation'),
+                                style: GoogleFonts.inter(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w700,
+                                  color: colors.onSurface,
+                                ),
+                              ),
+                              FilledButton.tonalIcon(
+                                onPressed: () {
+                                  if (voice.isSpeaking) {
+                                    voice.stopSpeaking();
+                                  } else {
+                                    voice.speakOrderConfirmation(
+                                      orderId: oidStr,
+                                      formattedTotal: formattedTotal,
+                                      isStripe: isStripe,
+                                      force: true,
+                                    );
+                                  }
+                                },
+                                icon: Icon(
+                                  voice.isSpeaking
+                                      ? Icons.stop_rounded
+                                      : Icons.play_arrow_rounded,
+                                  size: 17,
+                                ),
+                                label: Text(
+                                  voice.isSpeaking
+                                      ? 'Stop Audio'
+                                      : (isBlocked
+                                            ? '🔊 Listen to Order Confirmation'
+                                            : '🔁 Replay Voice Receipt'),
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        );
+                      },
+                    ),
                     if (ord != null) ...[
                       const SizedBox(height: 20),
                       Divider(
@@ -510,6 +616,22 @@ class CheckoutCancelScreen extends StatefulWidget {
 
 class _CheckoutCancelScreenState extends State<CheckoutCancelScreen> {
   bool _isRetrying = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final voice = context.read<VoiceProvider>();
+      if (voice.voiceEnabled && voice.autoSpeakOrderConfirmation) {
+        voice.speakText(
+          'Payment was cancelled. Your cart items are still saved.',
+          label: 'Payment Cancelled',
+          preferNeural: true,
+        );
+      }
+    });
+  }
 
   Future<void> _retryPayment() async {
     final oid = widget.orderId;

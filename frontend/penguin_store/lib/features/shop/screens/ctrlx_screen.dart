@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 import 'package:uuid/uuid.dart';
 
 import 'package:penguin_store/config/api_config.dart';
+import 'package:penguin_store/core/providers/voice_provider.dart';
 import 'package:penguin_store/core/widgets/animated_widgets.dart';
 import 'package:penguin_store/features/shop/models/product_model.dart';
 import 'package:penguin_store/features/shop/providers/cart_provider.dart';
@@ -55,6 +56,8 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
 
   final List<AgentMessage> _messages = [];
   bool _isLoading = false;
+  bool _lastQueryWasVoice = false;
+  String? _speakingMsgKey;
 
   // Unique session thread ID for multi-turn LangGraph memory persistence
   final String _threadId = const Uuid().v4();
@@ -97,7 +100,57 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
     super.dispose();
   }
 
+  Future<void> _handleMicTap() async {
+    if (_isLoading) return;
+    final voice = context.read<VoiceProvider>();
+    final transcript = await voice.toggleRecordingAndTranscribe(
+      context: context,
+    );
+    if (!mounted || transcript == null || transcript.trim().isEmpty) return;
+
+    _lastQueryWasVoice = true;
+    _controller.text = transcript.trim();
+    await _sendMessage();
+  }
+
+  String _buildCtrlXSpokenSummary({
+    required String aiReply,
+    required String dataType,
+    Map<String, dynamic>? comparisonData,
+    Map<String, dynamic>? bundleData,
+    List<Product> products = const [],
+  }) {
+    if (dataType == 'comparison' && comparisonData != null) {
+      final winner = (comparisonData['winner_name'] ??
+              comparisonData['winner'] ??
+              '')
+          .toString()
+          .trim();
+      final verdict = (comparisonData['verdict'] ??
+              comparisonData['summary'] ??
+              '')
+          .toString()
+          .trim();
+      if (winner.isNotEmpty || verdict.isNotEmpty) {
+        return 'Comparison ready. ${winner.isNotEmpty ? 'Top pick is $winner. ' : ''}$verdict';
+      }
+    }
+    if (dataType == 'bundle' && bundleData != null) {
+      final title = (bundleData['title'] ?? 'Custom bundle').toString().trim();
+      final total = bundleData['total_price'];
+      if (total != null) {
+        return '$title is ready with a total of $total dollars.';
+      }
+    }
+    if (products.isNotEmpty && aiReply.length > 260) {
+      final names = products.take(2).map((p) => p.name).join(' and ');
+      return 'I found ${products.length} matching products, starting with $names.';
+    }
+    return aiReply.length > 340 ? '${aiReply.substring(0, 340)}...' : aiReply;
+  }
+
   Future<void> _sendPromptText(String prompt) async {
+    _lastQueryWasVoice = false;
     _controller.text = prompt;
     await _sendMessage();
   }
@@ -105,6 +158,9 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
   Future<void> _sendMessage() async {
     final text = _controller.text.trim();
     if (text.isEmpty || _isLoading) return;
+
+    final bool triggeredByVoice = _lastQueryWasVoice;
+    _lastQueryWasVoice = false;
 
     setState(() {
       _messages.add(AgentMessage(role: "user", text: text));
@@ -237,6 +293,28 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
             ),
           );
         });
+
+        if (mounted) {
+          final voice = context.read<VoiceProvider>();
+          if (triggeredByVoice || voice.autoSpeakCtrlX) {
+            final summary = _buildCtrlXSpokenSummary(
+              aiReply: aiReply,
+              dataType: dataType,
+              comparisonData: comparisonData,
+              bundleData: bundleData,
+              products: products,
+            );
+            if (summary.trim().isNotEmpty) {
+              _speakingMsgKey = '${aiReply.hashCode}';
+              voice.speakText(
+                summary,
+                label: 'CTRL-X speaking...',
+                preferNeural: summary.length <= 185,
+                forceEvenIfMuted: triggeredByVoice,
+              );
+            }
+          }
+        }
       } else {
         String errorDetail =
             "Server returned status ${response.statusCode}. Please try again.";
@@ -1224,13 +1302,82 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
       ),
     );
 
+    final msgKey = '${msg.text.hashCode}';
     return Row(
       mainAxisAlignment:
           isUser ? MainAxisAlignment.end : MainAxisAlignment.start,
       crossAxisAlignment: CrossAxisAlignment.end,
       children: [
         if (!isUser) _botAvatar(),
-        Flexible(child: bubble),
+        Flexible(
+          child: isUser
+              ? bubble
+              : Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    bubble,
+                    const SizedBox(height: 4),
+                    Consumer<VoiceProvider>(
+                      builder: (context, voice, _) {
+                        final isThisPlaying =
+                            voice.isSpeaking && _speakingMsgKey == msgKey;
+                        return InkWell(
+                          borderRadius: BorderRadius.circular(12),
+                          onTap: () {
+                            if (isThisPlaying) {
+                              voice.stopSpeaking();
+                              setState(() => _speakingMsgKey = null);
+                            } else {
+                              setState(() => _speakingMsgKey = msgKey);
+                              final spoken = msg.text.length > 550
+                                  ? '${msg.text.substring(0, 550)}...'
+                                  : msg.text;
+                              voice.speakText(
+                                spoken,
+                                label: 'CTRL-X reply',
+                                preferNeural: spoken.length <= 185,
+                                forceEvenIfMuted: true,
+                              );
+                            }
+                          },
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 6,
+                              vertical: 3,
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  isThisPlaying
+                                      ? Icons.stop_circle_rounded
+                                      : Icons.volume_up_rounded,
+                                  size: 14,
+                                  color: isThisPlaying
+                                      ? theme.colorScheme.error
+                                      : theme.primaryColor,
+                                ),
+                                const SizedBox(width: 4),
+                                Text(
+                                  isThisPlaying ? 'Stop' : 'Listen',
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w700,
+                                    color: isThisPlaying
+                                        ? theme.colorScheme.error
+                                        : theme.primaryColor,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ],
+                ),
+        ),
       ],
     );
   }
@@ -1412,6 +1559,32 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
             ),
           ],
         ),
+        actions: [
+          Consumer<VoiceProvider>(
+            builder: (context, voice, _) {
+              return IconButton(
+                tooltip: voice.autoSpeakCtrlX
+                    ? 'Auto-Speak CTRL-X Replies: ON'
+                    : 'Auto-Speak CTRL-X Replies: OFF',
+                onPressed: () {
+                  final next = !voice.autoSpeakCtrlX;
+                  voice.setAutoSpeakCtrlX(next);
+                  CustomToast.show(
+                    context,
+                    next
+                        ? 'CTRL-X Voice Replies enabled'
+                        : 'CTRL-X Voice Replies muted (tap Listen anytime)',
+                  );
+                },
+                icon: Icon(
+                  voice.autoSpeakCtrlX
+                      ? Icons.record_voice_over_rounded
+                      : Icons.voice_over_off_outlined,
+                ),
+              );
+            },
+          ),
+        ],
       ),
       body: Container(
         decoration: BoxDecoration(
@@ -1574,57 +1747,159 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
                 ),
                 child: SafeArea(
                   top: false,
-                  child: Row(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
                     children: [
-                      Expanded(
-                        child: TextField(
-                          controller: _controller,
-                          style: TextStyle(
-                            color: theme.textTheme.bodyLarge?.color,
-                          ),
-                          enabled: !_isLoading,
-                          onSubmitted: (_) {
-                            if (!_isLoading) _sendMessage();
-                          },
-                          decoration: InputDecoration(
-                            hintText:
-                                'Ask "I need a party", "Compare best audio", or "Build a \$500 bundle"...',
-                            hintStyle: TextStyle(
-                              fontSize: 12.8,
-                              color: theme.textTheme.bodySmall?.color,
+                      Consumer<VoiceProvider>(
+                        builder: (context, voice, _) {
+                          if (!voice.isRecording && !voice.isTranscribing) {
+                            return const SizedBox.shrink();
+                          }
+                          return Container(
+                            width: double.infinity,
+                            margin: const EdgeInsets.fromLTRB(12, 8, 12, 2),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 7,
                             ),
-                            filled: false,
-                            contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 18,
-                              vertical: 12,
+                            decoration: BoxDecoration(
+                              color: voice.isRecording
+                                  ? theme.colorScheme.errorContainer
+                                  : theme.colorScheme.primaryContainer,
+                              borderRadius: BorderRadius.circular(12),
                             ),
-                            border: InputBorder.none,
-                          ),
-                        ),
+                            child: Row(
+                              children: [
+                                if (voice.isTranscribing)
+                                  SizedBox(
+                                    width: 14,
+                                    height: 14,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      color: theme.colorScheme.onPrimaryContainer,
+                                    ),
+                                  )
+                                else
+                                  Icon(
+                                    Icons.graphic_eq_rounded,
+                                    size: 16,
+                                    color: theme.colorScheme.onErrorContainer,
+                                  ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    voice.isRecording
+                                        ? 'Listening... tap mic again to send via Groq Whisper'
+                                        : 'Transcribing speech with Groq Whisper...',
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w700,
+                                      color: voice.isRecording
+                                          ? theme.colorScheme.onErrorContainer
+                                          : theme.colorScheme.onPrimaryContainer,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
                       ),
-                      PressableScale(
-                        onTap: _isLoading ? null : _sendMessage,
-                        child: AnimatedContainer(
-                          duration: const Duration(milliseconds: 250),
-                          width: 44,
-                          height: 44,
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            gradient: LinearGradient(
-                              colors: _isLoading
-                                  ? [Colors.grey.shade400, Colors.grey.shade500]
-                                  : const [
-                                      Color(0xFF1E88E5),
-                                      Color(0xFF00ACC1),
-                                    ],
+                      Row(
+                        children: [
+                          Expanded(
+                            child: TextField(
+                              controller: _controller,
+                              style: TextStyle(
+                                color: theme.textTheme.bodyLarge?.color,
+                              ),
+                              enabled: !_isLoading,
+                              onSubmitted: (_) {
+                                if (!_isLoading) _sendMessage();
+                              },
+                              decoration: InputDecoration(
+                                hintText:
+                                    'Ask "I need a party", "Compare best audio", or "Build a \$500 bundle"...',
+                                hintStyle: TextStyle(
+                                  fontSize: 12.8,
+                                  color: theme.textTheme.bodySmall?.color,
+                                ),
+                                filled: false,
+                                contentPadding: const EdgeInsets.symmetric(
+                                  horizontal: 18,
+                                  vertical: 12,
+                                ),
+                                border: InputBorder.none,
+                              ),
                             ),
                           ),
-                          child: const Icon(
-                            Icons.arrow_upward_rounded,
-                            color: Colors.white,
-                            size: 22,
+                          Consumer<VoiceProvider>(
+                            builder: (context, voice, _) {
+                              return Padding(
+                                padding: const EdgeInsets.only(right: 6),
+                                child: PressableScale(
+                                  onTap: _isLoading ? null : _handleMicTap,
+                                  child: AnimatedContainer(
+                                    duration: const Duration(milliseconds: 220),
+                                    width: 40,
+                                    height: 40,
+                                    decoration: BoxDecoration(
+                                      shape: BoxShape.circle,
+                                      color: voice.isRecording
+                                          ? theme.colorScheme.error
+                                          : theme.colorScheme.primaryContainer
+                                              .withValues(alpha: 0.75),
+                                    ),
+                                    child: voice.isTranscribing
+                                        ? Center(
+                                            child: SizedBox(
+                                              width: 18,
+                                              height: 18,
+                                              child: CircularProgressIndicator(
+                                                strokeWidth: 2,
+                                                color: theme.colorScheme.primary,
+                                              ),
+                                            ),
+                                          )
+                                        : Icon(
+                                            voice.isRecording
+                                                ? Icons.stop_rounded
+                                                : Icons.mic_rounded,
+                                            size: 20,
+                                            color: voice.isRecording
+                                                ? Colors.white
+                                                : theme.colorScheme.primary,
+                                          ),
+                                  ),
+                                ),
+                              );
+                            },
                           ),
-                        ),
+                          PressableScale(
+                            onTap: _isLoading ? null : _sendMessage,
+                            child: AnimatedContainer(
+                              duration: const Duration(milliseconds: 250),
+                              width: 44,
+                              height: 44,
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                gradient: LinearGradient(
+                                  colors: _isLoading
+                                      ? [Colors.grey.shade400, Colors.grey.shade500]
+                                      : const [
+                                          Color(0xFF1E88E5),
+                                          Color(0xFF00ACC1),
+                                        ],
+                                ),
+                              ),
+                              child: const Icon(
+                                Icons.arrow_upward_rounded,
+                                color: Colors.white,
+                                size: 22,
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
                     ],
                   ),

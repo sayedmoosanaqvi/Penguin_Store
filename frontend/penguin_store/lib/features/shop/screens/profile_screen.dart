@@ -9,6 +9,7 @@ import 'package:penguin_store/features/shop/providers/auth_provider.dart';
 import 'package:penguin_store/features/shop/providers/cart_provider.dart';
 import 'package:penguin_store/features/shop/screens/auth_screen.dart';
 import 'package:penguin_store/features/shop/screens/legal_screens.dart';
+import 'package:penguin_store/core/providers/voice_provider.dart';
 import 'package:penguin_store/helpers/theme_provider.dart';
 
 class ProfileScreen extends StatelessWidget {
@@ -154,6 +155,7 @@ class ProfileScreen extends StatelessWidget {
     final theme = Theme.of(context);
     final auth = context.watch<AuthProvider>();
     final themeProvider = context.watch<ThemeProvider>();
+    final voice = context.watch<VoiceProvider>();
 
     final isDark = theme.brightness == Brightness.dark;
     final color = theme.primaryColor;
@@ -535,6 +537,105 @@ class ProfileScreen extends StatelessWidget {
                     );
                   },
                 ),
+              ),
+
+              const SizedBox(height: 16),
+              Text(
+                'Voice & Audio Intelligence',
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w700,
+                  color: theme.colorScheme.onSurface,
+                ),
+              ),
+              const SizedBox(height: 10),
+              _SectionCard(
+                theme: theme,
+                children: [
+                  SwitchListTile(
+                    secondary: Icon(Icons.volume_up_rounded, color: color),
+                    title: const Text(
+                      'Voice Control',
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    subtitle: const Text(
+                      'Enable spoken shopping feedback & voice receipts',
+                      style: TextStyle(fontSize: 11),
+                    ),
+                    value: voice.voiceEnabled,
+                    activeThumbColor: color,
+                    onChanged: voice.setVoiceEnabled,
+                  ),
+                  SwitchListTile(
+                    secondary: Icon(Icons.receipt_long_rounded, color: color),
+                    title: const Text(
+                      'Auto-Speak Order Confirmation',
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    subtitle: const Text(
+                      'Read Order ID and paid amount after checkout',
+                      style: TextStyle(fontSize: 11),
+                    ),
+                    value: voice.autoSpeakOrderConfirmation,
+                    activeThumbColor: color,
+                    onChanged: voice.setAutoSpeakOrderConfirmation,
+                  ),
+                  SwitchListTile(
+                    secondary: Icon(Icons.record_voice_over_rounded, color: color),
+                    title: const Text(
+                      'Auto-Speak CTRL-X Replies',
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    subtitle: const Text(
+                      'Automatically read AI shopping recommendations',
+                      style: TextStyle(fontSize: 11),
+                    ),
+                    value: voice.autoSpeakCtrlX,
+                    activeThumbColor: color,
+                    onChanged: voice.setAutoSpeakCtrlX,
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+                    child: Row(
+                      children: [
+                        Icon(Icons.speed_rounded, color: color, size: 22),
+                        const SizedBox(width: 14),
+                        const Expanded(
+                          child: Text(
+                            'Speech Rate',
+                            style: TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                        SegmentedButton<String>(
+                          showSelectedIcon: false,
+                          segments: const [
+                            ButtonSegment(value: 'Slow', label: Text('Slow')),
+                            ButtonSegment(value: 'Normal', label: Text('Normal')),
+                            ButtonSegment(value: 'Fast', label: Text('Fast')),
+                          ],
+                          selected: {voice.speechRatePreset},
+                          onSelectionChanged: (sel) {
+                            if (sel.isNotEmpty) {
+                              voice.setSpeechRatePreset(sel.first);
+                            }
+                          },
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
               ),
 
               if (auth.isAdmin) ...[

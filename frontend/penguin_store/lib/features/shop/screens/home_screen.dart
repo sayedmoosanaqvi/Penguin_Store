@@ -12,6 +12,8 @@ import 'package:penguin_store/features/shop/providers/auth_provider.dart';
 import 'package:penguin_store/features/shop/providers/product_provider.dart';
 import 'package:penguin_store/features/shop/providers/shop_state_provider.dart';
 import 'package:penguin_store/features/shop/services/visual_search_service.dart';
+import 'package:penguin_store/core/providers/voice_provider.dart';
+import 'package:penguin_store/features/shop/widgets/multimodal_search_sheet.dart';
 import 'package:penguin_store/features/shop/widgets/top_nav_bar.dart';
 import 'package:penguin_store/features/shop/widgets/right_drawer.dart';
 import 'package:penguin_store/features/shop/widgets/product_card.dart';
@@ -258,6 +260,18 @@ class _HomeScreenState extends State<HomeScreen>
     }
   }
 
+  Future<void> _handleVoiceSearch() async {
+    final voice = context.read<VoiceProvider>();
+    final transcript = await voice.toggleRecordingAndTranscribe(
+      context: context,
+    );
+    if (!mounted || transcript == null || transcript.trim().isEmpty) return;
+
+    final clean = transcript.trim();
+    _searchController.text = clean;
+    setState(() => _searchQuery = clean);
+  }
+
   void _showVisualSearchOptions() {
     showModalBottomSheet<void>(
       context: context,
@@ -271,18 +285,39 @@ class _HomeScreenState extends State<HomeScreen>
               children: [
                 const ListTile(
                   title: Text(
-                    'AI Visual Search',
+                    'AI Visual & Multimodal Search',
                     style: TextStyle(
                       fontWeight: FontWeight.bold,
                     ),
                   ),
                   subtitle: Text(
-                    'Search for similar products using an image.',
+                    'Search with a photo, or combine an image with spoken/typed filters.',
                   ),
                 ),
                 ListTile(
+                  leading: Icon(
+                    Icons.auto_awesome_rounded,
+                    color: Theme.of(context).colorScheme.primary,
+                  ),
+                  title: const Text(
+                    'Multimodal Hybrid Search (Image + Voice/Text)',
+                    style: TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  subtitle: const Text(
+                    'Combine a photo with "under \$250" or "3D model" via RRF',
+                  ),
+                  onTap: () {
+                    Navigator.pop(sheetContext);
+                    showMultimodalSearchSheet(
+                      context,
+                      initialQuery: _searchQuery.trim(),
+                    );
+                  },
+                ),
+                const Divider(height: 1),
+                ListTile(
                   leading: const Icon(Icons.camera_alt_outlined),
-                  title: const Text('Take Photo'),
+                  title: const Text('Quick Photo Search (Camera)'),
                   onTap: () {
                     Navigator.pop(sheetContext);
                     _startVisualSearch(ImageSource.camera);
@@ -290,7 +325,7 @@ class _HomeScreenState extends State<HomeScreen>
                 ),
                 ListTile(
                   leading: const Icon(Icons.photo_library_outlined),
-                  title: const Text('Choose from Gallery'),
+                  title: const Text('Quick Photo Search (Gallery)'),
                   onTap: () {
                     Navigator.pop(sheetContext);
                     _startVisualSearch(ImageSource.gallery);
@@ -555,13 +590,41 @@ class _HomeScreenState extends State<HomeScreen>
                           });
                         },
                       ),
+                    Consumer<VoiceProvider>(
+                      builder: (context, voice, _) {
+                        return IconButton(
+                          tooltip: voice.isRecording
+                              ? 'Tap to stop recording'
+                              : 'Voice Search (Whisper STT)',
+                          icon: voice.isTranscribing
+                              ? SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: theme.primaryColor,
+                                  ),
+                                )
+                              : Icon(
+                                  voice.isRecording
+                                      ? Icons.stop_circle_rounded
+                                      : Icons.mic_none_rounded,
+                                  color: voice.isRecording
+                                      ? theme.colorScheme.error
+                                      : theme.primaryColor,
+                                  size: 21,
+                                ),
+                          onPressed: _handleVoiceSearch,
+                        );
+                      },
+                    ),
                     Container(
                       height: 25,
                       width: 1,
                       color: theme.dividerColor.withOpacity(0.3),
                     ),
                     IconButton(
-                      tooltip: 'AI Visual Search',
+                      tooltip: 'AI Visual & Multimodal Search',
                       icon: Icon(
                         Icons.camera_alt_outlined,
                         color: theme.primaryColor,

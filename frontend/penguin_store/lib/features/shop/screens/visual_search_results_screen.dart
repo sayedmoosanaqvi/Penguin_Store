@@ -67,6 +67,7 @@ class _VisualSearchResultsScreenState
                       ? 'Strong Match'
                       : 'Visual Match'))
           .toString();
+      final String matchReason = (map['match_reason'] ?? '').toString().trim();
 
       final int id = (productData['id'] as num?)?.toInt() ?? 0;
       final String name = (productData['name'] ?? 'Product').toString();
@@ -94,6 +95,7 @@ class _VisualSearchResultsScreenState
         'score': (clampedScore * 100).toStringAsFixed(1),
         'scoreValue': clampedScore,
         'matchLabel': matchLabel,
+        'matchReason': matchReason,
         'product': Product(
           id: id,
           name: name,
@@ -298,6 +300,10 @@ class _VisualSearchResultsScreenState
     final String? detectedCategory =
         _analysis['detected_category']?.toString();
     final dynamic searchTimeMs = _analysis['search_time_ms'];
+    final bool isMultimodal = _analysis['search_mode'] == 'multimodal_rrf';
+    final String? queryText = _analysis['query_text']?.toString().trim();
+    final dynamic maxPriceCap = _analysis['max_price'];
+    final bool only3dFilter = _analysis['only_3d'] == true;
 
     return Container(
       padding: const EdgeInsets.all(18),
@@ -363,9 +369,11 @@ class _VisualSearchResultsScreenState
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text(
-                      'Visual Match Found',
-                      style: TextStyle(
+                    Text(
+                      isMultimodal
+                          ? 'Multimodal AI Hybrid Match'
+                          : 'Visual Match Found',
+                      style: const TextStyle(
                         color: Colors.white,
                         fontSize: 17,
                         fontWeight: FontWeight.w800,
@@ -373,7 +381,7 @@ class _VisualSearchResultsScreenState
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      'Found $matchCount visually matching ${matchCount == 1 ? 'product' : 'products'} in the Penguin Store database.',
+                      'Found $matchCount ${isMultimodal ? 'hybrid-ranked' : 'visually matching'} ${matchCount == 1 ? 'product' : 'products'} in the Penguin Store database.',
                       style: const TextStyle(
                         color: Colors.white70,
                         fontSize: 12,
@@ -386,6 +394,10 @@ class _VisualSearchResultsScreenState
             ],
           ),
           if (wasDeblurred ||
+              isMultimodal ||
+              (queryText != null && queryText.isNotEmpty) ||
+              maxPriceCap != null ||
+              only3dFilter ||
               (detectedCategory != null && detectedCategory.isNotEmpty) ||
               searchTimeMs != null) ...[
             const SizedBox(height: 12),
@@ -393,6 +405,26 @@ class _VisualSearchResultsScreenState
               spacing: 8,
               runSpacing: 6,
               children: [
+                if (isMultimodal)
+                  _buildInfoPill(
+                    icon: Icons.merge_type_rounded,
+                    label: 'RRF Hybrid Fusion',
+                  ),
+                if (queryText != null && queryText.isNotEmpty)
+                  _buildInfoPill(
+                    icon: Icons.mic_none_rounded,
+                    label: '"$queryText"',
+                  ),
+                if (maxPriceCap != null)
+                  _buildInfoPill(
+                    icon: Icons.attach_money_rounded,
+                    label: 'Max \$$maxPriceCap',
+                  ),
+                if (only3dFilter)
+                  _buildInfoPill(
+                    icon: Icons.view_in_ar_rounded,
+                    label: '3D Models Only',
+                  ),
                 if (wasDeblurred)
                   _buildInfoPill(
                     icon: Icons.auto_fix_high_rounded,
@@ -679,6 +711,8 @@ class _VisualSearchResultsScreenState
                 final String score = item['score'] as String;
                 final double scoreVal =
                     (item['scoreValue'] as num?)?.toDouble() ?? 0.8;
+                final String matchReason =
+                    (item['matchReason'] ?? '').toString().trim();
 
                 final Color badgeAccent = scoreVal >= 0.85
                     ? const Color(0xFF00E676)
@@ -702,46 +736,80 @@ class _VisualSearchResultsScreenState
                       top: 7,
                       right: 7,
                       child: IgnorePointer(
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 8,
-                            vertical: 4,
-                          ),
-                          decoration: BoxDecoration(
-                            color: Colors.black.withOpacity(0.82),
-                            borderRadius: BorderRadius.circular(10),
-                            border: Border.all(
-                              color: badgeAccent.withOpacity(0.5),
-                              width: 0.8,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 8,
+                                vertical: 4,
+                              ),
+                              decoration: BoxDecoration(
+                                color: Colors.black.withOpacity(0.82),
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(
+                                  color: badgeAccent.withOpacity(0.5),
+                                  width: 0.8,
+                                ),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: Colors.black.withOpacity(0.25),
+                                    blurRadius: 4,
+                                    offset: const Offset(0, 2),
+                                  ),
+                                ],
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(
+                                    Icons.blur_on_rounded,
+                                    color: badgeAccent,
+                                    size: 13,
+                                  ),
+                                  const SizedBox(width: 4),
+                                  Text(
+                                    '$score%',
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.w800,
+                                      letterSpacing: 0.3,
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
-                            boxShadow: [
-                              BoxShadow(
-                                color: Colors.black.withOpacity(0.25),
-                                blurRadius: 4,
-                                offset: const Offset(0, 2),
-                              ),
-                            ],
-                          ),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(
-                                Icons.blur_on_rounded,
-                                color: badgeAccent,
-                                size: 13,
-                              ),
-                              const SizedBox(width: 4),
-                              Text(
-                                '$score%',
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.w800,
-                                  letterSpacing: 0.3,
+                            if (matchReason.isNotEmpty) ...[
+                              const SizedBox(height: 4),
+                              ConstrainedBox(
+                                constraints: BoxConstraints(
+                                  maxWidth: (itemWidth - 20).clamp(90.0, 175.0),
+                                ),
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 7,
+                                    vertical: 3,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: Colors.black.withOpacity(0.76),
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  child: Text(
+                                    matchReason,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      color: Colors.white70,
+                                      fontSize: 9.5,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
                                 ),
                               ),
                             ],
-                          ),
+                          ],
                         ),
                       ),
                     ),

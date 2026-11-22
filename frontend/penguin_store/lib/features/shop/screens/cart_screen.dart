@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 
 import 'package:penguin_store/config/api_config.dart';
+import 'package:penguin_store/core/providers/voice_provider.dart';
 import 'package:penguin_store/core/services/api_error_handler.dart';
 import 'package:penguin_store/core/services/secure_storage_service.dart';
 import 'package:penguin_store/core/widgets/animated_widgets.dart';
@@ -139,6 +140,14 @@ class _CartScreenState extends State<CartScreen> {
           context,
           'Redirecting to Stripe Secure Checkout for Order #$createdOrderId...',
         );
+        final voice = context.read<VoiceProvider>();
+        if (voice.voiceEnabled && voice.autoSpeakOrderConfirmation) {
+          // Fire-and-forget cue while Stripe Checkout opens
+          voice.speakText(
+            'Redirecting to secure Stripe checkout.',
+            label: 'Checkout Redirect',
+          );
+        }
         await StripePaymentService.startCheckout(
           orderId: createdOrderId,
           currency: 'usd',

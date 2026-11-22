@@ -3,9 +3,11 @@ import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
 import 'package:penguin_store/core/widgets/animated_widgets.dart';
+import 'package:penguin_store/core/providers/voice_provider.dart';
 import 'package:penguin_store/features/shop/models/product_model.dart';
 import 'package:penguin_store/features/shop/providers/product_provider.dart';
 import 'package:penguin_store/features/shop/services/showcase_3d_service.dart';
+import 'package:penguin_store/features/shop/widgets/multimodal_search_sheet.dart';
 import 'package:penguin_store/features/shop/widgets/product_card.dart';
 import 'package:penguin_store/features/shop/widgets/product_card_skeleton.dart';
 import 'package:penguin_store/features/shop/widgets/right_drawer.dart';
@@ -86,6 +88,18 @@ class _DiscoverScreenState extends State<DiscoverScreen>
 
   void _reload() {
     context.read<ProductProvider>().invalidateAllAndRefresh();
+  }
+
+  Future<void> _handleVoiceSearch() async {
+    final voice = context.read<VoiceProvider>();
+    final transcript = await voice.toggleRecordingAndTranscribe(
+      context: context,
+    );
+    if (!mounted || transcript == null || transcript.trim().isEmpty) return;
+
+    final clean = transcript.trim();
+    _searchController.text = clean;
+    setState(() => _searchQuery = clean);
   }
 
   List<Product> _filterAndSort(List<Product> allProducts, Set<int> ids3d) {
@@ -372,8 +386,12 @@ class _DiscoverScreenState extends State<DiscoverScreen>
                         color: Colors.white,
                         size: 20,
                       ),
-                      suffixIcon: _searchQuery.isNotEmpty
-                          ? IconButton(
+                      suffixIcon: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (_searchQuery.isNotEmpty)
+                            IconButton(
+                              tooltip: 'Clear search',
                               icon: const Icon(
                                 Icons.clear_rounded,
                                 color: Colors.white70,
@@ -383,8 +401,49 @@ class _DiscoverScreenState extends State<DiscoverScreen>
                                 _searchController.clear();
                                 setState(() => _searchQuery = '');
                               },
-                            )
-                          : null,
+                            ),
+                          Consumer<VoiceProvider>(
+                            builder: (context, voice, _) {
+                              return IconButton(
+                                tooltip: voice.isRecording
+                                    ? 'Stop voice input'
+                                    : 'Voice Search (Whisper STT)',
+                                onPressed: _handleVoiceSearch,
+                                icon: voice.isTranscribing
+                                    ? const SizedBox(
+                                        width: 16,
+                                        height: 16,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                          color: Colors.white,
+                                        ),
+                                      )
+                                    : Icon(
+                                        voice.isRecording
+                                            ? Icons.stop_circle_rounded
+                                            : Icons.mic_none_rounded,
+                                        color: voice.isRecording
+                                            ? Colors.redAccent
+                                            : Colors.white,
+                                        size: 20,
+                                      ),
+                              );
+                            },
+                          ),
+                          IconButton(
+                            tooltip: 'Multimodal AI Search (Image + Voice)',
+                            icon: const Icon(
+                              Icons.camera_alt_outlined,
+                              color: Colors.white,
+                              size: 19,
+                            ),
+                            onPressed: () => showMultimodalSearchSheet(
+                              context,
+                              initialQuery: _searchQuery.trim(),
+                            ),
+                          ),
+                        ],
+                      ),
                       filled: true,
                       fillColor: Colors.white.withValues(alpha: 0.14),
                       contentPadding: const EdgeInsets.symmetric(

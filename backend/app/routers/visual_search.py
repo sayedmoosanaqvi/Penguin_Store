@@ -243,46 +243,83 @@ class _VisualCatalogCache:
             self._matrix = None
 
     def _load_from_db(self) -> tuple[list[dict[str, Any]], np.ndarray | None]:
-        with engine.connect() as conn:
-            rows = conn.execute(
-                text(
-                    """
-                    SELECT
-                        id,
-                        name,
-                        description,
-                        price,
-                        original_price,
-                        image_url,
-                        category,
-                        rating,
-                        reviews,
-                        discount_percent,
-                        is_featured,
-                        stock,
-                        fulfillment_type,
-                        image_embedding_v2::text AS emb_text
-                    FROM products
-                    WHERE image_embedding_v2 IS NOT NULL
-                    ORDER BY id ASC
-                    """
+        from app.core.supabase_rest import (
+            get_supabase_client,
+            is_pg_tcp_reachable,
+            mark_pg_tcp_unreachable,
+        )
+
+        rows_data: list[dict[str, Any]] = []
+        if is_pg_tcp_reachable():
+            try:
+                with engine.connect() as conn:
+                    rows = conn.execute(
+                        text(
+                            """
+                            SELECT
+                                id,
+                                name,
+                                description,
+                                price,
+                                original_price,
+                                image_url,
+                                category,
+                                rating,
+                                reviews,
+                                discount_percent,
+                                is_featured,
+                                stock,
+                                fulfillment_type,
+                                image_embedding_v2::text AS emb_text
+                            FROM products
+                            WHERE image_embedding_v2 IS NOT NULL
+                            ORDER BY id ASC
+                            """
+                        )
+                    ).fetchall()
+                rows_data = [dict(row._mapping) for row in rows]
+            except Exception as exc:
+                logger.warning("Visual catalog TCP query failed, falling back to HTTPS: %s", exc)
+                mark_pg_tcp_unreachable()
+
+        if not rows_data:
+            try:
+                client = get_supabase_client()
+                res = (
+                    client.table("products")
+                    .select(
+                        "id,name,description,price,original_price,image_url,category,"
+                        "rating,reviews,discount_percent,is_featured,stock,fulfillment_type,"
+                        "image_embedding_v2"
+                    )
+                    .not_.is_("image_embedding_v2", "null")
+                    .order("id")
+                    .execute()
                 )
-            ).fetchall()
+                for r in res.data or []:
+                    if isinstance(r, dict):
+                        m = dict(r)
+                        m["emb_text"] = m.get("image_embedding_v2")
+                        rows_data.append(m)
+            except Exception as exc:
+                logger.warning("Visual catalog HTTPS vector load failed: %s", exc)
 
         products: list[dict[str, Any]] = []
         vectors: list[np.ndarray] = []
 
-        for row in rows:
-            mapping = row._mapping
-            emb_text = mapping.get("emb_text")
-            if not emb_text:
+        for mapping in rows_data:
+            emb_val = mapping.get("emb_text")
+            if not emb_val:
                 continue
 
-            vec = np.fromstring(
-                emb_text.strip("[]"),
-                sep=",",
-                dtype=np.float32,
-            )
+            if isinstance(emb_val, list):
+                vec = np.asarray(emb_val, dtype=np.float32)
+            else:
+                vec = np.fromstring(
+                    str(emb_val).strip("[]"),
+                    sep=",",
+                    dtype=np.float32,
+                )
             if vec.shape[0] != 2048:
                 continue
 
@@ -291,7 +328,7 @@ class _VisualCatalogCache:
                 continue
             vec = vec / norm
 
-            products.append(_sanitize_public_product(dict(mapping)))
+            products.append(_sanitize_public_product(mapping))
             vectors.append(vec)
 
         if not vectors:

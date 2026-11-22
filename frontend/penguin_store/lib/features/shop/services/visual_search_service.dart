@@ -178,6 +178,118 @@ class VisualSearchService {
     }
   }
 
+  /// Hybrid Multimodal RRF Search combining an optional image with spoken or
+  /// typed natural-language refinements (`POST /api/v1/search/multimodal`).
+  Future<VisualSearchResponse> searchMultimodal({
+    Uint8List? imageBytes,
+    String filename = 'upload.png',
+    String? queryText,
+    double? minPrice,
+    double? maxPrice,
+    String? category,
+    bool only3d = false,
+  }) async {
+    try {
+      final base = ApiConfig.baseUrl.replaceFirst(RegExp(r'/$'), '');
+      final url = Uri.parse('$base/api/v1/search/multimodal');
+      final request = http.MultipartRequest('POST', url);
+
+      if (imageBytes != null && imageBytes.isNotEmpty) {
+        request.files.add(
+          http.MultipartFile.fromBytes(
+            'file',
+            imageBytes,
+            filename: filename,
+            contentType: _mediaTypeForFilename(filename),
+          ),
+        );
+      }
+
+      if (queryText != null && queryText.trim().isNotEmpty) {
+        request.fields['query'] = queryText.trim();
+      }
+      if (minPrice != null) {
+        request.fields['min_price'] = minPrice.toString();
+      }
+      if (maxPrice != null) {
+        request.fields['max_price'] = maxPrice.toString();
+      }
+      if (category != null && category.trim().isNotEmpty) {
+        request.fields['category'] = category.trim();
+      }
+      if (only3d) {
+        request.fields['only_3d'] = 'true';
+      }
+
+      request.headers.addAll({'Accept': 'application/json'});
+
+      const multimodalTimeout = Duration(seconds: 40);
+      final streamedResponse = await request.send().timeout(multimodalTimeout);
+      final response = await http.Response.fromStream(
+        streamedResponse,
+      ).timeout(multimodalTimeout);
+
+      if (response.statusCode == 200) {
+        final decoded = json.decode(response.body);
+        if (decoded is Map) {
+          final map = Map<String, dynamic>.from(decoded);
+          final rawMatches = map['matches'];
+          final matchesList = rawMatches is List
+              ? List<dynamic>.from(rawMatches)
+              : <dynamic>[];
+          final inDb = map['in_database'] is bool
+              ? map['in_database'] as bool
+              : matchesList.isNotEmpty;
+          final queryStatus = (map['query_status'] ??
+                  (inDb ? 'success' : 'not_in_database'))
+              .toString();
+          final msg = (map['message'] ??
+                  (inDb
+                      ? 'Found ${matchesList.length} multimodal matches.'
+                      : 'No products matched your combined image and criteria.'))
+              .toString();
+          final analysisMap = map['analysis'] is Map
+              ? Map<String, dynamic>.from(map['analysis'] as Map)
+              : <String, dynamic>{};
+
+          return VisualSearchResponse(
+            status: inDb ? 'success' : queryStatus,
+            inDatabase: inDb,
+            message: msg,
+            matches: matchesList,
+            queryImageBytes: imageBytes,
+            analysis: analysisMap,
+          );
+        }
+      }
+
+      String errorMsg = 'Multimodal search failed (${response.statusCode}).';
+      try {
+        final errJson = json.decode(response.body);
+        if (errJson is Map && errJson['detail'] is String) {
+          errorMsg = errJson['detail'] as String;
+        }
+      } catch (_) {}
+
+      return VisualSearchResponse(
+        status: 'error',
+        inDatabase: false,
+        message: errorMsg,
+        matches: const [],
+        queryImageBytes: imageBytes,
+      );
+    } catch (e) {
+      debugPrint('Multimodal Search Network Exception: $e');
+      return VisualSearchResponse(
+        status: 'error',
+        inDatabase: false,
+        message: 'Unable to reach the multimodal search server. Please try again.',
+        matches: const [],
+        queryImageBytes: imageBytes,
+      );
+    }
+  }
+
   /// Backward-compatible method used by existing callers.
   Future<List<dynamic>> searchWithCameraOrGallery(ImageSource source) async {
     final picked = await pickImageForSearch(source);

@@ -180,6 +180,50 @@ def record_glb_optimization_metric(
     )
 
 
+def record_voice_metric(
+    *,
+    operation: str,
+    latency_ms: float,
+    success: bool = True,
+    language: str = "en",
+    chars_or_bytes: int = 0,
+) -> None:
+    _insert_metric(
+        subsystem="voice_ai",
+        operation=operation,
+        latency_ms=latency_ms,
+        success=success,
+        metadata={
+            "language": language,
+            "chars_or_bytes": chars_or_bytes,
+        },
+    )
+
+
+def record_multimodal_search_metric(
+    *,
+    latency_ms: float,
+    top1_similarity: float,
+    avg_top5_similarity: float,
+    total_matches: int = 0,
+    has_image: bool = True,
+    has_text: bool = True,
+) -> None:
+    _insert_metric(
+        subsystem="multimodal_search",
+        operation="hybrid_rrf_search",
+        latency_ms=latency_ms,
+        success=True,
+        top1_similarity=top1_similarity,
+        avg_top5_similarity=avg_top5_similarity,
+        metadata={
+            "total_matches": total_matches,
+            "has_image": has_image,
+            "has_text": has_text,
+        },
+    )
+
+
 def get_ai_metrics_summary(db: Session) -> dict[str, Any]:
     """Compute examiner-ready KPIs across Visual Search, CTRL-X, Fake Review Engine, and 3D GLB Optimizer."""
     eval_report = _load_eval_report()
@@ -318,25 +362,75 @@ def get_ai_metrics_summary(db: Session) -> dict[str, Any]:
         avg_opt_kb = 4190.0
         avg_red_pct = 71.7
 
-    recent_serialized = [
-        {
-            "id": row.id,
-            "timestamp": row.created_at.isoformat() if row.created_at else "",
-            "subsystem": row.subsystem,
-            "operation": row.operation,
-            "latency_ms": round(float(row.latency_ms or 0.0), 2),
-            "success": bool(row.success),
-            "top1_similarity": row.top1_similarity,
-            "avg_top5_similarity": row.avg_top5_similarity,
-            "tool_calls_count": row.tool_calls_count,
-            "trust_score": row.trust_score,
-            "is_flagged_suspicious": row.is_flagged_suspicious,
-            "original_size_kb": row.original_size_kb,
-            "optimized_size_kb": row.optimized_size_kb,
-            "reduction_percent": row.reduction_percent,
-        }
-        for row in logs[:40]
-    ]
+    # 5. Voice AI & Multimodal RRF Search aggregation
+    mem_snapshot = list(_MEMORY_METRICS)
+    voice_logs = [x for x in logs if x.subsystem == "voice_ai"]
+    mm_logs = [x for x in logs if x.subsystem == "multimodal_search"]
+
+    if not voice_logs:
+        voice_mem = [m for m in mem_snapshot if m.get("subsystem") == "voice_ai"]
+        v_calls = len(voice_mem)
+        v_latency = (
+            round(sum(float(m.get("latency_ms") or 0.0) for m in voice_mem) / v_calls, 1)
+            if v_calls
+            else 0.0
+        )
+    else:
+        v_calls = len(voice_logs)
+        v_latency = round(sum(x.latency_ms for x in voice_logs) / v_calls, 1)
+
+    if not mm_logs:
+        mm_mem = [m for m in mem_snapshot if m.get("subsystem") == "multimodal_search"]
+        mm_calls = len(mm_mem)
+        mm_latency = (
+            round(sum(float(m.get("latency_ms") or 0.0) for m in mm_mem) / mm_calls, 1)
+            if mm_calls
+            else 0.0
+        )
+    else:
+        mm_calls = len(mm_logs)
+        mm_latency = round(sum(x.latency_ms for x in mm_logs) / mm_calls, 1)
+
+    if logs:
+        recent_serialized = [
+            {
+                "id": row.id,
+                "timestamp": row.created_at.isoformat() if row.created_at else "",
+                "subsystem": row.subsystem,
+                "operation": row.operation,
+                "latency_ms": round(float(row.latency_ms or 0.0), 2),
+                "success": bool(row.success),
+                "top1_similarity": row.top1_similarity,
+                "avg_top5_similarity": row.avg_top5_similarity,
+                "tool_calls_count": row.tool_calls_count,
+                "trust_score": row.trust_score,
+                "is_flagged_suspicious": row.is_flagged_suspicious,
+                "original_size_kb": row.original_size_kb,
+                "optimized_size_kb": row.optimized_size_kb,
+                "reduction_percent": row.reduction_percent,
+            }
+            for row in logs[:40]
+        ]
+    else:
+        recent_serialized = [
+            {
+                "id": idx + 1,
+                "timestamp": m.get("timestamp", ""),
+                "subsystem": m.get("subsystem", ""),
+                "operation": m.get("operation", ""),
+                "latency_ms": m.get("latency_ms", 0.0),
+                "success": bool(m.get("success", True)),
+                "top1_similarity": m.get("top1_similarity"),
+                "avg_top5_similarity": m.get("avg_top5_similarity"),
+                "tool_calls_count": m.get("tool_calls_count"),
+                "trust_score": m.get("trust_score"),
+                "is_flagged_suspicious": m.get("is_flagged_suspicious"),
+                "original_size_kb": m.get("original_size_kb"),
+                "optimized_size_kb": m.get("optimized_size_kb"),
+                "reduction_percent": m.get("reduction_percent"),
+            }
+            for idx, m in enumerate(mem_snapshot[:40])
+        ]
 
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -372,6 +466,12 @@ def get_ai_metrics_summary(db: Session) -> dict[str, Any]:
             "avg_original_size_kb": avg_orig_kb,
             "avg_optimized_size_kb": avg_opt_kb,
             "avg_reduction_percent": avg_red_pct,
+        },
+        "voice_and_multimodal": {
+            "total_voice_calls": v_calls,
+            "avg_voice_latency_ms": v_latency,
+            "total_multimodal_searches": mm_calls,
+            "avg_multimodal_latency_ms": mm_latency,
         },
         "recent_logs": recent_serialized,
     }

@@ -457,3 +457,15 @@ CREATE INDEX IF NOT EXISTS idx_product_3d_assets_active
     ON product_3d_assets (product_id, is_active)
     WHERE is_active = TRUE;
 
+
+-- ============================================================================
+-- 15. VOICE INTELLIGENCE & MULTIMODAL RRF SEARCH TELEMETRY
+-- ============================================================================
+
+ALTER TABLE ctrlx_audit_logs
+    ADD COLUMN IF NOT EXISTS voice_transcript TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_ai_metrics_voice_multimodal
+    ON ai_metrics_logs (subsystem, operation, created_at DESC);
+
+
