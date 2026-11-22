@@ -14,6 +14,7 @@ import 'package:penguin_store/features/shop/providers/shop_state_provider.dart';
 import 'package:penguin_store/features/shop/services/visual_search_service.dart';
 import 'package:penguin_store/core/providers/voice_provider.dart';
 import 'package:penguin_store/features/shop/widgets/multimodal_search_sheet.dart';
+import 'package:penguin_store/features/shop/widgets/voice_concierge_overlay.dart';
 import 'package:penguin_store/features/shop/widgets/top_nav_bar.dart';
 import 'package:penguin_store/features/shop/widgets/right_drawer.dart';
 import 'package:penguin_store/features/shop/widgets/product_card.dart';
@@ -563,7 +564,8 @@ class _HomeScreenState extends State<HomeScreen>
                 _searchFocusNode.unfocus();
               },
               decoration: InputDecoration(
-                hintText: 'Search products in Penguin Store',
+                hintText:
+                    "Search or ask Voice AI: 'Pick best headphones under \$350'...",
                 hintStyle: TextStyle(
                   fontSize: 12,
                   color: theme.colorScheme.onSurfaceVariant,
@@ -595,7 +597,7 @@ class _HomeScreenState extends State<HomeScreen>
                         return IconButton(
                           tooltip: voice.isRecording
                               ? 'Tap to stop recording'
-                              : 'Voice Search (Whisper STT)',
+                              : 'Voice Filter (Whisper STT)',
                           icon: voice.isTranscribing
                               ? SizedBox(
                                   width: 18,
@@ -617,6 +619,61 @@ class _HomeScreenState extends State<HomeScreen>
                           onPressed: _handleVoiceSearch,
                         );
                       },
+                    ),
+                    // Prominent Glowing "Voice AI" Autonomous Concierge Pill
+                    Padding(
+                      padding: const EdgeInsets.only(right: 4),
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(999),
+                        onTap: () => GlobalVoiceOverlay.openConcierge(
+                          initialQuery: _searchQuery.trim().isNotEmpty
+                              ? _searchQuery.trim()
+                              : null,
+                        ),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 5,
+                          ),
+                          decoration: BoxDecoration(
+                            gradient: const LinearGradient(
+                              colors: [
+                                Color(0xFF0D47A1),
+                                Color(0xFF1E88E5),
+                                Color(0xFF00ACC1),
+                              ],
+                            ),
+                            borderRadius: BorderRadius.circular(999),
+                            boxShadow: [
+                              BoxShadow(
+                                color: const Color(0xFF00E5FF)
+                                    .withValues(alpha: 0.28),
+                                blurRadius: 8,
+                                offset: const Offset(0, 2),
+                              ),
+                            ],
+                          ),
+                          child: const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                Icons.graphic_eq_rounded,
+                                color: Colors.white,
+                                size: 14,
+                              ),
+                              SizedBox(width: 4),
+                              Text(
+                                'Voice AI',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
                     ),
                     Container(
                       height: 25,
@@ -644,6 +701,34 @@ class _HomeScreenState extends State<HomeScreen>
                 enabledBorder: InputBorder.none,
                 focusedBorder: InputBorder.none,
                 filled: false,
+              ),
+            ),
+          ),
+          // Animated / Interactive Voice AI Hint Prompt Bar
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                children: [
+                  _buildVoiceHintChip(
+                    theme,
+                    "Try: 'Pick best headphones under \$350 & add to cart'",
+                    'Pick the best headphones under \$350 based on real reviews and add it to my cart',
+                  ),
+                  const SizedBox(width: 6),
+                  _buildVoiceHintChip(
+                    theme,
+                    "Try: 'Compare top two products'",
+                    'Compare the top two products in the store',
+                  ),
+                  const SizedBox(width: 6),
+                  _buildVoiceHintChip(
+                    theme,
+                    "Try: 'Apply best coupon to my cart'",
+                    'Apply the best coupon to my cart and tell me my final total',
+                  ),
+                ],
               ),
             ),
           ),
@@ -1376,6 +1461,46 @@ class _HomeScreenState extends State<HomeScreen>
           ),
         );
       },
+    );
+  }
+
+  Widget _buildVoiceHintChip(
+    ThemeData theme,
+    String label,
+    String voiceQuery,
+  ) {
+    return InkWell(
+      borderRadius: BorderRadius.circular(999),
+      onTap: () => GlobalVoiceOverlay.openConcierge(initialQuery: voiceQuery),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+        decoration: BoxDecoration(
+          color: theme.colorScheme.primaryContainer.withValues(alpha: 0.35),
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(
+            color: theme.colorScheme.primary.withValues(alpha: 0.25),
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.auto_awesome_rounded,
+              size: 12,
+              color: theme.colorScheme.primary,
+            ),
+            const SizedBox(width: 4),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 10.5,
+                fontWeight: FontWeight.w600,
+                color: theme.colorScheme.onSurface,
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

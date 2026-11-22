@@ -8,6 +8,7 @@ import 'package:penguin_store/features/shop/models/product_model.dart';
 import 'package:penguin_store/features/shop/providers/product_provider.dart';
 import 'package:penguin_store/features/shop/services/showcase_3d_service.dart';
 import 'package:penguin_store/features/shop/widgets/multimodal_search_sheet.dart';
+import 'package:penguin_store/features/shop/widgets/voice_concierge_overlay.dart';
 import 'package:penguin_store/features/shop/widgets/product_card.dart';
 import 'package:penguin_store/features/shop/widgets/product_card_skeleton.dart';
 import 'package:penguin_store/features/shop/widgets/right_drawer.dart';
@@ -370,16 +371,17 @@ class _DiscoverScreenState extends State<DiscoverScreen>
                   ],
                 ),
                 ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 360),
+                  constraints: const BoxConstraints(maxWidth: 420),
                   child: TextField(
                     controller: _searchController,
                     onChanged: (v) => setState(() => _searchQuery = v),
                     style: const TextStyle(color: Colors.white, fontSize: 13.5),
                     decoration: InputDecoration(
-                      hintText: 'Filter by name, style, or category...',
+                      hintText:
+                          "Filter or ask Voice AI: 'Compare top two products'...",
                       hintStyle: const TextStyle(
                         color: Colors.white70,
-                        fontSize: 13,
+                        fontSize: 12.5,
                       ),
                       prefixIcon: const Icon(
                         Icons.search_rounded,
@@ -407,7 +409,7 @@ class _DiscoverScreenState extends State<DiscoverScreen>
                               return IconButton(
                                 tooltip: voice.isRecording
                                     ? 'Stop voice input'
-                                    : 'Voice Search (Whisper STT)',
+                                    : 'Voice Filter (Whisper STT)',
                                 onPressed: _handleVoiceSearch,
                                 icon: voice.isTranscribing
                                     ? const SizedBox(
@@ -429,6 +431,51 @@ class _DiscoverScreenState extends State<DiscoverScreen>
                                       ),
                               );
                             },
+                          ),
+                          Padding(
+                            padding: const EdgeInsets.only(right: 4),
+                            child: InkWell(
+                              borderRadius: BorderRadius.circular(999),
+                              onTap: () => GlobalVoiceOverlay.openConcierge(
+                                initialQuery: _searchQuery.trim().isNotEmpty
+                                    ? _searchQuery.trim()
+                                    : null,
+                              ),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 9,
+                                  vertical: 4,
+                                ),
+                                decoration: BoxDecoration(
+                                  gradient: const LinearGradient(
+                                    colors: [
+                                      Color(0xFF00ACC1),
+                                      Color(0xFF1E88E5),
+                                    ],
+                                  ),
+                                  borderRadius: BorderRadius.circular(999),
+                                ),
+                                child: const Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(
+                                      Icons.graphic_eq_rounded,
+                                      color: Colors.white,
+                                      size: 13,
+                                    ),
+                                    SizedBox(width: 4),
+                                    Text(
+                                      'Voice AI',
+                                      style: TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 10.5,
+                                        fontWeight: FontWeight.w800,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
                           ),
                           IconButton(
                             tooltip: 'Multimodal AI Search (Image + Voice)',

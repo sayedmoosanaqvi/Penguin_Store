@@ -8,6 +8,7 @@ import 'package:uuid/uuid.dart';
 
 import 'package:penguin_store/config/api_config.dart';
 import 'package:penguin_store/core/providers/voice_provider.dart';
+import 'package:penguin_store/core/services/voice_action_dispatcher.dart';
 import 'package:penguin_store/core/widgets/animated_widgets.dart';
 import 'package:penguin_store/features/shop/models/product_model.dart';
 import 'package:penguin_store/features/shop/providers/cart_provider.dart';
@@ -19,6 +20,7 @@ import 'package:penguin_store/features/shop/widgets/studio_product_image.dart';
 class AgentMessage {
   final String role; // "user" or "bot"
   final String text;
+  final String? spokenSummary;
   final String
       dataType; // "text", "product_list", "bundle", "comparison", "cart_update", "order_tracker"
   final List<Product> suggestedProducts;
@@ -31,6 +33,7 @@ class AgentMessage {
   AgentMessage({
     required this.role,
     required this.text,
+    this.spokenSummary,
     this.dataType = "text",
     this.suggestedProducts = const [],
     this.orderAction,
@@ -177,6 +180,11 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
     _scrollToBottom();
 
     try {
+      final voice = context.read<VoiceProvider>();
+      final screenCtx = VoiceActionDispatcher.collectScreenContext(
+        context,
+        currentRoute: '/ctrlx',
+      );
       final base = ApiConfig.baseUrl.replaceFirst(RegExp(r'/$'), '');
       final url = Uri.parse('$base/api/agent/chat');
 
@@ -190,6 +198,13 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
             body: jsonEncode({
               "user_input": text,
               "thread_id": _threadId,
+              "current_route": "/ctrlx",
+              "cart_item_count": screenCtx['cart_item_count'],
+              "cart_total": screenCtx['cart_total'],
+              "cart_items": screenCtx['cart_items'],
+              "is_voice": triggeredByVoice,
+              "stt_latency_ms": triggeredByVoice ? voice.lastSttLatencyMs : null,
+              "voice_transcript": triggeredByVoice ? text : null,
             }),
           )
           .timeout(const Duration(seconds: 45));
@@ -199,9 +214,14 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         final aiReply =
-            (data['response'] ?? "No response received.").toString();
+            (data['reply'] ?? data['response'] ?? "No response received.").toString();
+        final serverSpokenSummary =
+            (data['spoken_summary'] ?? '').toString().trim();
         final dataType = (data['data_type'] ?? "text").toString();
         final routedAgent = (data['routed_agent'] ?? "CTRL-X").toString();
+        final clientAction = data['client_action'] is Map
+            ? Map<String, dynamic>.from(data['client_action'] as Map)
+            : null;
 
         List<Product> products = [];
         Map<String, dynamic>? orderData;
@@ -284,11 +304,31 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
           orderData = Map<String, dynamic>.from(data['order_action'] as Map);
         }
 
+        if (clientAction != null &&
+            !(dataType == "cart_update" &&
+                clientAction['type'] == 'add_to_cart' &&
+                data['cart_action'] is Map &&
+                data['cart_action']['action'] == 'add_to_cart')) {
+          await VoiceActionDispatcher.dispatch(context, clientAction);
+          if (!mounted) return;
+        }
+
+        final speechScript = serverSpokenSummary.isNotEmpty
+            ? serverSpokenSummary
+            : _buildCtrlXSpokenSummary(
+                aiReply: aiReply,
+                dataType: dataType,
+                comparisonData: comparisonData,
+                bundleData: bundleData,
+                products: products,
+              );
+
         setState(() {
           _messages.add(
             AgentMessage(
               role: "bot",
               text: aiReply,
+              spokenSummary: speechScript,
               dataType: dataType,
               suggestedProducts: products,
               orderAction: orderData,
@@ -303,20 +343,13 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
         if (mounted) {
           final voice = context.read<VoiceProvider>();
           if (triggeredByVoice || voice.autoSpeakCtrlX) {
-            final summary = _buildCtrlXSpokenSummary(
-              aiReply: aiReply,
-              dataType: dataType,
-              comparisonData: comparisonData,
-              bundleData: bundleData,
-              products: products,
-            );
-            if (summary.trim().isNotEmpty) {
+            if (speechScript.trim().isNotEmpty) {
               _speakingMsgKey = '${aiReply.hashCode}';
               voice
                   .speakText(
-                    summary,
+                    speechScript,
                     label: 'CTRL-X speaking...',
-                    preferNeural: summary.length <= 185,
+                    preferNeural: false,
                     forceEvenIfMuted: triggeredByVoice,
                   )
                   .then((outcome) {
@@ -1345,13 +1378,15 @@ class _CtrlXScreenState extends State<CtrlXScreen> {
                               setState(() => _speakingMsgKey = null);
                             } else {
                               setState(() => _speakingMsgKey = msgKey);
-                              final spoken = msg.text.length > 550
-                                  ? '${msg.text.substring(0, 550)}...'
-                                  : msg.text;
+                              final rawSpoken =
+                                  (msg.spokenSummary != null &&
+                                          msg.spokenSummary!.trim().isNotEmpty)
+                                      ? msg.spokenSummary!.trim()
+                                      : msg.text;
                               voice.speakText(
-                                spoken,
+                                rawSpoken,
                                 label: 'CTRL-X reply',
-                                preferNeural: spoken.length <= 185,
+                                preferNeural: false,
                                 forceEvenIfMuted: true,
                               );
                             }

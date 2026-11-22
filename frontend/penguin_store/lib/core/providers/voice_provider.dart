@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:uuid/uuid.dart';
 
 import 'package:penguin_store/core/services/voice_service.dart';
 
-/// Global Voice Preferences & Live Speech State Provider (Phase 2).
+/// Global Voice Preferences & Live Speech State Provider (Phase 2 & Voice Concierge).
 class VoiceProvider with ChangeNotifier {
   static const String _keyVoiceEnabled = 'penguin_voice_enabled_v1';
   static const String _keyAutoOrder = 'penguin_voice_auto_order_v1';
@@ -11,6 +12,7 @@ class VoiceProvider with ChangeNotifier {
   static const String _keyRatePreset = 'penguin_voice_rate_preset_v1';
 
   final VoiceService _voice = VoiceService.instance;
+  final String conciergeThreadId = const Uuid().v4();
 
   bool _voiceEnabled = true;
   bool _autoSpeakOrderConfirmation = true;
@@ -21,6 +23,8 @@ class VoiceProvider with ChangeNotifier {
   bool _isTranscribing = false;
   bool _isSpeaking = false;
   bool _autoplayBlocked = false;
+  bool _suppressNextRouteStop = false;
+  double _lastSttLatencyMs = 0.0;
   String? _activeLabel;
   String? _lastError;
 
@@ -37,8 +41,19 @@ class VoiceProvider with ChangeNotifier {
   bool get isTranscribing => _isTranscribing;
   bool get isSpeaking => _isSpeaking;
   bool get autoplayBlocked => _autoplayBlocked;
+  double get lastSttLatencyMs => _lastSttLatencyMs;
   String? get activeLabel => _activeLabel;
   String? get lastError => _lastError;
+
+  void markNavigationConfirmation() {
+    _suppressNextRouteStop = true;
+  }
+
+  bool consumeSuppressRouteStop() {
+    final val = _suppressNextRouteStop;
+    _suppressNextRouteStop = false;
+    return val;
+  }
 
   double get speechRateMultiplier {
     switch (_speechRatePreset) {
@@ -163,6 +178,7 @@ class VoiceProvider with ChangeNotifier {
 
     final result = await _voice.stopRecordingAndTranscribe();
     _isTranscribing = false;
+    _lastSttLatencyMs = result.latencyMs;
 
     if (result.hasError && !result.hasTranscript) {
       _lastError = result.errorMessage;
@@ -180,6 +196,36 @@ class VoiceProvider with ChangeNotifier {
 
     notifyListeners();
     return result.transcript;
+  }
+
+  Future<bool> startListeningBargeIn({BuildContext? context}) async {
+    if (_isTranscribing) return false;
+    _lastError = null;
+    _voice.primeSpeechOnUserGesture();
+    if (_isSpeaking) {
+      await stopSpeaking();
+    }
+    if (_isRecording) return true;
+    final started = await _voice.startRecording();
+    if (!started) {
+      _lastError =
+          _voice.lastRecordError ??
+          'Microphone access was denied or unavailable. You can type below instead.';
+      notifyListeners();
+      if (context != null && context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(_lastError!),
+            backgroundColor: Colors.redAccent,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+      return false;
+    }
+    _isRecording = true;
+    notifyListeners();
+    return true;
   }
 
   Future<void> cancelRecording() async {

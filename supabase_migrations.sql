@@ -469,3 +469,19 @@ CREATE INDEX IF NOT EXISTS idx_ai_metrics_voice_multimodal
     ON ai_metrics_logs (subsystem, operation, created_at DESC);
 
 
+-- ============================================================================
+-- 16. PENGUIN VOICE CONCIERGE E2E LATENCY, DECISION & ACTION TELEMETRY
+-- ============================================================================
+
+ALTER TABLE ai_metrics_logs
+    ADD COLUMN IF NOT EXISTS stt_latency_ms DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS db_retrieval_ms DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS llm_latency_ms DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS tools_called TEXT,
+    ADD COLUMN IF NOT EXISTS decision_made BOOLEAN DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS action_executed TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_ai_metrics_voice_concierge
+    ON ai_metrics_logs (action_executed, decision_made, created_at DESC);
+
+

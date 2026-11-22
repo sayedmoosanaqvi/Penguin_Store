@@ -45,6 +45,80 @@ class VoiceSpeakOutcome {
   });
 }
 
+/// Defense-in-depth sanitizer eliminating Markdown syntax ("dash dash dash",
+/// pipes, asterisks, underscores, raw tables) before text reaches any TTS engine.
+class SpeechTextCleaner {
+  SpeechTextCleaner._();
+
+  static String clean(String raw) {
+    if (raw.trim().isEmpty) return '';
+    var text = raw;
+
+    // 1. Strip fenced code blocks, Markdown links, and bare URLs
+    text = text.replaceAll(RegExp(r'```[\s\S]*?```'), ' ');
+    text = text.replaceAllMapped(
+      RegExp(r'\[([^\]]+)\]\([^)]+\)'),
+      (m) => m.group(1) ?? '',
+    );
+    text = text.replaceAll(RegExp(r'https?://\S+'), '');
+
+    // 2. Drop Markdown table rows and horizontal rule lines line-by-line
+    final keptLines = <String>[];
+    for (final line in text.split(RegExp(r'\r?\n'))) {
+      final s = line.trim();
+      if (s.isEmpty) continue;
+      if (RegExp(r'^[-:=_*+|•·\s\u2500-\u257f]+$').hasMatch(s)) continue;
+      if (s.startsWith('|') || '|'.allMatches(s).length >= 2) continue;
+      final noBullet = s.replaceFirst(RegExp(r'^\s*(?:#{1,6}|[-*+•>]+)\s+'), '');
+      if (noBullet.trim().isNotEmpty) keptLines.add(noBullet.trim());
+    }
+    text = keptLines.join('. ');
+
+    // 3. Order numbers & currencies
+    text = text.replaceAllMapped(
+      RegExp(r'(?:Order\s*#\s*|#)([A-Za-z0-9-]+)', caseSensitive: false),
+      (m) {
+        final token = (m.group(1) ?? '').replaceAll('-', ' ');
+        return 'order number $token';
+      },
+    );
+    text = text.replaceAllMapped(
+      RegExp(r'\$\s*([0-9][0-9,]*)(?:\.(\d{1,2}))?'),
+      (m) {
+        final whole = (m.group(1) ?? '0').replaceAll(',', '');
+        final cents = m.group(2);
+        if (cents == null || cents == '00') {
+          return '$whole dollars';
+        }
+        return '$whole dollars and $cents cents';
+      },
+    );
+    text = text.replaceAllMapped(
+      RegExp(r'€\s*([0-9][0-9,]*(?:\.\d{1,2})?)'),
+      (m) => '${(m.group(1) ?? '0').replaceAll(',', '')} euros',
+    );
+    text = text.replaceAllMapped(
+      RegExp(r'Rs\.?\s*([0-9][0-9,]*)'),
+      (m) => '${(m.group(1) ?? '0').replaceAll(',', '')} rupees',
+    );
+
+    // 4. Symbols, emojis, and dash/underscore runs
+    text = text.replaceAll('%', ' percent');
+    text = text.replaceAll('&', ' and ');
+    text = text.replaceAll(RegExp(r'\s*[★☆⭐]+\s*'), ' star ');
+    text = text.replaceAll(RegExp(r'[✅☑️❌⚠️🔥🔊⏹🎉📦🤖🛡️✨💎]+'), ' ');
+    text = text.replaceAll(RegExp(r'[\u{10000}-\u{10FFFF}]', unicode: true), ' ');
+    text = text.replaceAll(RegExp(r'[*_#`~|<>^\\]+'), ' ');
+    text = text.replaceAll(RegExp(r'[-–—]{2,}|_{2,}|\.{2,}|={2,}'), ', ');
+    text = text.replaceAll(RegExp(r'\s+[-–—]\s+'), ', ');
+    text = text.replaceAll(RegExp(r'(?<!\w)[-–—]+|[-–—]+(?!\w)'), ' ');
+    text = text.replaceAll(RegExp(r'\s*,\s*(?:,\s*)+'), ', ');
+    text = text.replaceAll(RegExp(r'\.\s*,'), '.');
+    text = text.replaceAll(RegExp(r'\s+'), ' ').trim();
+    return text;
+  }
+}
+
 /// Centralized, singleton-backed Voice Intelligence Engine (Phase 2).
 ///
 /// Handles:
@@ -139,59 +213,11 @@ class VoiceService {
   // SPEECH CLEANUP & CHUNKING UTILITIES
   // -------------------------------------------------------------------------
 
-  /// Strips Markdown, URLs, and symbols, and formats Order IDs and currencies
-  /// so TTS reads naturally.
-  static String cleanTextForSpeech(String raw) {
-    var text = raw;
-
-    text = text.replaceAll(RegExp(r'```[\s\S]*?```'), ' ');
-    text = text.replaceAllMapped(
-      RegExp(r'\[([^\]]+)\]\([^)]+\)'),
-      (m) => m.group(1) ?? '',
-    );
-    text = text.replaceAll(RegExp(r'https?://\S+'), '');
-
-    text = text.replaceAllMapped(
-      RegExp(r'(?:Order\s*#\s*|#)([A-Za-z0-9-]+)', caseSensitive: false),
-      (m) {
-        final token = (m.group(1) ?? '').replaceAll('-', ' ');
-        final spaced = token.split('').join(' ');
-        return 'order number $spaced';
-      },
-    );
-
-    text = text.replaceAllMapped(
-      RegExp(r'\$\s*([0-9][0-9,]*)(?:\.(\d{2}))?'),
-      (m) {
-        final whole = m.group(1) ?? '0';
-        final cents = m.group(2);
-        if (cents == null || cents == '00') {
-          return '$whole dollars';
-        }
-        return '$whole dollars and $cents cents';
-      },
-    );
-
-    text = text.replaceAllMapped(
-      RegExp(r'€\s*([0-9][0-9,]*(?:\.\d{2})?)'),
-      (m) => '${m.group(1)} euros',
-    );
-    text = text.replaceAllMapped(
-      RegExp(r'Rs\.?\s*([0-9][0-9,]*)'),
-      (m) => '${m.group(1)} rupees',
-    );
-
-    text = text.replaceAll('★', ' star ');
-    text = text.replaceAll('&', ' and ');
-    text = text.replaceAll('•', '. ');
-    text = text.replaceAll('🔊', ' ');
-    text = text.replaceAll('⏹', ' ');
-    text = text.replaceAll('✓', ' ');
-    text = text.replaceAll(RegExp(r'[*_#`~|>]+'), ' ');
-    text = text.replaceAll(RegExp(r'\n+'), '. ');
-    text = text.replaceAll(RegExp(r'\s+'), ' ').trim();
-    return text;
-  }
+  /// Defense-in-depth sanitizer ensuring Markdown tables (`| --- | --- |`),
+  /// horizontal rules, bullets, emojis, and punctuation runs never get read
+  /// literally as "dash dash dash" or "underscore" by any TTS engine.
+  static String cleanTextForSpeech(String raw) =>
+      SpeechTextCleaner.clean(raw);
 
   /// Splits text into crisp chunks (`<= maxChunkLength` chars) at sentence
   /// boundaries so browser `speechSynthesis` never truncates long utterances.

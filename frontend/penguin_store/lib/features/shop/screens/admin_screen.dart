@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:image_picker/image_picker.dart';
@@ -2126,6 +2127,9 @@ class _AdminAiEvaluationTabState extends State<_AdminAiEvaluationTab> {
     final trustAcc =
         (_summary?['fake_review_precision'] as num?)?.toDouble() ?? 94.2;
     final totalQueries = (_summary?['total_ai_events'] as num?)?.toInt() ?? 128;
+    final vm = _summary?['voice_and_multimodal'] is Map
+        ? Map<String, dynamic>.from(_summary!['voice_and_multimodal'] as Map)
+        : <String, dynamic>{};
 
     final kpis = [
       ('p50 Inference Latency', '${p50.toStringAsFixed(0)} ms', Icons.speed),
@@ -2140,6 +2144,26 @@ class _AdminAiEvaluationTabState extends State<_AdminAiEvaluationTab> {
         '$totalQueries runs',
         Icons.psychology_outlined,
       ),
+      (
+        'Voice STT Latency (Whisper)',
+        '${((vm['avg_stt_latency_ms'] as num?)?.toDouble() ?? 0.0).toStringAsFixed(0)} ms',
+        Icons.mic_rounded,
+      ),
+      (
+        'Supabase Retrieval Latency',
+        '${((vm['avg_db_retrieval_ms'] as num?)?.toDouble() ?? 0.0).toStringAsFixed(0)} ms',
+        Icons.storage_rounded,
+      ),
+      (
+        'Voice Actions Executed',
+        '${(vm['voice_actions_executed'] as num?)?.toInt() ?? 0}',
+        Icons.bolt_rounded,
+      ),
+      (
+        'Voice Session Success Rate',
+        '${((vm['voice_session_success_rate_percent'] as num?)?.toDouble() ?? 100.0).toStringAsFixed(1)}%',
+        Icons.record_voice_over_rounded,
+      ),
     ];
 
     return ListView(
@@ -2151,8 +2175,11 @@ class _AdminAiEvaluationTabState extends State<_AdminAiEvaluationTab> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                Wrap(
+                  spacing: 12,
+                  runSpacing: 10,
+                  alignment: WrapAlignment.spaceBetween,
+                  crossAxisAlignment: WrapCrossAlignment.center,
                   children: [
                     Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -2166,7 +2193,7 @@ class _AdminAiEvaluationTabState extends State<_AdminAiEvaluationTab> {
                           ),
                         ),
                         Text(
-                          'Real-time latency percentiles, review trust precision, and CTRL-X semantic retrieval metrics.',
+                          'Real-time latency percentiles, Penguin Voice Concierge telemetry, review trust precision, and CSV export.',
                           style: GoogleFonts.inter(
                             fontSize: 13,
                             color: colors.onSurfaceVariant,
@@ -2174,10 +2201,42 @@ class _AdminAiEvaluationTabState extends State<_AdminAiEvaluationTab> {
                         ),
                       ],
                     ),
-                    FilledButton.tonalIcon(
-                      onPressed: _loadMetrics,
-                      icon: const Icon(Icons.refresh_rounded, size: 18),
-                      label: const Text('Refresh Telemetry'),
+                    Wrap(
+                      spacing: 10,
+                      runSpacing: 8,
+                      children: [
+                        OutlinedButton.icon(
+                          onPressed: () async {
+                            try {
+                              final csvData = await _commerceService
+                                  .fetchAdminAiMetricsCsv();
+                              await Clipboard.setData(
+                                ClipboardData(text: csvData),
+                              );
+                              if (!context.mounted) return;
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text(
+                                    'AI Evaluation telemetry CSV copied to clipboard!',
+                                  ),
+                                ),
+                              );
+                            } catch (e) {
+                              if (!context.mounted) return;
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(content: Text('Export failed: $e')),
+                              );
+                            }
+                          },
+                          icon: const Icon(Icons.download_rounded, size: 18),
+                          label: const Text('Copy Telemetry CSV'),
+                        ),
+                        FilledButton.tonalIcon(
+                          onPressed: _loadMetrics,
+                          icon: const Icon(Icons.refresh_rounded, size: 18),
+                          label: const Text('Refresh Telemetry'),
+                        ),
+                      ],
                     ),
                   ],
                 ),

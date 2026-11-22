@@ -20,7 +20,10 @@ import 'package:penguin_store/features/shop/screens/support_screen.dart';
 import 'package:penguin_store/features/shop/screens/wishlist_screen.dart';
 import 'package:penguin_store/features/shop/widgets/bottom_nav_bar.dart';
 
+final GlobalKey<NavigatorState> rootNavigatorKey = GlobalKey<NavigatorState>();
+
 final GoRouter appRouter = GoRouter(
+  navigatorKey: rootNavigatorKey,
   initialLocation: '/splash',
   errorBuilder: (context, state) {
     final isDark = Theme.of(context).brightness == Brightness.dark;

@@ -6,6 +6,7 @@ import 'package:penguin_store/features/shop/providers/cart_provider.dart';
 import 'package:penguin_store/features/shop/providers/currency_provider.dart';
 import 'package:penguin_store/features/shop/providers/product_provider.dart';
 import 'package:penguin_store/features/shop/providers/shop_state_provider.dart';
+import 'package:penguin_store/features/shop/widgets/voice_concierge_overlay.dart';
 import 'package:penguin_store/helpers/shared_preferences.dart';
 import 'package:penguin_store/helpers/theme_provider.dart';
 import 'package:provider/provider.dart';
@@ -96,7 +97,7 @@ class PenguinStoreApp extends StatelessWidget {
               return Stack(
                 children: [
                   if (child != null) child,
-                  const _FloatingSpeakingChip(),
+                  const GlobalVoiceOverlay(),
                 ],
               );
             },
@@ -144,82 +145,4 @@ class _AuthSessionSyncBridgeState extends State<_AuthSessionSyncBridge> {
 
   @override
   Widget build(BuildContext context) => widget.child;
-}
-
-/// Floating "🔊 Speaking... [Stop]" indicator chip visible across all screens
-/// whenever VoiceService is actively reading aloud or transcribing.
-class _FloatingSpeakingChip extends StatelessWidget {
-  const _FloatingSpeakingChip();
-
-  @override
-  Widget build(BuildContext context) {
-    return Consumer<VoiceProvider>(
-      builder: (context, voice, _) {
-        if (!voice.isSpeaking && !voice.isTranscribing) {
-          return const SizedBox.shrink();
-        }
-        final colors = Theme.of(context).colorScheme;
-        return Positioned(
-          left: 16,
-          bottom: 78,
-          child: Material(
-            elevation: 8,
-            borderRadius: BorderRadius.circular(999),
-            color: colors.inverseSurface,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(
-                    voice.isTranscribing
-                        ? Icons.graphic_eq_rounded
-                        : Icons.volume_up_rounded,
-                    color: const Color(0xFF00E5FF),
-                    size: 18,
-                  ),
-                  const SizedBox(width: 8),
-                  Text(
-                    voice.isTranscribing
-                        ? 'Transcribing speech...'
-                        : (voice.activeLabel ?? 'Speaking...'),
-                    style: TextStyle(
-                      color: colors.onInverseSurface,
-                      fontSize: 12,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                  if (voice.isSpeaking) ...[
-                    const SizedBox(width: 10),
-                    InkWell(
-                      onTap: voice.stopSpeaking,
-                      borderRadius: BorderRadius.circular(999),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 8,
-                          vertical: 3,
-                        ),
-                        decoration: BoxDecoration(
-                          color: Colors.redAccent,
-                          borderRadius: BorderRadius.circular(999),
-                        ),
-                        child: const Text(
-                          'Stop',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 11,
-                            fontWeight: FontWeight.w800,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                ],
-              ),
-            ),
-          ),
-        );
-      },
-    );
-  }
 }
