@@ -1,4 +1,3 @@
-import 'dart:typed_data';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -226,9 +225,11 @@ class _AddProductFormState extends State<_AddProductForm> {
   _AdminProductMode _mode = _AdminProductMode.createNew;
 
   XFile? _selectedImageFile;
+  Uint8List? _selectedImageBytes;
   String? _selectedGlbName;
   Uint8List? _selectedGlbBytes;
   Uint8List? _captured3DThumbnailBytes;
+  bool _showGlbStudioPreview = false;
 
   bool _isSubmitting = false;
   double _uploadProgress = 0.0;
@@ -304,6 +305,23 @@ class _AddProductFormState extends State<_AddProductForm> {
     }
   }
 
+  void _resetForm() {
+    _nameController.clear();
+    _descriptionController.clear();
+    _priceController.clear();
+    _stockController.text = '50';
+    _selectedCategory = _categories.first;
+    _isFeatured = false;
+    _selectedImageFile = null;
+    _selectedImageBytes = null;
+    _selectedGlbName = null;
+    _selectedGlbBytes = null;
+    _captured3DThumbnailBytes = null;
+    _showGlbStudioPreview = false;
+    _selectedExistingProduct = null;
+    _mode = _AdminProductMode.createNew;
+  }
+
   void _startEditingProduct(Product product) {
     setState(() {
       _mode = _AdminProductMode.editExisting;
@@ -317,9 +335,11 @@ class _AddProductFormState extends State<_AddProductForm> {
           : _categories.first;
       _isFeatured = product.isFeatured;
       _selectedImageFile = null;
+      _selectedImageBytes = null;
       _selectedGlbName = null;
       _selectedGlbBytes = null;
       _captured3DThumbnailBytes = null;
+      _showGlbStudioPreview = false;
     });
     if (_scrollController.hasClients) {
       _scrollController.animateTo(
@@ -357,7 +377,11 @@ class _AddProductFormState extends State<_AddProductForm> {
   Future<void> _pickImage() async {
     final picked = await _imagePicker.pickImage(source: ImageSource.gallery);
     if (picked != null && mounted) {
-      setState(() => _selectedImageFile = picked);
+      final bytes = await picked.readAsBytes();
+      setState(() {
+        _selectedImageFile = picked;
+        _selectedImageBytes = bytes;
+      });
     }
   }
 
@@ -373,8 +397,61 @@ class _AddProductFormState extends State<_AddProductForm> {
         _selectedGlbName = picked.name;
         _selectedGlbBytes = bytes;
         _captured3DThumbnailBytes = null;
+        _showGlbStudioPreview = false;
       });
     }
+  }
+
+  void _showAdminNotification(
+    BuildContext context, {
+    required String message,
+    bool isSuccess = false,
+    bool isError = false,
+    IconData? icon,
+  }) {
+    final bg = isSuccess
+        ? const Color(0xFF059669) // Emerald Green
+        : isError
+            ? const Color(0xFFDC2626) // Crimson Red
+            : const Color(0xFF1E293B); // Slate
+
+    ScaffoldMessenger.of(context).hideCurrentSnackBar();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(milliseconds: 3500),
+        margin: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        backgroundColor: bg,
+        elevation: 8,
+        content: Row(
+          children: [
+            Icon(
+              icon ??
+                  (isSuccess
+                      ? Icons.check_circle_rounded
+                      : isError
+                          ? Icons.error_rounded
+                          : Icons.info_rounded),
+              color: Colors.white,
+              size: 22,
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                message,
+                style: GoogleFonts.inter(
+                  color: Colors.white,
+                  fontWeight: FontWeight.w600,
+                  fontSize: 13.5,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Future<void> _submitForm() async {
@@ -386,8 +463,10 @@ class _AddProductFormState extends State<_AddProductForm> {
     if ((_mode == _AdminProductMode.attachToExisting ||
             _mode == _AdminProductMode.editExisting) &&
         _selectedExistingProduct == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please select an existing product.')),
+      _showAdminNotification(
+        context,
+        message: 'Please select an existing product first.',
+        isError: true,
       );
       return;
     }
@@ -401,184 +480,193 @@ class _AddProductFormState extends State<_AddProductForm> {
     });
 
     try {
-      // Auto-capture 3D studio thumbnail if a .glb is loaded and no 2D image was uploaded
-      if (_selectedGlbBytes != null &&
-          _selectedImageFile == null &&
-          _captured3DThumbnailBytes == null) {
-        setState(() => _statusMessage = 'Auto-capturing 3D studio poster...');
-        final snap = await _previewController.captureCurrentAngle();
-        if (snap != null && snap.isNotEmpty) {
-          _captured3DThumbnailBytes = snap;
+      await Future<void>.sync(() async {
+        // Safe 8-second timeout for 3D studio thumbnail capture if GLB is loaded and preview attached
+        if (_selectedGlbBytes != null &&
+            _selectedImageFile == null &&
+            _captured3DThumbnailBytes == null &&
+            _previewController.isAttached) {
+          setState(() => _statusMessage = 'Auto-capturing 3D studio poster...');
+          try {
+            final snap = await _previewController
+                .captureCurrentAngle()
+                .timeout(const Duration(seconds: 8));
+            if (snap != null && snap.isNotEmpty) {
+              _captured3DThumbnailBytes = snap;
+            }
+          } catch (e) {
+            debugPrint('Auto-capture skipped or timed out gracefully: $e');
+          }
         }
-      }
 
-      String? uploadedImageUrl;
-      if (_selectedImageFile != null) {
-        setState(() {
-          _uploadProgress = 0.3;
-          _statusMessage = 'Normalizing & uploading 800×800 studio image...';
-        });
-        uploadedImageUrl = await _productService.uploadImage(
-          _selectedImageFile!,
-        );
-      } else if (_captured3DThumbnailBytes != null &&
-          _selectedGlbBytes == null) {
-        setState(() {
-          _uploadProgress = 0.3;
-          _statusMessage = 'Uploading captured 3D studio thumbnail...';
-        });
-        uploadedImageUrl = await _productService.uploadImageBytes(
-          _captured3DThumbnailBytes!,
-          fileName: 'studio_3d_${DateTime.now().millisecondsSinceEpoch}.png',
-        );
-      }
-
-      String publishedTitle = _nameController.text.trim();
-
-      if (_mode == _AdminProductMode.createNew) {
-        final priceVal = double.tryParse(_priceController.text.trim()) ?? 49.99;
-        final stockVal = int.tryParse(_stockController.text.trim()) ?? 50;
-
-        if (_selectedGlbBytes != null) {
+        String? uploadedImageUrl;
+        if (_selectedImageFile != null) {
           setState(() {
-            _uploadProgress = 0.45;
-            _statusMessage =
-                'Creating product & uploading .glb to Supabase Storage...';
+            _uploadProgress = 0.3;
+            _statusMessage = 'Normalizing & uploading 800×800 studio image...';
           });
-          final posterBytes = _selectedImageFile != null
-              ? await _selectedImageFile!.readAsBytes()
-              : _captured3DThumbnailBytes;
-          final res = await _admin3DService.uploadNewProduct(
-            fileName: _selectedGlbName ?? 'model.glb',
-            glbBytes: _selectedGlbBytes!,
-            name: publishedTitle,
-            price: priceVal,
-            category: _selectedCategory,
-            description: _descriptionController.text.trim(),
-            isFeatured: _isFeatured,
-            posterBytes: posterBytes,
-            posterName: _selectedImageFile?.name ?? 'studio_poster.png',
-            onProgress: (p) => setState(() => _uploadProgress = 0.4 + p * 0.55),
+          uploadedImageUrl = await _productService.uploadImage(
+            _selectedImageFile!,
           );
-          if (stockVal != 50) {
-            await _productService.updateProduct(res.productId, {
+        } else if (_captured3DThumbnailBytes != null &&
+            _selectedGlbBytes == null) {
+          setState(() {
+            _uploadProgress = 0.3;
+            _statusMessage = 'Uploading captured 3D studio thumbnail...';
+          });
+          uploadedImageUrl = await _productService.uploadImageBytes(
+            _captured3DThumbnailBytes!,
+            fileName: 'studio_3d_${DateTime.now().millisecondsSinceEpoch}.png',
+          );
+        }
+
+        String publishedTitle = _nameController.text.trim();
+
+        if (_mode == _AdminProductMode.createNew) {
+          final priceVal = double.tryParse(_priceController.text.trim()) ?? 49.99;
+          final stockVal = int.tryParse(_stockController.text.trim()) ?? 50;
+
+          if (_selectedGlbBytes != null) {
+            setState(() {
+              _uploadProgress = 0.45;
+              _statusMessage =
+                  'Creating product & uploading .glb to Supabase Storage...';
+            });
+            final posterBytes = _selectedImageFile != null
+                ? await _selectedImageFile!.readAsBytes()
+                : _captured3DThumbnailBytes;
+            final res = await _admin3DService.uploadNewProduct(
+              fileName: _selectedGlbName ?? 'model.glb',
+              glbBytes: _selectedGlbBytes!,
+              name: publishedTitle,
+              price: priceVal,
+              category: _selectedCategory,
+              description: _descriptionController.text.trim(),
+              isFeatured: _isFeatured,
+              posterBytes: posterBytes,
+              posterName: _selectedImageFile?.name ?? 'studio_poster.png',
+              onProgress: (p) => setState(() => _uploadProgress = 0.4 + p * 0.55),
+            );
+            if (stockVal != 50) {
+              await _productService.updateProduct(res.productId, {
+                'stock': stockVal,
+              });
+            }
+          } else {
+            setState(() {
+              _uploadProgress = 0.55;
+              _statusMessage = 'Creating product in Supabase...';
+            });
+            await _productService.createProductWithId({
+              'name': publishedTitle,
+              'description': _descriptionController.text.trim(),
+              'price': priceVal,
+              'category': _selectedCategory,
               'stock': stockVal,
+              'is_featured': _isFeatured,
+              'image_url':
+                  uploadedImageUrl ??
+                  'https://images.unsplash.com/photo-1523275335684-37898b6baf30?w=800',
             });
           }
-        } else {
+        } else if (_mode == _AdminProductMode.editExisting) {
+          final existing = _selectedExistingProduct!;
+          publishedTitle = _nameController.text.trim();
           setState(() {
             _uploadProgress = 0.55;
-            _statusMessage = 'Creating product in Supabase...';
+            _statusMessage = 'Saving product changes (#${existing.id})...';
           });
-          await _productService.createProductWithId({
+          await _productService.updateProduct(existing.id, {
             'name': publishedTitle,
             'description': _descriptionController.text.trim(),
-            'price': priceVal,
+            'price':
+                double.tryParse(_priceController.text.trim()) ?? existing.price,
             'category': _selectedCategory,
-            'stock': stockVal,
+            'stock':
+                int.tryParse(_stockController.text.trim()) ?? existing.stock,
             'is_featured': _isFeatured,
-            'image_url':
-                uploadedImageUrl ??
-                'https://images.unsplash.com/photo-1523275335684-37898b6baf30?w=800',
+            'image_url': uploadedImageUrl ?? existing.imageUrl,
           });
+
+          if (_selectedGlbBytes != null) {
+            setState(() {
+              _uploadProgress = 0.75;
+              _statusMessage = 'Uploading .glb 3D asset to Supabase Storage...';
+            });
+            await _admin3DService.attachToProduct(
+              productId: existing.id,
+              fileName: _selectedGlbName ?? 'model.glb',
+              glbBytes: _selectedGlbBytes!,
+              displayName: publishedTitle,
+              posterBytes: _captured3DThumbnailBytes,
+              updateProductImage: _captured3DThumbnailBytes != null,
+              onProgress: (p) => setState(() => _uploadProgress = 0.7 + p * 0.28),
+            );
+          }
+        } else {
+          final existing = _selectedExistingProduct!;
+          publishedTitle = existing.name;
+          if (_selectedGlbBytes != null) {
+            setState(() {
+              _uploadProgress = 0.5;
+              _statusMessage = 'Uploading .glb 3D asset to Supabase Storage...';
+            });
+            await _admin3DService.attachToProduct(
+              productId: existing.id,
+              fileName: _selectedGlbName ?? 'model.glb',
+              glbBytes: _selectedGlbBytes!,
+              displayName: existing.name,
+              posterBytes: _captured3DThumbnailBytes,
+              updateProductImage: _captured3DThumbnailBytes != null,
+              onProgress: (p) => setState(() => _uploadProgress = 0.4 + p * 0.55),
+            );
+          }
         }
-      } else if (_mode == _AdminProductMode.editExisting) {
-        final existing = _selectedExistingProduct!;
-        publishedTitle = _nameController.text.trim();
+
+        await Future.wait([
+          productProvider.invalidateAllAndRefresh(),
+          _refreshAdminData(),
+        ]);
+
+        if (!mounted) return;
         setState(() {
-          _uploadProgress = 0.55;
-          _statusMessage = 'Saving product changes (#${existing.id})...';
+          _uploadProgress = 1.0;
+          _selectedImageFile = null;
+          _selectedImageBytes = null;
+          _selectedGlbName = null;
+          _selectedGlbBytes = null;
+          _captured3DThumbnailBytes = null;
+          _showGlbStudioPreview = false;
+          if (_mode == _AdminProductMode.createNew) {
+            _nameController.clear();
+            _descriptionController.clear();
+            _priceController.clear();
+            _stockController.text = '50';
+          }
         });
-        await _productService.updateProduct(existing.id, {
-          'name': publishedTitle,
-          'description': _descriptionController.text.trim(),
-          'price':
-              double.tryParse(_priceController.text.trim()) ?? existing.price,
-          'category': _selectedCategory,
-          'stock':
-              int.tryParse(_stockController.text.trim()) ?? existing.stock,
-          'is_featured': _isFeatured,
-          'image_url': uploadedImageUrl ?? existing.imageUrl,
-        });
 
-        if (_selectedGlbBytes != null) {
-          setState(() {
-            _uploadProgress = 0.75;
-            _statusMessage = 'Uploading .glb 3D asset to Supabase Storage...';
-          });
-          await _admin3DService.attachToProduct(
-            productId: existing.id,
-            fileName: _selectedGlbName ?? 'model.glb',
-            glbBytes: _selectedGlbBytes!,
-            displayName: publishedTitle,
-            posterBytes: _captured3DThumbnailBytes,
-            updateProductImage: _captured3DThumbnailBytes != null,
-            onProgress: (p) => setState(() => _uploadProgress = 0.7 + p * 0.28),
-          );
-        }
-      } else {
-        final existing = _selectedExistingProduct!;
-        publishedTitle = existing.name;
-        if (_selectedGlbBytes != null) {
-          setState(() {
-            _uploadProgress = 0.5;
-            _statusMessage = 'Uploading .glb 3D asset to Supabase Storage...';
-          });
-          await _admin3DService.attachToProduct(
-            productId: existing.id,
-            fileName: _selectedGlbName ?? 'model.glb',
-            glbBytes: _selectedGlbBytes!,
-            displayName: existing.name,
-            posterBytes: _captured3DThumbnailBytes,
-            updateProductImage: _captured3DThumbnailBytes != null,
-            onProgress: (p) => setState(() => _uploadProgress = 0.4 + p * 0.55),
-          );
-        }
-      }
-
-      await Future.wait([
-        productProvider.invalidateAllAndRefresh(),
-        _refreshAdminData(),
-      ]);
-
-      if (!mounted) return;
-      setState(() {
-        _isSubmitting = false;
-        _uploadProgress = 1.0;
-        _statusMessage = '';
-        _selectedImageFile = null;
-        _selectedGlbName = null;
-        _selectedGlbBytes = null;
-        _captured3DThumbnailBytes = null;
-        if (_mode == _AdminProductMode.createNew) {
-          _nameController.clear();
-          _descriptionController.clear();
-          _priceController.clear();
-          _stockController.text = '50';
-        }
-      });
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            _mode == _AdminProductMode.editExisting
-                ? 'Updated "$publishedTitle" successfully!'
-                : 'Published "$publishedTitle" to Penguin Store!',
-          ),
-        ),
-      );
+        _showAdminNotification(
+          context,
+          message: _mode == _AdminProductMode.editExisting
+              ? 'Updated "$publishedTitle" successfully!'
+              : 'Published "$publishedTitle" to Penguin Store!',
+          isSuccess: true,
+        );
+      }).timeout(const Duration(seconds: 45));
     } catch (e) {
       if (!mounted) return;
-      setState(() {
-        _isSubmitting = false;
-        _statusMessage = '';
-      });
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Operation failed: $e'),
-          backgroundColor: Colors.redAccent,
-        ),
+      _showAdminNotification(
+        context,
+        message: 'Operation failed: $e',
+        isError: true,
       );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSubmitting = false;
+          _statusMessage = '';
+        });
+      }
     }
   }
 
@@ -789,24 +877,131 @@ class _AddProductFormState extends State<_AddProductForm> {
 
   Future<void> _deleteStoreProduct(Product product) async {
     if (product.id == 144) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Product #144 is protected for 3D testing.'),
-        ),
+      _showAdminNotification(
+        context,
+        message: 'Product #144 is protected for 3D testing and cannot be deleted.',
+        isError: true,
       );
       return;
     }
-    final productProvider = context.read<ProductProvider>();
-    final ok = await _productService.deleteProduct(product.id);
-    if (!mounted) return;
-    if (ok) {
-      await Future.wait([
-        productProvider.invalidateAllAndRefresh(),
-        _refreshAdminData(),
-      ]);
+
+    final has3D = _models3D.any((m) => m.productId == product.id);
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) {
+        final colors = Theme.of(ctx).colorScheme;
+        return AlertDialog(
+          backgroundColor: colors.surfaceContainerHighest,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20),
+            side: BorderSide(
+              color: Colors.redAccent.withValues(alpha: 0.4),
+            ),
+          ),
+          icon: const Icon(
+            Icons.warning_amber_rounded,
+            color: Colors.redAccent,
+            size: 36,
+          ),
+          title: Text(
+            'Delete Product #${product.id}?',
+            style: GoogleFonts.plusJakartaSans(
+              fontWeight: FontWeight.w800,
+              fontSize: 18,
+            ),
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Are you sure you want to delete "${product.name}"?',
+                style: GoogleFonts.inter(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                has3D
+                    ? '⚠️ Notice: This product has an active 3D Digital Twin attached. Deleting it will permanently remove the product, its 3D assets, cart entries, and customer reviews.'
+                    : 'This will remove the product from the active store catalog immediately.',
+                style: GoogleFonts.inter(
+                  fontSize: 12.5,
+                  color: colors.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(
+                backgroundColor: Colors.redAccent,
+                foregroundColor: Colors.white,
+              ),
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Delete Permanently'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed != true || !mounted) return;
+
+    // Optimistic UI removal
+    final backupCatalog = List<Product>.from(_catalogProducts);
+    final backupModels = List<Admin3DModelRow>.from(_models3D);
+
+    setState(() {
+      _catalogProducts.removeWhere((p) => p.id == product.id);
+      _models3D.removeWhere((m) => m.productId == product.id);
+      if (_selectedExistingProduct?.id == product.id) {
+        _resetForm();
+      }
+    });
+
+    try {
+      final res = await _productService.deleteProduct(product.id);
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Deleted "${product.name}".')),
+
+      if (res.success) {
+        _showAdminNotification(
+          context,
+          message: res.message.isNotEmpty
+              ? res.message
+              : 'Deleted "${product.name}".',
+          isSuccess: true,
+        );
+        // Refresh product provider in background
+        context.read<ProductProvider>().invalidateAllAndRefresh();
+      } else {
+        // Rollback optimistic removal
+        setState(() {
+          _catalogProducts = backupCatalog;
+          _models3D = backupModels;
+        });
+        _showAdminNotification(
+          context,
+          message: 'Failed to delete: ${res.message}',
+          isError: true,
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _catalogProducts = backupCatalog;
+        _models3D = backupModels;
+      });
+      _showAdminNotification(
+        context,
+        message: 'Deletion error: $e',
+        isError: true,
       );
     }
   }
@@ -891,7 +1086,9 @@ class _AddProductFormState extends State<_AddProductForm> {
                               final next = sel.first;
                               setState(() {
                                 _mode = next;
-                                if (next == _AdminProductMode.editExisting &&
+                                if (next == _AdminProductMode.createNew) {
+                                  _resetForm();
+                                } else if (next == _AdminProductMode.editExisting &&
                                     _selectedExistingProduct != null) {
                                   _startEditingProduct(
                                     _selectedExistingProduct!,
@@ -1062,6 +1259,157 @@ class _AddProductFormState extends State<_AddProductForm> {
                         const SizedBox(height: 16),
                       ],
 
+                      // Product Photo Management for Edit Mode
+                      if (_mode == _AdminProductMode.editExisting &&
+                          _selectedExistingProduct != null) ...[
+                        Container(
+                          margin: const EdgeInsets.only(bottom: 16),
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(
+                            color: colors.surfaceContainerHigh.withValues(alpha: 0.5),
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(
+                              color: colors.outlineVariant.withValues(alpha: 0.5),
+                            ),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Icon(Icons.photo_library_outlined,
+                                      size: 18, color: colors.primary),
+                                  const SizedBox(width: 8),
+                                  Text(
+                                    'Product Photo Management',
+                                    style: GoogleFonts.plusJakartaSans(
+                                      fontSize: 13.5,
+                                      fontWeight: FontWeight.w700,
+                                      color: colors.onSurface,
+                                    ),
+                                  ),
+                                  const Spacer(),
+                                  if (_selectedImageFile != null)
+                                    TextButton.icon(
+                                      onPressed: () {
+                                        setState(() {
+                                          _selectedImageFile = null;
+                                          _selectedImageBytes = null;
+                                        });
+                                      },
+                                      icon: const Icon(Icons.undo_rounded, size: 14),
+                                      label: const Text(
+                                        'Revert to Original',
+                                        style: TextStyle(fontSize: 12),
+                                      ),
+                                    ),
+                                ],
+                              ),
+                              const SizedBox(height: 12),
+                              Row(
+                                children: [
+                                  // Current Photo
+                                  Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        'Current Photo',
+                                        style: GoogleFonts.inter(
+                                          fontSize: 11,
+                                          color: colors.onSurfaceVariant,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 4),
+                                      ClipRRect(
+                                        borderRadius: BorderRadius.circular(10),
+                                        child: SizedBox(
+                                          width: 76,
+                                          height: 76,
+                                          child: StudioProductImage(
+                                            productId: _selectedExistingProduct!.id,
+                                            imageUrl: _selectedExistingProduct!.imageUrl,
+                                            borderRadius: BorderRadius.circular(10),
+                                            padding: 4.0,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  if (_selectedImageBytes != null) ...[
+                                    const SizedBox(width: 14),
+                                    Icon(
+                                      Icons.arrow_forward_rounded,
+                                      color: colors.primary,
+                                      size: 22,
+                                    ),
+                                    const SizedBox(width: 14),
+                                    // Replacement Photo
+                                    Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Row(
+                                          children: [
+                                            Text(
+                                              'New Replacement',
+                                              style: GoogleFonts.inter(
+                                                fontSize: 11,
+                                                color: colors.primary,
+                                                fontWeight: FontWeight.w600,
+                                              ),
+                                            ),
+                                            const SizedBox(width: 6),
+                                            Container(
+                                              padding: const EdgeInsets.symmetric(
+                                                horizontal: 6,
+                                                vertical: 2,
+                                              ),
+                                              decoration: BoxDecoration(
+                                                color: Colors.green.withValues(alpha: 0.15),
+                                                borderRadius: BorderRadius.circular(6),
+                                              ),
+                                              child: Text(
+                                                'Ready',
+                                                style: GoogleFonts.inter(
+                                                  fontSize: 10,
+                                                  color: Colors.green,
+                                                  fontWeight: FontWeight.w700,
+                                                ),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                        const SizedBox(height: 4),
+                                        ClipRRect(
+                                          borderRadius: BorderRadius.circular(10),
+                                          child: Container(
+                                            width: 76,
+                                            height: 76,
+                                            color: Colors.white,
+                                            child: Image.memory(
+                                              _selectedImageBytes!,
+                                              fit: BoxFit.contain,
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ],
+                                  const Spacer(),
+                                  OutlinedButton.icon(
+                                    onPressed: _pickImage,
+                                    icon: const Icon(Icons.photo_camera_back_outlined, size: 16),
+                                    label: Text(
+                                      _selectedImageFile != null ? 'Change File' : 'Replace Photo',
+                                      style: const TextStyle(fontSize: 12.5),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+
                       // Media & 3D Studio Pickers
                       Row(
                         children: [
@@ -1081,7 +1429,9 @@ class _AddProductFormState extends State<_AddProductForm> {
                               label: Text(
                                 _selectedImageFile != null
                                     ? '2D Image: ${_selectedImageFile!.name}'
-                                    : 'Upload 2D Photo (Auto-800×800 Studio Fit)',
+                                    : (_mode == _AdminProductMode.editExisting
+                                        ? 'Change 2D Photo (Auto-800×800)'
+                                        : 'Upload 2D Photo (Auto-800×800 Studio Fit)'),
                                 overflow: TextOverflow.ellipsis,
                               ),
                             ),
@@ -1113,13 +1463,102 @@ class _AddProductFormState extends State<_AddProductForm> {
 
                       if (_selectedGlbBytes != null) ...[
                         const SizedBox(height: 16),
-                        GlbThumbnailStudioWidget(
-                          glbBytes: _selectedGlbBytes!,
-                          fileName: _selectedGlbName ?? 'model.glb',
-                          controller: _previewController,
-                          onThumbnailCaptured: (bytes) {
-                            setState(() => _captured3DThumbnailBytes = bytes);
-                          },
+                        Container(
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(
+                            color: colors.surfaceContainerHighest.withValues(alpha: 0.4),
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(
+                              color: colors.primary.withValues(alpha: 0.3),
+                            ),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Container(
+                                    padding: const EdgeInsets.all(8),
+                                    decoration: BoxDecoration(
+                                      color: colors.primary.withValues(alpha: 0.12),
+                                      borderRadius: BorderRadius.circular(10),
+                                    ),
+                                    child: Icon(
+                                      Icons.view_in_ar_rounded,
+                                      color: colors.primary,
+                                      size: 20,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          _selectedGlbName ?? 'model.glb',
+                                          style: GoogleFonts.plusJakartaSans(
+                                            fontWeight: FontWeight.w700,
+                                            fontSize: 13.5,
+                                            color: colors.onSurface,
+                                          ),
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                        Text(
+                                          '${(_selectedGlbBytes!.length / (1024 * 1024)).toStringAsFixed(2)} MB • 3D GLB Asset',
+                                          style: GoogleFonts.inter(
+                                            fontSize: 11.5,
+                                            color: colors.onSurfaceVariant,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  OutlinedButton.icon(
+                                    onPressed: () {
+                                      setState(() => _showGlbStudioPreview = !_showGlbStudioPreview);
+                                    },
+                                    icon: Icon(
+                                      _showGlbStudioPreview
+                                          ? Icons.visibility_off_outlined
+                                          : Icons.visibility_outlined,
+                                      size: 16,
+                                    ),
+                                    label: Text(
+                                      _showGlbStudioPreview
+                                          ? 'Hide 3D Studio'
+                                          : 'Preview 3D & Snap Thumbnail',
+                                      style: const TextStyle(fontSize: 12),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  IconButton(
+                                    tooltip: 'Remove 3D Model',
+                                    onPressed: () {
+                                      setState(() {
+                                        _selectedGlbName = null;
+                                        _selectedGlbBytes = null;
+                                        _captured3DThumbnailBytes = null;
+                                        _showGlbStudioPreview = false;
+                                      });
+                                    },
+                                    icon: const Icon(Icons.close_rounded, size: 18),
+                                  ),
+                                ],
+                              ),
+                              if (_showGlbStudioPreview) ...[
+                                const SizedBox(height: 14),
+                                GlbThumbnailStudioWidget(
+                                  glbBytes: _selectedGlbBytes!,
+                                  fileName: _selectedGlbName ?? 'model.glb',
+                                  controller: _previewController,
+                                  onThumbnailCaptured: (bytes) {
+                                    setState(() => _captured3DThumbnailBytes = bytes);
+                                  },
+                                ),
+                              ],
+                            ],
+                          ),
                         ),
                       ],
 
@@ -1390,10 +1829,94 @@ class _AddProductFormState extends State<_AddProductForm> {
                                     onPressed: row.productId == 144
                                         ? null
                                         : () async {
-                                            await _admin3DService.deleteModel(
-                                              row.id,
+                                            final confirmed =
+                                                await showDialog<bool>(
+                                              context: context,
+                                              builder: (ctx) {
+                                                final c =
+                                                    Theme.of(ctx).colorScheme;
+                                                return AlertDialog(
+                                                  backgroundColor: c
+                                                      .surfaceContainerHighest,
+                                                  shape: RoundedRectangleBorder(
+                                                    borderRadius:
+                                                        BorderRadius.circular(
+                                                            18),
+                                                  ),
+                                                  title: Text(
+                                                    'Delete 3D Model?',
+                                                    style: GoogleFonts
+                                                        .plusJakartaSans(
+                                                      fontWeight:
+                                                          FontWeight.w800,
+                                                    ),
+                                                  ),
+                                                  content: Text(
+                                                    'Are you sure you want to delete the 3D model for "${row.productName}"?',
+                                                    style: GoogleFonts.inter(
+                                                      fontSize: 13.5,
+                                                    ),
+                                                  ),
+                                                  actions: [
+                                                    TextButton(
+                                                      onPressed: () =>
+                                                          Navigator.pop(
+                                                              ctx, false),
+                                                      child:
+                                                          const Text('Cancel'),
+                                                    ),
+                                                    FilledButton(
+                                                      style:
+                                                          FilledButton.styleFrom(
+                                                        backgroundColor:
+                                                            Colors.redAccent,
+                                                        foregroundColor:
+                                                            Colors.white,
+                                                      ),
+                                                      onPressed: () =>
+                                                          Navigator.pop(
+                                                              ctx, true),
+                                                      child: const Text(
+                                                          'Delete 3D Model'),
+                                                    ),
+                                                  ],
+                                                );
+                                              },
                                             );
-                                            await _refreshAdminData();
+                                            if (confirmed != true || !mounted) {
+                                              return;
+                                            }
+
+                                            final backupModels =
+                                                List<Admin3DModelRow>.from(
+                                                    _models3D);
+                                            setState(() {
+                                              _models3D.removeWhere(
+                                                  (m) => m.id == row.id);
+                                            });
+
+                                            try {
+                                              await _admin3DService
+                                                  .deleteModel(row.id);
+                                              if (!mounted) return;
+                                              _showAdminNotification(
+                                                context,
+                                                message:
+                                                    '3D asset deleted successfully.',
+                                                isSuccess: true,
+                                              );
+                                              _refreshAdminData();
+                                            } catch (e) {
+                                              if (!mounted) return;
+                                              setState(() =>
+                                                  _models3D = backupModels);
+                                              _showAdminNotification(
+                                                context,
+                                                message:
+                                                    'Failed to delete 3D asset: $e',
+                                                isError: true,
+                                              );
+                                            }
                                           },
                                     icon: Icon(
                                       Icons.delete_outline_rounded,

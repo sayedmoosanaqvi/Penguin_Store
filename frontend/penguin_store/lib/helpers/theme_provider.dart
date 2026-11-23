@@ -92,7 +92,7 @@ class ThemeProvider extends ChangeNotifier {
           foregroundColor: WHITE,
           backgroundColor: PRIMARY_BLUE, // Solid primary color 
           elevation: 4, // Soft floating shadow
-          shadowColor: PRIMARY_BLUE.withOpacity(0.4),
+          shadowColor: PRIMARY_BLUE.withValues(alpha: 0.4),
           padding: EdgeInsets.symmetric(horizontal: 24, vertical: 14),
           textStyle: TextStyle(
             fontFamily: 'Poppins',
@@ -128,7 +128,7 @@ class ThemeProvider extends ChangeNotifier {
         ),
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(16),
-          borderSide: BorderSide(color: Colors.grey.withOpacity(0.1)), 
+          borderSide: BorderSide(color: Colors.grey.withValues(alpha: 0.1)), 
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(16),
@@ -149,7 +149,7 @@ class ThemeProvider extends ChangeNotifier {
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(16),
           // ...with soft custom borders instead of heavy elevation shadows
-          side: BorderSide(color: Colors.grey.withOpacity(0.1), width: 1), 
+          side: BorderSide(color: Colors.grey.withValues(alpha: 0.1), width: 1), 
         ),
       ),
     );
@@ -198,7 +198,7 @@ class ThemeProvider extends ChangeNotifier {
           foregroundColor: WHITE,
           backgroundColor: PRIMARY_BLUE,
           elevation: 4,
-          shadowColor: PRIMARY_BLUE.withOpacity(0.3),
+          shadowColor: PRIMARY_BLUE.withValues(alpha: 0.3),
           padding: EdgeInsets.symmetric(horizontal: 24, vertical: 14),
           textStyle: TextStyle(
             fontFamily: 'Poppins',
@@ -234,7 +234,7 @@ class ThemeProvider extends ChangeNotifier {
         ),
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(16),
-          borderSide: BorderSide(color: Colors.white.withOpacity(0.05)),
+          borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.05)),
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(16),
@@ -254,7 +254,7 @@ class ThemeProvider extends ChangeNotifier {
         elevation: 0,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(16),
-          side: BorderSide(color: Colors.white.withOpacity(0.05), width: 1),
+          side: BorderSide(color: Colors.white.withValues(alpha: 0.05), width: 1),
         ),
       ),
       textTheme: TextTheme(

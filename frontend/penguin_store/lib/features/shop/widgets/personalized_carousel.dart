@@ -74,7 +74,7 @@ class _PersonalizedCarouselState extends State<PersonalizedCarousel> {
                   Container(
                     padding: const EdgeInsets.all(7),
                     decoration: BoxDecoration(
-                      color: theme.colorScheme.secondary.withOpacity(0.12),
+                      color: theme.colorScheme.secondary.withValues(alpha: 0.12),
                       borderRadius: BorderRadius.circular(8),
                     ),
                     child: Icon(
@@ -114,7 +114,7 @@ class _PersonalizedCarouselState extends State<PersonalizedCarousel> {
                       vertical: 5,
                     ),
                     decoration: BoxDecoration(
-                      color: primary.withOpacity(0.09),
+                      color: primary.withValues(alpha: 0.09),
                       borderRadius: BorderRadius.circular(7),
                     ),
                     child: Text(
@@ -170,7 +170,7 @@ class _PersonalizedCarouselState extends State<PersonalizedCarousel> {
                           decoration: BoxDecoration(
                             borderRadius: BorderRadius.circular(11),
                             border: Border.all(
-                              color: theme.dividerColor.withOpacity(0.16),
+                              color: theme.dividerColor.withValues(alpha: 0.16),
                             ),
                           ),
                           child: Column(

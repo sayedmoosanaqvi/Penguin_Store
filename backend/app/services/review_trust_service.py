@@ -89,26 +89,33 @@ def _jaccard_similarity(a: set[str], b: set[str]) -> float:
 
 
 def _extract_aspect_sentiments(text: str, rating: int) -> dict[str, str]:
-    tokens = re.findall(r"[a-z0-9]+", text.lower())
-    token_set = set(tokens)
-    pos_hits = len(token_set & _POSITIVE_WORDS)
-    neg_hits = len(token_set & _NEGATIVE_WORDS)
-
     default_polarity = (
         "positive" if rating >= 4 else ("negative" if rating <= 2 else "neutral")
     )
 
     aspects: dict[str, str] = {}
     lower_text = text.lower()
+    # Split text into clauses/sentences by punctuation and conjunctions
+    clauses = [
+        c.strip()
+        for c in re.split(r"[,.;!?]|\b(?:but|however|although|yet|except)\b", lower_text)
+        if c.strip()
+    ]
+
     for aspect, kw_list in _ASPECT_KEYWORDS.items():
-        mentioned = any(kw in lower_text for kw in kw_list)
-        if not mentioned:
+        relevant_clauses = [c for c in clauses if any(kw in c for kw in kw_list)]
+        if not relevant_clauses:
             aspects[aspect] = default_polarity
             continue
 
-        if pos_hits > neg_hits and rating >= 3:
+        c_text = " ".join(relevant_clauses)
+        c_tokens = set(re.findall(r"[a-z0-9]+", c_text))
+        c_pos = len(c_tokens & _POSITIVE_WORDS)
+        c_neg = len(c_tokens & _NEGATIVE_WORDS)
+
+        if c_pos > c_neg:
             aspects[aspect] = "positive"
-        elif neg_hits > pos_hits or rating <= 2:
+        elif c_neg > c_pos:
             aspects[aspect] = "negative"
         else:
             aspects[aspect] = default_polarity

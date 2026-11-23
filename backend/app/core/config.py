@@ -56,6 +56,9 @@ class Settings:
 
         # Always permit the GitHub Pages deployment origin safely
         origins.add("https://penguin-store.github.io")
+        origins.add("https://penguinstore.co")
+        origins.add("https://www.penguinstore.co")
+        origins.add("https://sayedmoosanaqvi.github.io")
         raw_env_origins = os.getenv("ALLOWED_ORIGINS", "")
         for item in raw_env_origins.split(","):
             origin = item.strip().rstrip("/")

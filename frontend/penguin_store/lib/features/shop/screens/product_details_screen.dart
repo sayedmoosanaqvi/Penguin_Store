@@ -543,10 +543,10 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
 
     if (confirmed != true || !mounted) return;
 
-    final ok = await _productService.deleteProduct(product.id);
+    final res = await _productService.deleteProduct(product.id);
     if (!mounted) return;
 
-    if (ok) {
+    if (res.success) {
       await context.read<ProductProvider>().invalidateAllAndRefresh();
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -555,8 +555,10 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
       context.go('/');
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Failed to delete product. Check admin permissions.'),
+        SnackBar(
+          content: Text(res.message.isNotEmpty
+              ? res.message
+              : 'Failed to delete product. Check admin permissions.'),
           backgroundColor: Colors.redAccent,
         ),
       );

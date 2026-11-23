@@ -446,7 +446,7 @@ class _HomeScreenState extends State<HomeScreen>
               scrollDirection: Axis.horizontal,
               padding: const EdgeInsets.symmetric(horizontal: 12),
               itemCount: recent.length,
-              separatorBuilder: (_, __) => const SizedBox(width: 10),
+              separatorBuilder: (_, _) => const SizedBox(width: 10),
               itemBuilder: (context, index) {
                 final item = recent[index];
                 return InkWell(
@@ -472,7 +472,7 @@ class _HomeScreenState extends State<HomeScreen>
                               imageUrl: item.imageUrl,
                               width: double.infinity,
                               fit: BoxFit.contain,
-                              errorWidget: (_, __, ___) => const Icon(
+                              errorWidget: (context, url, error) => const Icon(
                                 Icons.image_not_supported_outlined,
                                 size: 22,
                               ),
@@ -536,12 +536,12 @@ class _HomeScreenState extends State<HomeScreen>
               color: theme.colorScheme.surface,
               borderRadius: BorderRadius.circular(11),
               border: Border.all(
-                color: theme.primaryColor.withOpacity(0.18),
+                color: theme.primaryColor.withValues(alpha: 0.18),
               ),
               boxShadow: [
                 BoxShadow(
-                  color: Colors.black.withOpacity(
-                    isDark ? 0.08 : 0.025,
+                  color: Colors.black.withValues(
+                    alpha: isDark ? 0.08 : 0.025,
                   ),
                   blurRadius: 6,
                   offset: const Offset(0, 2),
@@ -678,7 +678,7 @@ class _HomeScreenState extends State<HomeScreen>
                     Container(
                       height: 25,
                       width: 1,
-                      color: theme.dividerColor.withOpacity(0.3),
+                      color: theme.dividerColor.withValues(alpha: 0.3),
                     ),
                     IconButton(
                       tooltip: 'AI Visual & Multimodal Search',
@@ -844,7 +844,7 @@ class _HomeScreenState extends State<HomeScreen>
           vertical: 8,
         ),
         itemCount: quickCategories.length,
-        separatorBuilder: (_, __) => const SizedBox(width: 10),
+        separatorBuilder: (_, _) => const SizedBox(width: 10),
         itemBuilder: (context, index) {
           final item = quickCategories[index];
           final selected = _selectedCategory == item.$2;
@@ -862,7 +862,7 @@ class _HomeScreenState extends State<HomeScreen>
                     decoration: BoxDecoration(
                       color: selected
                           ? theme.primaryColor
-                          : theme.primaryColor.withOpacity(0.08),
+                          : theme.primaryColor.withValues(alpha: 0.08),
                       borderRadius: BorderRadius.circular(11),
                     ),
                     child: Icon(
@@ -910,7 +910,7 @@ class _HomeScreenState extends State<HomeScreen>
         color: theme.colorScheme.surface,
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
-          color: theme.primaryColor.withOpacity(0.12),
+          color: theme.primaryColor.withValues(alpha: 0.12),
         ),
       ),
       child: Row(
@@ -919,7 +919,7 @@ class _HomeScreenState extends State<HomeScreen>
             width: 39,
             height: 39,
             decoration: BoxDecoration(
-              color: theme.primaryColor.withOpacity(0.1),
+              color: theme.primaryColor.withValues(alpha: 0.1),
               borderRadius: BorderRadius.circular(10),
             ),
             child: Icon(
@@ -1050,7 +1050,7 @@ class _HomeScreenState extends State<HomeScreen>
           decoration: BoxDecoration(
             color: theme.colorScheme.surface,
             borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: theme.primaryColor.withOpacity(0.22)),
+            border: Border.all(color: theme.primaryColor.withValues(alpha: 0.22)),
           ),
           child: Row(
             children: [
@@ -1150,7 +1150,7 @@ class _HomeScreenState extends State<HomeScreen>
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: 12),
         itemCount: _categories.length,
-        separatorBuilder: (_, __) => const SizedBox(width: 7),
+        separatorBuilder: (_, _) => const SizedBox(width: 7),
         itemBuilder: (context, index) {
           final category = _categories[index];
           final selected = _selectedCategory == category;
@@ -1173,7 +1173,7 @@ class _HomeScreenState extends State<HomeScreen>
             side: BorderSide(
               color: selected
                   ? theme.primaryColor
-                  : theme.dividerColor.withOpacity(0.3),
+                  : theme.dividerColor.withValues(alpha: 0.3),
             ),
             padding: const EdgeInsets.symmetric(horizontal: 3),
             visualDensity: VisualDensity.compact,

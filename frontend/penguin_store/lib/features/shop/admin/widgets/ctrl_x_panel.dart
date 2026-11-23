@@ -120,7 +120,7 @@ class _CtrlXPanelState extends State<CtrlXPanel> {
               color: const Color(0xFF1E293B),
               border: Border(
                 bottom: BorderSide(
-                  color: Colors.cyanAccent.withOpacity(0.3),
+                  color: Colors.cyanAccent.withValues(alpha: 0.3),
                 ),
               ),
             ),
@@ -159,12 +159,12 @@ class _CtrlXPanelState extends State<CtrlXPanel> {
                     ),
                     decoration: BoxDecoration(
                       color: isAdmin
-                          ? Colors.cyan.withOpacity(0.2)
+                          ? Colors.cyan.withValues(alpha: 0.2)
                           : const Color(0xFF1E293B),
                       borderRadius: BorderRadius.circular(8),
                       border: Border.all(
                         color: isAdmin
-                            ? Colors.cyanAccent.withOpacity(0.5)
+                            ? Colors.cyanAccent.withValues(alpha: 0.5)
                             : Colors.white12,
                       ),
                     ),

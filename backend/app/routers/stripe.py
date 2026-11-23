@@ -103,15 +103,21 @@ def resolve_frontend_url(origin: str | None) -> str:
     if parsed.hostname in {"localhost", "127.0.0.1", "::1"}:
         return cleaned
 
-    # Allow github.io (including /Penguin_Store base-href path) or configured FRONTEND_URL host
+    # Allow github.io (including /Penguin_Store base-href path), penguinstore.co, or configured FRONTEND_URL host
     configured = urlparse(FRONTEND_URL)
-    if (
+    is_allowed_domain = (
         parsed.hostname == configured.hostname
         or (parsed.hostname and parsed.hostname.endswith(".github.io"))
-    ):
+        or parsed.hostname in {"penguinstore.co", "www.penguinstore.co"}
+    )
+    if is_allowed_domain:
         if parsed.path and parsed.path not in ("", "/"):
             return f"{parsed.scheme}://{parsed.netloc}{parsed.path.rstrip('/')}"
-        if configured.path and configured.path not in ("", "/"):
+        # Only attach configured subpath (e.g. /Penguin_Store) if host is github.io or matches configured host
+        if (
+            (parsed.hostname and parsed.hostname.endswith(".github.io"))
+            or parsed.hostname == configured.hostname
+        ) and configured.path and configured.path not in ("", "/"):
             return f"{parsed.scheme}://{parsed.netloc}{configured.path.rstrip('/')}"
         return f"{parsed.scheme}://{parsed.netloc}"
 

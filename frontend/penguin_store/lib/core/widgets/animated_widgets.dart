@@ -187,7 +187,7 @@ class _SnowfallBackgroundState extends State<SnowfallBackground>
             child: RepaintBoundary(
               child: AnimatedBuilder(
                 animation: _controller,
-                builder: (_, __) => CustomPaint(
+                builder: (context, child) => CustomPaint(
                   painter: _SnowPainter(
                     _flakes,
                     _controller.value,
@@ -264,7 +264,7 @@ class _PulsingOrbState extends State<PulsingOrb>
   Widget build(BuildContext context) {
     return AnimatedBuilder(
       animation: _c,
-      builder: (_, __) {
+      builder: (context, child) {
         final t = Curves.easeInOut.transform(_c.value);
         return Container(
           width: widget.size,
@@ -324,7 +324,7 @@ class _TypingDotsState extends State<TypingDots>
   Widget build(BuildContext context) {
     return AnimatedBuilder(
       animation: _c,
-      builder: (_, __) {
+      builder: (context, child) {
         return Row(
           mainAxisSize: MainAxisSize.min,
           children: List.generate(3, (i) {
@@ -373,7 +373,7 @@ class _Badge3DState extends State<Badge3D>
   Widget build(BuildContext context) {
     return AnimatedBuilder(
       animation: _c,
-      builder: (_, __) {
+      builder: (context, child) {
         return Container(
           padding: EdgeInsets.symmetric(
             horizontal: widget.compact ? 6 : 8,

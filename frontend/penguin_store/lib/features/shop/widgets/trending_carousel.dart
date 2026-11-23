@@ -96,7 +96,7 @@ class _TrendingCarouselState extends State<TrendingCarousel> {
                   Container(
                     padding: const EdgeInsets.all(7),
                     decoration: BoxDecoration(
-                      color: primary.withOpacity(0.10),
+                      color: primary.withValues(alpha: 0.10),
                       borderRadius: BorderRadius.circular(8),
                     ),
                     child: Icon(
@@ -136,7 +136,7 @@ class _TrendingCarouselState extends State<TrendingCarousel> {
                       vertical: 5,
                     ),
                     decoration: BoxDecoration(
-                      color: primary.withOpacity(0.09),
+                      color: primary.withValues(alpha: 0.09),
                       borderRadius: BorderRadius.circular(7),
                     ),
                     child: Text(
@@ -188,7 +188,7 @@ class _TrendingCarouselState extends State<TrendingCarousel> {
                           decoration: BoxDecoration(
                             borderRadius: BorderRadius.circular(11),
                             border: Border.all(
-                              color: theme.dividerColor.withOpacity(0.16),
+                              color: theme.dividerColor.withValues(alpha: 0.16),
                             ),
                           ),
                           child: Column(

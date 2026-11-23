@@ -106,19 +106,22 @@ class _ProductCardState extends State<ProductCard> {
     setState(() => _isDeleting = true);
 
     try {
-      final success = await ProductService().deleteProduct(
+      final res = await ProductService().deleteProduct(
         widget.product.id,
       );
 
       if (!mounted) return;
 
-      if (success) {
-        CustomToast.show(context, 'Product deleted!');
+      if (res.success) {
+        CustomToast.show(
+          context,
+          res.message.isNotEmpty ? res.message : 'Product deleted!',
+        );
         widget.onProductDeleted();
       } else {
         CustomToast.show(
           context,
-          'Failed to delete.',
+          'Failed to delete: ${res.message}',
           isError: true,
         );
       }
@@ -278,55 +281,51 @@ class _ProductCardState extends State<ProductCard> {
                                     }
                                     return Padding(
                                       padding: const EdgeInsets.only(top: 4),
-                                      child: ClipRRect(
-                                        borderRadius: BorderRadius.circular(12),
-                                        child: BackdropFilter(
-                                          filter: ImageFilter.blur(
-                                            sigmaX: 6,
-                                            sigmaY: 6,
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 7,
+                                          vertical: 3.5,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          gradient: const LinearGradient(
+                                            colors: [
+                                              Color(0xF01E88E5),
+                                              Color(0xF000ACC1),
+                                            ],
                                           ),
-                                          child: Container(
-                                            padding: const EdgeInsets.symmetric(
-                                              horizontal: 7,
-                                              vertical: 3.5,
-                                            ),
-                                            decoration: BoxDecoration(
-                                              gradient: const LinearGradient(
-                                                colors: [
-                                                  Color(0xE61E88E5),
-                                                  Color(0xE600ACC1),
-                                                ],
-                                              ),
-                                              borderRadius:
-                                                  BorderRadius.circular(12),
-                                              border: Border.all(
-                                                color: Colors.white
-                                                    .withValues(alpha: 0.35),
-                                              ),
-                                            ),
-                                            child: Row(
-                                              mainAxisSize: MainAxisSize.min,
-                                              children: [
-                                                const Icon(
-                                                  Icons.view_in_ar_rounded,
-                                                  color: Colors.white,
-                                                  size: 11,
-                                                ),
-                                                const SizedBox(width: 3),
-                                                Text(
-                                                  veryCompact
-                                                      ? '3D'
-                                                      : '3D View',
-                                                  style: const TextStyle(
-                                                    color: Colors.white,
-                                                    fontSize: 9.5,
-                                                    fontWeight: FontWeight.w900,
-                                                    letterSpacing: 0.3,
-                                                  ),
-                                                ),
-                                              ],
-                                            ),
+                                          borderRadius:
+                                              BorderRadius.circular(12),
+                                          border: Border.all(
+                                            color: Colors.white
+                                                .withValues(alpha: 0.35),
                                           ),
+                                          boxShadow: const [
+                                            BoxShadow(
+                                              color: Color(0x331E88E5),
+                                              blurRadius: 4,
+                                              offset: Offset(0, 1.5),
+                                            ),
+                                          ],
+                                        ),
+                                        child: Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            const Icon(
+                                              Icons.view_in_ar_rounded,
+                                              color: Colors.white,
+                                              size: 11,
+                                            ),
+                                            const SizedBox(width: 3),
+                                            Text(
+                                              veryCompact ? '3D' : '3D View',
+                                              style: const TextStyle(
+                                                color: Colors.white,
+                                                fontSize: 9.5,
+                                                fontWeight: FontWeight.w900,
+                                                letterSpacing: 0.3,
+                                              ),
+                                            ),
+                                          ],
                                         ),
                                       ),
                                     );

@@ -167,7 +167,7 @@ app.include_router(premium_3d.router)
 
 
 @app.get("/")
-def read_root():
+async def read_root():
     return {
         "message": "Welcome to Penguin Store API!",
         "status": "online",
@@ -185,7 +185,7 @@ def read_root():
 
 
 @app.get("/health")
-def health_check():
+async def health_check():
     return {
         "status": "healthy",
         "service": "penguin-store-api",
@@ -317,6 +317,7 @@ def get_product_by_id(product_id: int, db: Session = Depends(get_db)):
 @app.delete("/products/{product_id}", status_code=status.HTTP_200_OK)
 def delete_product(
     product_id: int,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     admin_user: User = Depends(require_role(["admin"])),
 ):
@@ -339,19 +340,75 @@ def delete_product(
             detail=f"Product with id {product_id} does not exist.",
         )
 
+    client = get_supabase_client()
+    product_name = str(existing.get("name") or f"Product #{product_id}")
+
     try:
-        client = get_supabase_client()
-        client.table("product_3d_assets").delete().eq("product_id", product_id).execute()
-        client.table("products").delete().eq("id", product_id).execute()
+        # 1. Cascade cleanup on ephemeral tables
+        for tbl in [
+            "product_3d_assets",
+            "cart_items",
+            "wishlist_items",
+            "reviews",
+            "product_review_insights",
+            "rfq_requests",
+            "recently_viewed_items",
+        ]:
+            try:
+                client.table(tbl).delete().eq("product_id", product_id).execute()
+            except Exception as tbl_err:
+                logger.debug("Cascade cleanup %s on product %s: %s", tbl, product_id, tbl_err)
+
+        # 2. Check if product is referenced in order_items (historical receipts)
+        is_in_order = False
+        try:
+            ord_res = (
+                client.table("order_items")
+                .select("id")
+                .eq("product_id", product_id)
+                .limit(1)
+                .execute()
+            )
+            if ord_res.data:
+                is_in_order = True
+        except Exception:
+            pass
+
+        if is_in_order:
+            client.table("products").update({
+                "stock": 0,
+                "is_featured": False,
+                "name": f"[Archived] {product_name}",
+            }).eq("id", product_id).execute()
+            logger.info("Product #%s referenced in orders: archived cleanly.", product_id)
+        else:
+            client.table("products").delete().eq("id", product_id).execute()
+            logger.info("Product #%s hard-deleted cleanly from database.", product_id)
+
+        # 3. Immediately invalidate memory cache
         invalidate_supabase_rest_cache()
-        visual_search.invalidate_visual_cache()
-    except Exception:
-        raise HTTPException(
-            status_code=409,
-            detail="This product is referenced by existing records and cannot be deleted.",
+        background_tasks.add_task(visual_search.invalidate_visual_cache)
+
+        # 4. Storage cleanup in BackgroundTasks
+        from .api.v1.endpoints.products import _cleanup_product_storage_files
+        background_tasks.add_task(
+            _cleanup_product_storage_files,
+            product_id,
+            existing.get("image_url"),
         )
 
-    return {"message": "Product deleted successfully"}
+        return {
+            "status": "deleted",
+            "product_id": product_id,
+            "product_name": product_name,
+            "message": f"Product '{product_name}' deleted successfully",
+        }
+    except Exception as exc:
+        logger.exception("Product deletion error: %s", exc)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Could not delete product: {str(exc)}",
+        )
 
 
 class UserCreate(BaseModel):
@@ -509,7 +566,7 @@ def _normalize_studio_image(raw_bytes: bytes, ext: str) -> tuple[bytes, str, str
                 canvas = Image.new("RGBA", (canvas_size, canvas_size), (0, 0, 0, 0))
             else:
                 canvas = Image.new(
-                    "RGBA", (canvas_size, canvas_size), (248, 250, 252, 255)
+                    "RGBA", (canvas_size, canvas_size), (255, 255, 255, 255)
                 )
 
             offset_x = (canvas_size - rgba.width) // 2
@@ -517,8 +574,8 @@ def _normalize_studio_image(raw_bytes: bytes, ext: str) -> tuple[bytes, str, str
             canvas.paste(rgba, (offset_x, offset_y), rgba)
 
             out = io.BytesIO()
-            canvas.save(out, format="PNG", optimize=True)
-            return out.getvalue(), ".png", "image/png"
+            canvas.save(out, format="WEBP", quality=82)
+            return out.getvalue(), ".webp", "image/webp"
     except Exception:
         logger.debug("Pillow studio normalization fallback to original bytes.", exc_info=True)
         return raw_bytes, ext, ALLOWED_IMAGE_TYPES[ext]

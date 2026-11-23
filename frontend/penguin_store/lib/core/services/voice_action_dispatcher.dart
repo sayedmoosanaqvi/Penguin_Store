@@ -59,8 +59,8 @@ class VoiceActionDispatcher {
 
     return {
       'current_route': currentRoute,
-      if (viewingPid != null) 'viewing_product_id': viewingPid,
-      if (selectedVariant != null) 'selected_variant': selectedVariant,
+      'viewing_product_id': ?viewingPid,
+      'selected_variant': ?selectedVariant,
       if (visibleProductIds != null && visibleProductIds.isNotEmpty)
         'visible_product_ids': visibleProductIds,
       'cart_item_count': cartUnits,

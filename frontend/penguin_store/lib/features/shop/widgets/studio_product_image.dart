@@ -121,8 +121,8 @@ class _StudioProductImageState extends State<StudioProductImage> {
           center: const Alignment(0, -0.15),
           radius: 0.92,
           colors: isDark
-              ? const [Color(0xFF1B2840), Color(0xFF0F172A)]
-              : const [Color(0xFFF9FCFF), Color(0xFFE4F0FB)],
+              ? const [Color(0xFF1E293B), Color(0xFF0F172A)]
+              : const [Color(0xFFFFFFFF), Color(0xFFF8FAFC)],
         ),
       ),
       child: content,

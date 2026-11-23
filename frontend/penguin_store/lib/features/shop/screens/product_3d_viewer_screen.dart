@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
-import 'package:model_viewer_plus/model_viewer_plus.dart';
 
 import 'package:penguin_store/core/widgets/animated_widgets.dart';
 import 'package:penguin_store/features/shop/services/premium_3d_service.dart';
 import 'package:penguin_store/features/shop/services/showcase_3d_service.dart';
+import 'package:penguin_store/features/shop/widgets/interactive_3d_preview.dart';
 
 enum _ViewerBackdrop { ice, studio, night }
 
@@ -43,17 +43,6 @@ class _Product3DViewerScreenState extends State<Product3DViewerScreen> {
   bool _switching = false;
   int _viewerGeneration = 0;
   _ViewerBackdrop _backdrop = _ViewerBackdrop.ice;
-
-  static const _css = '''
-    model-viewer {
-      --poster-color: transparent;
-      --progress-bar-color: #1E88E5;
-      --progress-bar-height: 4px;
-      width: 100%;
-      height: 100%;
-    }
-    model-viewer::part(default-progress-mask) { background: transparent; }
-  ''';
 
   List<Color> get _backdropColors {
     switch (_backdrop) {
@@ -154,27 +143,12 @@ class _Product3DViewerScreenState extends State<Product3DViewerScreen> {
                           Positioned.fill(
                             child: Padding(
                               padding: const EdgeInsets.fromLTRB(8, 8, 8, 0),
-                              child: ModelViewer(
+                              child: Inline3DCardViewer(
                                 key: ValueKey('$_modelUrl#$_viewerGeneration'),
-                                src: _modelUrl,
-                                poster: widget.posterUrl,
-                                alt: 'Interactive 3D model of ${widget.productName}',
-                                cameraControls: true,
-                                autoRotate: _autoRotate,
-                                autoRotateDelay: 600,
-                                rotationPerSecond: '22deg',
-                                shadowIntensity: 0.9,
-                                shadowSoftness: 1,
-                                exposure: _darkBackdrop ? 1.15 : 1,
-                                environmentImage: 'neutral',
-                                backgroundColor: Colors.transparent,
-                                disableZoom: false,
-                                interactionPrompt: InteractionPrompt.auto,
-                                loading: Loading.eager,
-                                reveal: Reveal.auto,
-                                relatedCss: _css,
-                                ar: false,
-                                debugLogging: false,
+                                modelUrl: _modelUrl,
+                                posterUrl: widget.posterUrl,
+                                alt:
+                                    'Interactive 3D model of ${widget.productName}',
                               ),
                             ),
                           ),

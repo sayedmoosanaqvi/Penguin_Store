@@ -343,35 +343,53 @@ class ProductService {
     return Product.fromJson(Map<String, dynamic>.from(decoded));
   }
 
-  // Existing admin deletion
-  Future<bool> deleteProduct(
+  /// Admin deletion with fast cascade cleanup and specific feedback message.
+  Future<({bool success, String message})> deleteProduct(
     int productId,
   ) async {
     try {
       final headers = await _getAdminHeaders();
-
       if (headers == null) {
-        return false;
+        return (success: false, message: 'Admin login is required.');
       }
 
-      final response = await http
+      // Try v1 API first
+      http.Response response = await http
           .delete(
-            Uri.parse(
-              '$baseUrl/products/$productId',
-            ),
+            Uri.parse('$baseUrl/api/v1/products/$productId'),
             headers: headers,
           )
-          .timeout(_requestTimeout);
+          .timeout(const Duration(seconds: 15));
+
+      if (response.statusCode == 404 || response.statusCode == 405) {
+        // Fallback to legacy endpoint
+        response = await http
+            .delete(
+              Uri.parse('$baseUrl/products/$productId'),
+              headers: headers,
+            )
+            .timeout(const Duration(seconds: 15));
+      }
 
       if (response.statusCode == 200) {
         invalidateCache();
-        return true;
+        String msg = 'Product deleted successfully.';
+        try {
+          final decoded = jsonDecode(response.body);
+          if (decoded is Map && decoded['message'] != null) {
+            msg = decoded['message'].toString();
+          }
+        } catch (_) {}
+        return (success: true, message: msg);
       }
-      return false;
 
+      return (
+        success: false,
+        message: _errorDetails(response),
+      );
     } catch (e) {
       debugPrint('Delete product error: $e');
-      return false;
+      return (success: false, message: e.toString());
     }
   }
 

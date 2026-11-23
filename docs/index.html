@@ -1,18 +1,79 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <base href="/Penguin_Store/">
+  <script>
+    (function() {
+      var h = window.location.hostname;
+      var base = document.querySelector('base');
+      if (h === 'penguinstore.co' || h === 'www.penguinstore.co' || h === 'localhost' || h === '127.0.0.1') {
+        if (base) base.setAttribute('href', '/');
+      } else if (h.indexOf('.github.io') !== -1) {
+        if (base) base.setAttribute('href', '/Penguin_Store/');
+      }
+    })();
+  </script>
   <meta charset="UTF-8">
   <meta http-equiv="X-UA-Compatible" content="IE=Edge">
-  <title>Penguin Store — AI & 3D Commerce</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0">
+  
+  <title>Penguin Store — AI-Powered B2C & B2B 3D Commerce</title>
+  <meta name="description" content="Penguin Store: Next-generation e-commerce platform powered by Supabase, CTRL-X multi-agent AI, voice shopping concierge, interactive 3D digital twins, and verified review trust engine.">
+  <meta name="keywords" content="e-commerce, 3D shopping, AI shopping assistant, CTRL-X, voice concierge, Supabase, Flutter Web, B2B wholesale, digital twins">
+  <meta name="author" content="Penguin Store">
+  <meta name="theme-color" content="#0D1B2A">
 
+  <!-- Open Graph / Facebook / LinkedIn -->
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://penguinstore.co/">
+  <meta property="og:title" content="Penguin Store — AI-Powered B2C & B2B 3D Commerce">
+  <meta property="og:description" content="Experience intelligent shopping with CTRL-X AI agent, voice shopping concierge, real-time 3D product previews, and verified review trust engine.">
+  <meta property="og:image" content="icons/Icon-512.png">
+
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:url" content="https://penguinstore.co/">
+  <meta name="twitter:title" content="Penguin Store — AI-Powered B2C & B2B 3D Commerce">
+  <meta name="twitter:description" content="Intelligent shopping with CTRL-X multi-agent AI, interactive 3D showcase, and verified review trust engine.">
+  <meta name="twitter:image" content="icons/Icon-512.png">
+
+  <!-- Favicons and App Icons -->
+  <link rel="icon" type="image/png" href="favicon.png">
+  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+
+  <!-- Preconnections for high performance -->
   <link rel="preconnect" href="https://ajax.googleapis.com" crossorigin>
   <link rel="preconnect" href="https://js.stripe.com" crossorigin>
+  <link rel="preconnect" href="https://penguin-store-backend.onrender.com" crossorigin>
   <link rel="dns-prefetch" href="https://supabase.co">
 
+  <!-- External SDKs -->
   <script src="https://js.stripe.com/v3/" async></script>
   <script type="module" src="https://ajax.googleapis.com/ajax/libs/model-viewer/3.3.0/model-viewer.min.js" async></script>
+
+  <script>
+    // WebGL Context Loss & Restoration Safety Net (CanvasKit + <model-viewer>)
+    window.addEventListener('webglcontextlost', function(event) {
+      console.warn('[WebGL Watchdog] WebGL context lost detected on CanvasKit/DOM canvas. Preventing default to allow recovery.', event);
+      event.preventDefault();
+    }, false);
+    window.addEventListener('webglcontextrestored', function(event) {
+      console.info('[WebGL Watchdog] WebGL context successfully restored.', event);
+    }, false);
+  </script>
+
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      background-color: #0b132b;
+      color: #ffffff;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      overflow: hidden;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+  </style>
 </head>
 <body>
   <script src="flutter_bootstrap.js" async></script>
