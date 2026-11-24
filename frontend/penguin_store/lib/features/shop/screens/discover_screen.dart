@@ -1,21 +1,32 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
-import 'package:penguin_store/core/widgets/animated_widgets.dart';
 import 'package:penguin_store/core/providers/voice_provider.dart';
+import 'package:penguin_store/core/widgets/animated_widgets.dart';
 import 'package:penguin_store/features/shop/models/product_model.dart';
 import 'package:penguin_store/features/shop/providers/product_provider.dart';
+import 'package:penguin_store/features/shop/providers/shop_state_provider.dart';
 import 'package:penguin_store/features/shop/services/showcase_3d_service.dart';
 import 'package:penguin_store/features/shop/widgets/multimodal_search_sheet.dart';
-import 'package:penguin_store/features/shop/widgets/voice_concierge_overlay.dart';
 import 'package:penguin_store/features/shop/widgets/product_card.dart';
 import 'package:penguin_store/features/shop/widgets/product_card_skeleton.dart';
+import 'package:penguin_store/features/shop/widgets/product_filters.dart';
 import 'package:penguin_store/features/shop/widgets/right_drawer.dart';
 import 'package:penguin_store/features/shop/widgets/top_nav_bar.dart';
+import 'package:penguin_store/features/shop/widgets/voice_concierge_overlay.dart';
 
 class DiscoverScreen extends StatefulWidget {
-  const DiscoverScreen({super.key});
+  final String? initialQuery;
+  final String? initialCategory;
+
+  const DiscoverScreen({
+    super.key,
+    this.initialQuery,
+    this.initialCategory,
+  });
 
   @override
   State<DiscoverScreen> createState() => _DiscoverScreenState();
@@ -24,10 +35,14 @@ class DiscoverScreen extends StatefulWidget {
 class _DiscoverScreenState extends State<DiscoverScreen>
     with AutomaticKeepAliveClientMixin {
   final TextEditingController _searchController = TextEditingController();
+  final FocusNode _searchFocusNode = FocusNode();
+  Timer? _searchDebounce;
 
   int _selectedCategoryIndex = 0;
   String _searchQuery = '';
   String _sortBy = 'featured';
+  List<Product>? _backendSearchMatches;
+  bool _isSearchingBackend = false;
 
   @override
   bool get wantKeepAlive => true;
@@ -74,21 +89,145 @@ class _DiscoverScreenState extends State<DiscoverScreen>
   @override
   void initState() {
     super.initState();
+    _applyInitialRouteParams(
+      query: widget.initialQuery,
+      category: widget.initialCategory,
+      triggerSearch: false,
+    );
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       Catalog3D.refresh();
       context.read<ProductProvider>().ensureProductsLoaded();
+      if (_searchQuery.trim().isNotEmpty) {
+        _runHybridSearch(_searchQuery.trim());
+      }
     });
   }
 
   @override
+  void didUpdateWidget(covariant DiscoverScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.initialQuery != oldWidget.initialQuery ||
+        widget.initialCategory != oldWidget.initialCategory) {
+      _applyInitialRouteParams(
+        query: widget.initialQuery,
+        category: widget.initialCategory,
+        triggerSearch: true,
+      );
+    }
+  }
+
+  void _applyInitialRouteParams({
+    String? query,
+    String? category,
+    required bool triggerSearch,
+  }) {
+    bool changed = false;
+    if (query != null && query.trim() != _searchQuery.trim()) {
+      _searchQuery = query.trim();
+      _searchController.text = _searchQuery;
+      changed = true;
+    }
+    if (category != null && category.trim().isNotEmpty) {
+      final idx = _categories.indexWhere(
+        (c) => (c['key'] as String).toLowerCase() == category.trim().toLowerCase(),
+      );
+      if (idx != -1 && idx != _selectedCategoryIndex) {
+        _selectedCategoryIndex = idx;
+        changed = true;
+      }
+    }
+    if (changed) {
+      if (mounted) setState(() {});
+      if (triggerSearch) {
+        if (_searchQuery.isNotEmpty) {
+          _runHybridSearch(_searchQuery);
+        } else {
+          setState(() => _backendSearchMatches = null);
+        }
+      }
+    }
+  }
+
+  @override
   void dispose() {
+    _searchDebounce?.cancel();
+    _searchFocusNode.dispose();
     _searchController.dispose();
     super.dispose();
   }
 
   void _reload() {
     context.read<ProductProvider>().invalidateAllAndRefresh();
+    if (_searchQuery.trim().isNotEmpty) {
+      _runHybridSearch(_searchQuery.trim());
+    }
+  }
+
+  void _onSearchChanged(String val) {
+    final trimmed = val.trim();
+    setState(() {
+      _searchQuery = trimmed;
+      if (trimmed.isEmpty) {
+        _backendSearchMatches = null;
+        _isSearchingBackend = false;
+      }
+    });
+
+    _searchDebounce?.cancel();
+    if (trimmed.isEmpty) return;
+
+    _searchDebounce = Timer(const Duration(milliseconds: 300), () {
+      if (!mounted) return;
+      _runHybridSearch(trimmed);
+    });
+  }
+
+  void _onSearchSubmitted([String? raw]) {
+    _searchDebounce?.cancel();
+    final q = (raw ?? _searchController.text).trim();
+    if (q.length >= 2) {
+      context.read<ShopStateProvider>().addSearchTerm(q);
+    }
+    _searchFocusNode.unfocus();
+    setState(() => _searchQuery = q);
+    if (q.isNotEmpty) {
+      _runHybridSearch(q);
+    } else {
+      setState(() => _backendSearchMatches = null);
+    }
+  }
+
+  void _clearSearch() {
+    _searchDebounce?.cancel();
+    _searchController.clear();
+    setState(() {
+      _searchQuery = '';
+      _backendSearchMatches = null;
+      _isSearchingBackend = false;
+    });
+  }
+
+  Future<void> _runHybridSearch(String query) async {
+    final clean = query.trim();
+    if (clean.isEmpty) return;
+    final selectedKey = _categories[_selectedCategoryIndex]['key'] as String;
+    setState(() => _isSearchingBackend = true);
+    try {
+      final results = await context.read<ProductProvider>().searchCatalog(
+            clean,
+            category: selectedKey == '3D' ? 'All' : selectedKey,
+            only3D: selectedKey == '3D',
+            sort: _sortBy,
+          );
+      if (!mounted || _searchQuery.trim() != clean) return;
+      setState(() {
+        _backendSearchMatches = results;
+        _isSearchingBackend = false;
+      });
+    } catch (_) {
+      if (mounted) setState(() => _isSearchingBackend = false);
+    }
   }
 
   Future<void> _handleVoiceSearch() async {
@@ -100,31 +239,37 @@ class _DiscoverScreenState extends State<DiscoverScreen>
 
     final clean = transcript.trim();
     _searchController.text = clean;
-    setState(() => _searchQuery = clean);
+    _onSearchSubmitted(clean);
   }
 
   List<Product> _filterAndSort(List<Product> allProducts, Set<int> ids3d) {
     final selectedKey = _categories[_selectedCategoryIndex]['key'] as String;
+    final q = _searchQuery.trim();
 
-    final filtered = allProducts.where((p) {
-      bool matchesCategory = true;
-      if (selectedKey == '3D') {
-        matchesCategory =
-            ids3d.contains(p.id) ||
-            p.category.toLowerCase().contains('3d');
-      } else if (selectedKey != 'All') {
-        matchesCategory =
-            p.category.toLowerCase() == selectedKey.toLowerCase();
+    // Combine instant local matches + deep backend hybrid matches
+    final localFiltered = ProductFilters(
+      category: selectedKey == '3D' ? 'All' : selectedKey,
+      only3D: selectedKey == '3D',
+      query: q,
+    ).apply(allProducts, ids3d);
+
+    final mergedMap = <int, Product>{};
+    for (final p in localFiltered) {
+      mergedMap[p.id] = p;
+    }
+
+    if (q.isNotEmpty && _backendSearchMatches != null) {
+      for (final p in _backendSearchMatches!) {
+        final catOk = selectedKey == '3D'
+            ? ids3d.contains(p.id)
+            : ProductFilters.categoryMatches(p.category, selectedKey);
+        if (catOk) {
+          mergedMap.putIfAbsent(p.id, () => p);
+        }
       }
+    }
 
-      if (!matchesCategory) return false;
-      if (_searchQuery.trim().isEmpty) return true;
-
-      final q = _searchQuery.trim().toLowerCase();
-      return p.name.toLowerCase().contains(q) ||
-          p.description.toLowerCase().contains(q) ||
-          p.category.toLowerCase().contains(q);
-    }).toList();
+    final filtered = mergedMap.values.toList();
 
     switch (_sortBy) {
       case 'price_asc':
@@ -137,15 +282,17 @@ class _DiscoverScreenState extends State<DiscoverScreen>
         filtered.sort((a, b) => b.rating.compareTo(a.rating));
         break;
       default:
-        filtered.sort((a, b) {
-          final a3d = ids3d.contains(a.id) ? 1 : 0;
-          final b3d = ids3d.contains(b.id) ? 1 : 0;
-          if (a3d != b3d) return b3d.compareTo(a3d);
-          final aFeat = a.isFeatured ? 1 : 0;
-          final bFeat = b.isFeatured ? 1 : 0;
-          if (aFeat != bFeat) return bFeat.compareTo(aFeat);
-          return b.id.compareTo(a.id);
-        });
+        if (q.isEmpty) {
+          filtered.sort((a, b) {
+            final a3d = ids3d.contains(a.id) ? 1 : 0;
+            final b3d = ids3d.contains(b.id) ? 1 : 0;
+            if (a3d != b3d) return b3d.compareTo(a3d);
+            final aFeat = a.isFeatured ? 1 : 0;
+            final bFeat = b.isFeatured ? 1 : 0;
+            if (aFeat != bFeat) return bFeat.compareTo(aFeat);
+            return b.id.compareTo(a.id);
+          });
+        }
     }
 
     return filtered;
@@ -267,11 +414,20 @@ class _DiscoverScreenState extends State<DiscoverScreen>
                                     ),
                                     itemCount: filtered.length,
                                     itemBuilder: (context, index) {
+                                      final item = filtered[index];
                                       return FadeSlideIn.staggered(
+                                        key: ValueKey('discover-${item.id}'),
                                         index: index,
                                         child: ProductCard(
-                                          product: filtered[index],
-                                          onProductDeleted: _reload,
+                                          product: item,
+                                          onProductDeleted: () {
+                                            context
+                                                .read<ProductProvider>()
+                                                .purgeDeletedProduct(item.id);
+                                            context
+                                                .read<ShopStateProvider>()
+                                                .purgeDeletedProduct(item.id);
+                                          },
                                         ),
                                       );
                                     },
@@ -291,6 +447,8 @@ class _DiscoverScreenState extends State<DiscoverScreen>
   }
 
   Widget _buildHeroHeader(bool isDark, bool isCompact) {
+    final isNarrow = MediaQuery.of(context).size.width < 430;
+
     return Container(
       margin: const EdgeInsets.fromLTRB(16, 12, 16, 8),
       decoration: BoxDecoration(
@@ -371,22 +529,39 @@ class _DiscoverScreenState extends State<DiscoverScreen>
                   ],
                 ),
                 ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 420),
+                  constraints: const BoxConstraints(maxWidth: 460),
                   child: TextField(
                     controller: _searchController,
-                    onChanged: (v) => setState(() => _searchQuery = v),
+                    focusNode: _searchFocusNode,
+                    textInputAction: TextInputAction.search,
+                    onChanged: _onSearchChanged,
+                    onSubmitted: _onSearchSubmitted,
                     style: const TextStyle(color: Colors.white, fontSize: 13.5),
                     decoration: InputDecoration(
-                      hintText:
-                          "Filter or ask Voice AI: 'Compare top two products'...",
+                      hintText: isNarrow
+                          ? 'Search products or 3D models...'
+                          : "Search or ask AI: 'Headphones under \$350'...",
                       hintStyle: const TextStyle(
                         color: Colors.white70,
                         fontSize: 12.5,
                       ),
-                      prefixIcon: const Icon(
-                        Icons.search_rounded,
-                        color: Colors.white,
-                        size: 20,
+                      prefixIcon: IconButton(
+                        tooltip: 'Search Catalog',
+                        onPressed: () => _onSearchSubmitted(),
+                        icon: _isSearchingBackend
+                            ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: Colors.white,
+                                ),
+                              )
+                            : const Icon(
+                                Icons.search_rounded,
+                                color: Colors.white,
+                                size: 20,
+                              ),
                       ),
                       suffixIcon: Row(
                         mainAxisSize: MainAxisSize.min,
@@ -394,22 +569,21 @@ class _DiscoverScreenState extends State<DiscoverScreen>
                           if (_searchQuery.isNotEmpty)
                             IconButton(
                               tooltip: 'Clear search',
+                              visualDensity: VisualDensity.compact,
                               icon: const Icon(
                                 Icons.clear_rounded,
                                 color: Colors.white70,
                                 size: 18,
                               ),
-                              onPressed: () {
-                                _searchController.clear();
-                                setState(() => _searchQuery = '');
-                              },
+                              onPressed: _clearSearch,
                             ),
                           Consumer<VoiceProvider>(
                             builder: (context, voice, _) {
                               return IconButton(
+                                visualDensity: VisualDensity.compact,
                                 tooltip: voice.isRecording
                                     ? 'Stop voice input'
-                                    : 'Voice Filter (Whisper STT)',
+                                    : 'Voice Search (Whisper STT)',
                                 onPressed: _handleVoiceSearch,
                                 icon: voice.isTranscribing
                                     ? const SizedBox(
@@ -432,52 +606,54 @@ class _DiscoverScreenState extends State<DiscoverScreen>
                               );
                             },
                           ),
-                          Padding(
-                            padding: const EdgeInsets.only(right: 4),
-                            child: InkWell(
-                              borderRadius: BorderRadius.circular(999),
-                              onTap: () => GlobalVoiceOverlay.openConcierge(
-                                initialQuery: _searchQuery.trim().isNotEmpty
-                                    ? _searchQuery.trim()
-                                    : null,
-                              ),
-                              child: Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 9,
-                                  vertical: 4,
+                          if (!isNarrow)
+                            Padding(
+                              padding: const EdgeInsets.only(right: 4),
+                              child: InkWell(
+                                borderRadius: BorderRadius.circular(999),
+                                onTap: () => GlobalVoiceOverlay.openConcierge(
+                                  initialQuery: _searchQuery.trim().isNotEmpty
+                                      ? _searchQuery.trim()
+                                      : null,
                                 ),
-                                decoration: BoxDecoration(
-                                  gradient: const LinearGradient(
-                                    colors: [
-                                      Color(0xFF00ACC1),
-                                      Color(0xFF1E88E5),
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 9,
+                                    vertical: 4,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    gradient: const LinearGradient(
+                                      colors: [
+                                        Color(0xFF00ACC1),
+                                        Color(0xFF1E88E5),
+                                      ],
+                                    ),
+                                    borderRadius: BorderRadius.circular(999),
+                                  ),
+                                  child: const Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(
+                                        Icons.graphic_eq_rounded,
+                                        color: Colors.white,
+                                        size: 13,
+                                      ),
+                                      SizedBox(width: 4),
+                                      Text(
+                                        'Voice AI',
+                                        style: TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 10.5,
+                                          fontWeight: FontWeight.w800,
+                                        ),
+                                      ),
                                     ],
                                   ),
-                                  borderRadius: BorderRadius.circular(999),
-                                ),
-                                child: const Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Icon(
-                                      Icons.graphic_eq_rounded,
-                                      color: Colors.white,
-                                      size: 13,
-                                    ),
-                                    SizedBox(width: 4),
-                                    Text(
-                                      'Voice AI',
-                                      style: TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 10.5,
-                                        fontWeight: FontWeight.w800,
-                                      ),
-                                    ),
-                                  ],
                                 ),
                               ),
                             ),
-                          ),
                           IconButton(
+                            visualDensity: VisualDensity.compact,
                             tooltip: 'Multimodal AI Search (Image + Voice)',
                             icon: const Icon(
                               Icons.camera_alt_outlined,
@@ -556,8 +732,12 @@ class _DiscoverScreenState extends State<DiscoverScreen>
               fontWeight: FontWeight.w700,
               fontSize: 12.5,
             ),
-            onSelected: (_) =>
-                setState(() => _selectedCategoryIndex = index),
+            onSelected: (_) {
+              setState(() => _selectedCategoryIndex = index);
+              if (_searchQuery.trim().isNotEmpty) {
+                _runHybridSearch(_searchQuery.trim());
+              }
+            },
           );
         },
       ),
@@ -600,8 +780,12 @@ class _DiscoverScreenState extends State<DiscoverScreen>
             child: Padding(
               padding: const EdgeInsets.only(bottom: 8),
               child: PressableScale(
-                onTap: () =>
-                    setState(() => _selectedCategoryIndex = index),
+                onTap: () {
+                  setState(() => _selectedCategoryIndex = index);
+                  if (_searchQuery.trim().isNotEmpty) {
+                    _runHybridSearch(_searchQuery.trim());
+                  }
+                },
                 child: AnimatedContainer(
                   duration: const Duration(milliseconds: 220),
                   padding: const EdgeInsets.symmetric(
@@ -666,6 +850,8 @@ class _DiscoverScreenState extends State<DiscoverScreen>
     required bool isDark,
     required Color textColor,
   }) {
+    final hasSearch = _searchQuery.trim().isNotEmpty;
+
     return Padding(
       padding: const EdgeInsets.fromLTRB(20, 10, 20, 10),
       child: Wrap(
@@ -680,39 +866,59 @@ class _DiscoverScreenState extends State<DiscoverScreen>
               Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text(
-                    title,
-                    style: TextStyle(
-                      fontSize: 20,
-                      fontWeight: FontWeight.w900,
-                      color: textColor,
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 9,
-                      vertical: 3,
-                    ),
-                    decoration: BoxDecoration(
-                      color:
-                          const Color(0xFF1E88E5).withValues(alpha: 0.14),
-                      borderRadius: BorderRadius.circular(12),
-                    ),
+                  Flexible(
                     child: Text(
-                      '$count items',
-                      style: const TextStyle(
-                        color: Color(0xFF1E88E5),
-                        fontSize: 11.5,
-                        fontWeight: FontWeight.w800,
+                      hasSearch
+                          ? "Showing $count result${count == 1 ? '' : 's'} for '${_searchQuery.trim()}'"
+                          : title,
+                      style: TextStyle(
+                        fontSize: hasSearch ? 17.5 : 20,
+                        fontWeight: FontWeight.w900,
+                        color: textColor,
                       ),
                     ),
                   ),
+                  const SizedBox(width: 10),
+                  if (hasSearch)
+                    ActionChip(
+                      avatar: const Icon(Icons.close_rounded, size: 15),
+                      label: const Text(
+                        'Clear',
+                        style: TextStyle(
+                          fontSize: 11.5,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                      visualDensity: VisualDensity.compact,
+                      onPressed: _clearSearch,
+                    )
+                  else
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 9,
+                        vertical: 3,
+                      ),
+                      decoration: BoxDecoration(
+                        color:
+                            const Color(0xFF1E88E5).withValues(alpha: 0.14),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Text(
+                        '$count items',
+                        style: const TextStyle(
+                          color: Color(0xFF1E88E5),
+                          fontSize: 11.5,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ),
                 ],
               ),
               const SizedBox(height: 2),
               Text(
-                subtitle,
+                hasSearch
+                    ? 'Filtered in $title • Hybrid keyword & semantic search active'
+                    : subtitle,
                 style: TextStyle(
                   fontSize: 12.5,
                   color: isDark ? Colors.white60 : const Color(0xFF64748B),
@@ -764,7 +970,12 @@ class _DiscoverScreenState extends State<DiscoverScreen>
                   ),
                 ],
                 onChanged: (v) {
-                  if (v != null) setState(() => _sortBy = v);
+                  if (v != null) {
+                    setState(() => _sortBy = v);
+                    if (_searchQuery.trim().isNotEmpty) {
+                      _runHybridSearch(_searchQuery.trim());
+                    }
+                  }
                 },
               ),
             ),
@@ -775,69 +986,104 @@ class _DiscoverScreenState extends State<DiscoverScreen>
   }
 
   Widget _buildEmptyState(bool isDark, Color textColor) {
+    final q = _searchQuery.trim();
+
     return Center(
-      child: Padding(
+      child: SingleChildScrollView(
         padding: const EdgeInsets.all(28),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const PulsingOrb(
-              icon: Icons.inventory_2_outlined,
-              size: 68,
-            ),
-            const SizedBox(height: 16),
-            Text(
-              'No matching products in this view',
-              style: TextStyle(
-                fontSize: 17,
-                fontWeight: FontWeight.w800,
-                color: textColor,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 500),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const PulsingOrb(
+                icon: Icons.search_off_rounded,
+                size: 68,
               ),
-            ),
-            const SizedBox(height: 6),
-            Text(
-              'Try clearing your search filter or switching to All Products.',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                color: isDark ? Colors.white60 : const Color(0xFF64748B),
+              const SizedBox(height: 16),
+              Text(
+                q.isNotEmpty
+                    ? 'No catalog items matched "$q"'
+                    : 'No matching products in this category',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w800,
+                  color: textColor,
+                ),
               ),
-            ),
-            const SizedBox(height: 16),
-            Wrap(
-              spacing: 10,
-              runSpacing: 10,
-              alignment: WrapAlignment.center,
-              children: [
-                FilledButton.icon(
-                  onPressed: () {
-                    final q = _searchQuery.trim();
-                    context.push(
+              const SizedBox(height: 6),
+              Text(
+                q.isNotEmpty
+                    ? 'Let CTRL-X AI search alternatives, bundles, or custom B2B sourcing for your exact request.'
+                    : 'Try switching to All Products or browse a quick category below.',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: isDark ? Colors.white60 : const Color(0xFF64748B),
+                  fontSize: 13,
+                ),
+              ),
+              const SizedBox(height: 18),
+              Wrap(
+                spacing: 10,
+                runSpacing: 10,
+                alignment: WrapAlignment.center,
+                children: [
+                  FilledButton.icon(
+                    style: FilledButton.styleFrom(
+                      backgroundColor: const Color(0xFF1E88E5),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 18,
+                        vertical: 12,
+                      ),
+                    ),
+                    onPressed: () {
+                      context.push(
+                        q.isNotEmpty
+                            ? '/ctrlx?q=${Uri.encodeComponent(q)}'
+                            : '/ctrlx',
+                      );
+                    },
+                    icon: const Icon(Icons.auto_awesome_rounded, size: 18),
+                    label: Text(
                       q.isNotEmpty
-                          ? '/ctrlx?q=${Uri.encodeComponent(q)}'
-                          : '/ctrlx',
-                    );
-                  },
-                  icon: const Icon(Icons.auto_awesome_rounded, size: 17),
-                  label: Text(
-                    _searchQuery.trim().isNotEmpty
-                        ? 'Ask CTRL-X AI: "${_searchQuery.trim()}"'
-                        : 'Ask CTRL-X AI Assistant',
+                          ? 'Ask CTRL-X AI to find this'
+                          : 'Ask CTRL-X AI Assistant',
+                      style: const TextStyle(fontWeight: FontWeight.w800),
+                    ),
                   ),
-                ),
-                OutlinedButton.icon(
-                  onPressed: () {
-                    _searchController.clear();
-                    setState(() {
-                      _searchQuery = '';
-                      _selectedCategoryIndex = 0;
-                    });
-                  },
-                  icon: const Icon(Icons.restart_alt_rounded),
-                  label: const Text('Reset Filters'),
-                ),
-              ],
-            ),
-          ],
+                  OutlinedButton.icon(
+                    onPressed: () {
+                      _clearSearch();
+                      setState(() => _selectedCategoryIndex = 0);
+                    },
+                    icon: const Icon(Icons.restart_alt_rounded),
+                    label: const Text('Clear & Show All'),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 18),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                alignment: WrapAlignment.center,
+                children: List.generate(_categories.length, (i) {
+                  final cat = _categories[i];
+                  return ActionChip(
+                    avatar: Icon(cat['icon'] as IconData, size: 15),
+                    label: Text(
+                      cat['title'] as String,
+                      style: const TextStyle(fontSize: 11.5),
+                    ),
+                    onPressed: () {
+                      _clearSearch();
+                      setState(() => _selectedCategoryIndex = i);
+                    },
+                  );
+                }),
+              ),
+            ],
+          ),
         ),
       ),
     );

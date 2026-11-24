@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
@@ -239,8 +240,14 @@ class _GlobalVoiceOverlayState extends State<GlobalVoiceOverlay>
                 child: AnimatedBuilder(
                   animation: _pulseCtrl,
                   builder: (context, child) {
-                    final glow = 0.28 + (_pulseCtrl.value * 0.25);
-                    final scale = 1.0 + (_pulseCtrl.value * 0.045);
+                    final reduceMotion =
+                        MediaQuery.disableAnimationsOf(context);
+                    final glow = reduceMotion
+                        ? 0.32
+                        : (0.28 + (_pulseCtrl.value * 0.25));
+                    final scale = reduceMotion
+                        ? 1.0
+                        : (1.0 + (_pulseCtrl.value * 0.045));
                     return Transform.scale(
                       scale: scale,
                       child: Container(
@@ -709,9 +716,16 @@ class _PenguinVoiceConciergeSheetState extends State<PenguinVoiceConciergeSheet>
         _status == ConciergeStatus.queryingDb ||
         _status == ConciergeStatus.deciding;
 
-    return Container(
-      margin: const EdgeInsets.fromLTRB(8, 8, 8, 0),
-      padding: EdgeInsets.only(bottom: bottomInset),
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.escape): () =>
+            Navigator.of(context).maybePop(),
+      },
+      child: Focus(
+        autofocus: false,
+        child: Container(
+          margin: const EdgeInsets.fromLTRB(8, 8, 8, 0),
+          padding: EdgeInsets.only(bottom: bottomInset),
       decoration: BoxDecoration(
         color: colors.surface.withValues(alpha: 0.97),
         borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
@@ -966,13 +980,16 @@ class _PenguinVoiceConciergeSheetState extends State<PenguinVoiceConciergeSheet>
                 const SizedBox(height: 6),
               ],
 
-              Text(
-                _statusHeadline(voice),
-                textAlign: TextAlign.center,
-                style: GoogleFonts.plusJakartaSans(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w800,
-                  color: voice.isRecording ? colors.error : colors.primary,
+              Semantics(
+                liveRegion: true,
+                child: Text(
+                  _statusHeadline(voice),
+                  textAlign: TextAlign.center,
+                  style: GoogleFonts.plusJakartaSans(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w800,
+                    color: voice.isRecording ? colors.error : colors.primary,
+                  ),
                 ),
               ),
 
@@ -1244,7 +1261,9 @@ class _PenguinVoiceConciergeSheetState extends State<PenguinVoiceConciergeSheet>
           ),
         ),
       ),
-    );
+    ),
+  ),
+);
   }
 
   Widget _buildPhaseStatusPills(VoiceProvider voice, ColorScheme colors) {

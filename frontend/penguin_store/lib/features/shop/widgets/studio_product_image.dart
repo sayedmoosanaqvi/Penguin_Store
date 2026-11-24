@@ -4,16 +4,17 @@ import 'package:flutter/material.dart';
 import 'package:shimmer/shimmer.dart';
 
 import 'package:penguin_store/config/api_config.dart';
+import 'package:penguin_store/core/widgets/penguin_brand_logo.dart';
 import 'package:penguin_store/features/shop/models/product_model.dart';
 
-/// Unified Studio Product Card Image Framing (Phase 1.1).
+/// Unified Studio Product Card Image Framing.
 ///
 /// Standardizes every product image across the app (API products, admin-uploaded
 /// photos, and 3D studio renders):
 /// - Clean studio radial-gradient backdrop that adapts automatically to Light & Dark mode
 /// - `BoxFit.contain` with uniform inner padding (`12px` default)
-/// - Soft drop shadow and subtle hover/tap zoom (`1.04x`)
-/// - Automatic proxy fallback for legacy S3 / cross-origin image URLs
+/// - Automatic proxy fallback for cross-origin / legacy URLs
+/// - Guaranteed crisp themed fallback emblem (NEVER a broken-image cross symbol)
 class StudioProductImage extends StatefulWidget {
   final int productId;
   final String imageUrl;
@@ -38,6 +39,7 @@ class StudioProductImage extends StatefulWidget {
 
 class _StudioProductImageState extends State<StudioProductImage> {
   bool _useProxyFallback = false;
+  bool _proxyFailed = false;
 
   @override
   void didUpdateWidget(covariant StudioProductImage oldWidget) {
@@ -45,20 +47,30 @@ class _StudioProductImageState extends State<StudioProductImage> {
     if (oldWidget.imageUrl != widget.imageUrl ||
         oldWidget.productId != widget.productId) {
       _useProxyFallback = false;
+      _proxyFailed = false;
     }
   }
 
   String _resolvedUrl() {
+    if (_proxyFailed) return '';
+
     final trimmed = Product.resolveImageUrl(widget.imageUrl);
     final base = ApiConfig.baseUrl.replaceFirst(RegExp(r'/$'), '');
 
-    if (_useProxyFallback || trimmed.isEmpty) {
+    if (_useProxyFallback) {
       if (widget.productId > 0) {
         return '$base/api/search/image-proxy?product_id=${widget.productId}'
             '${trimmed.isNotEmpty ? '&url=${Uri.encodeComponent(trimmed)}' : ''}';
       }
       if (trimmed.isNotEmpty) {
         return '$base/api/search/image-proxy?url=${Uri.encodeComponent(trimmed)}';
+      }
+      return '';
+    }
+
+    if (trimmed.isEmpty) {
+      if (widget.productId > 0) {
+        return '$base/api/premium-3d/poster/${widget.productId}.png';
       }
       return '';
     }
@@ -76,12 +88,13 @@ class _StudioProductImageState extends State<StudioProductImage> {
     final isDark = theme.brightness == Brightness.dark;
     final targetUrl = _resolvedUrl();
 
+    final reduceMotion = MediaQuery.disableAnimationsOf(context);
     Widget content;
     if (targetUrl.isEmpty) {
       content = _buildFallback(theme, isDark);
     } else {
       content = AnimatedScale(
-        scale: widget.isHovered ? 1.04 : 1.0,
+        scale: (!reduceMotion && widget.isHovered) ? 1.04 : 1.0,
         duration: const Duration(milliseconds: 220),
         curve: Curves.easeOutCubic,
         child: Padding(
@@ -91,11 +104,15 @@ class _StudioProductImageState extends State<StudioProductImage> {
             key: ValueKey(targetUrl),
             width: double.infinity,
             height: double.infinity,
+            memCacheWidth: 480,
             fit: widget.fit,
-            fadeInDuration: const Duration(milliseconds: 180),
+            fadeInDuration: reduceMotion
+                ? Duration.zero
+                : const Duration(milliseconds: 180),
             placeholder: (_, _) => _buildShimmer(isDark),
             errorWidget: (_, _, _) {
               if (!_useProxyFallback &&
+                  !_proxyFailed &&
                   (widget.productId > 0 ||
                       widget.imageUrl.trim().isNotEmpty)) {
                 WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -104,6 +121,13 @@ class _StudioProductImageState extends State<StudioProductImage> {
                   }
                 });
                 return _buildShimmer(isDark);
+              }
+              if (_useProxyFallback && !_proxyFailed) {
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (mounted && !_proxyFailed) {
+                    setState(() => _proxyFailed = true);
+                  }
+                });
               }
               return _buildFallback(theme, isDark);
             },
@@ -153,10 +177,23 @@ class _StudioProductImageState extends State<StudioProductImage> {
 
   Widget _buildFallback(ThemeData theme, bool isDark) {
     return Center(
-      child: Icon(
-        Icons.inventory_2_outlined,
-        color: theme.colorScheme.primary.withValues(alpha: isDark ? 0.55 : 0.45),
-        size: 32,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          PenguinBrandLogo(
+            size: 32,
+            onLightBackground: !isDark,
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'Penguin Studio',
+            style: TextStyle(
+              fontSize: 9.5,
+              fontWeight: FontWeight.w700,
+              color: theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.7),
+            ),
+          ),
+        ],
       ),
     );
   }

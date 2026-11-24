@@ -192,6 +192,25 @@ async def health_check():
     }
 
 
+@app.get("/ready")
+async def readiness_check():
+    """Verify database / Supabase catalog reachability for zero-downtime probes."""
+    from .core.supabase_rest import _get_all_products_cached
+
+    try:
+        products = await run_in_threadpool(_get_all_products_cached)
+        return {
+            "status": "ready",
+            "service": "penguin-store-api",
+            "catalog_cached_count": len(products),
+        }
+    except Exception:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "degraded", "service": "penguin-store-api"},
+        )
+
+
 class TrackEventRequest(BaseModel):
     action: str = Field(..., min_length=1, max_length=100)
     details: Any = None
@@ -256,59 +275,66 @@ def create_product(
 
 
 @app.get("/products/", response_model=list[schemas.Product])
-def get_products(db: Session = Depends(get_db)):
-    from .core.supabase_rest import (
-        fetch_products_https,
-        is_pg_tcp_reachable,
-        mark_pg_tcp_unreachable,
+def get_products(
+    search: str | None = None,
+    q: str | None = None,
+    category: str | None = None,
+    min_price: float | None = None,
+    max_price: float | None = None,
+    only_3d: bool = False,
+    sort: str | None = None,
+    limit: int | None = None,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+):
+    from .repositories.product_repo import list_public_products
+
+    eff_search = search if (search and search.strip()) else q
+    return list_public_products(
+        db,
+        limit=limit,
+        offset=offset,
+        category=category,
+        search=eff_search,
+        min_price=min_price,
+        max_price=max_price,
+        only_3d=only_3d,
+        sort=sort,
     )
 
-    if not is_pg_tcp_reachable():
-        return fetch_products_https()
 
-    def query_products():
-        return (
-            db.query(models.Product)
-            .options(load_only(*PRODUCT_PUBLIC_COLUMNS))
-            .order_by(models.Product.id.asc())
-            .all()
-        )
+@app.get("/products/search", response_model=list[schemas.Product])
+def search_products_legacy(
+    q: str | None = None,
+    search: str | None = None,
+    category: str | None = None,
+    min_price: float | None = None,
+    max_price: float | None = None,
+    only_3d: bool = False,
+    sort: str | None = None,
+    limit: int = 60,
+    offset: int = 0,
+):
+    from .core.supabase_rest import search_products_hybrid_https
 
-    try:
-        return _run_product_read(db, query_products)
-    except HTTPException:
-        mark_pg_tcp_unreachable()
-        return fetch_products_https()
+    eff_query = q if (q and q.strip()) else search
+    return search_products_hybrid_https(
+        search=eff_query,
+        category=category,
+        min_price=min_price,
+        max_price=max_price,
+        only_3d=only_3d,
+        sort=sort,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @app.get("/products/{product_id}", response_model=schemas.Product)
 def get_product_by_id(product_id: int, db: Session = Depends(get_db)):
-    from .core.supabase_rest import (
-        fetch_product_by_id_https,
-        is_pg_tcp_reachable,
-        mark_pg_tcp_unreachable,
-    )
+    from .repositories.product_repo import get_public_product_by_id
 
-    if not is_pg_tcp_reachable():
-        product = fetch_product_by_id_https(product_id)
-        if product is None:
-            raise HTTPException(status_code=404, detail="Product not found.")
-        return product
-
-    def query_product():
-        return (
-            db.query(models.Product)
-            .options(load_only(*PRODUCT_PUBLIC_COLUMNS))
-            .filter(models.Product.id == product_id)
-            .first()
-        )
-
-    try:
-        product = _run_product_read(db, query_product)
-    except HTTPException:
-        mark_pg_tcp_unreachable()
-        product = fetch_product_by_id_https(product_id)
-
+    product = get_public_product_by_id(db, product_id)
     if product is None:
         raise HTTPException(status_code=404, detail="Product not found.")
     return product
@@ -321,94 +347,13 @@ def delete_product(
     db: Session = Depends(get_db),
     admin_user: User = Depends(require_role(["admin"])),
 ):
-    from .core.supabase_rest import (
-        fetch_product_by_id_https,
-        get_supabase_client,
-        invalidate_supabase_rest_cache,
+    from .api.v1.endpoints.products import execute_product_deletion
+
+    return execute_product_deletion(
+        product_id=product_id,
+        background_tasks=background_tasks,
+        db=db,
     )
-
-    if product_id == 144:
-        raise HTTPException(
-            status_code=403,
-            detail="Product #144 is protected as the reference 3D showcase asset.",
-        )
-
-    existing = fetch_product_by_id_https(product_id)
-    if existing is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Product with id {product_id} does not exist.",
-        )
-
-    client = get_supabase_client()
-    product_name = str(existing.get("name") or f"Product #{product_id}")
-
-    try:
-        # 1. Cascade cleanup on ephemeral tables
-        for tbl in [
-            "product_3d_assets",
-            "cart_items",
-            "wishlist_items",
-            "reviews",
-            "product_review_insights",
-            "rfq_requests",
-            "recently_viewed_items",
-        ]:
-            try:
-                client.table(tbl).delete().eq("product_id", product_id).execute()
-            except Exception as tbl_err:
-                logger.debug("Cascade cleanup %s on product %s: %s", tbl, product_id, tbl_err)
-
-        # 2. Check if product is referenced in order_items (historical receipts)
-        is_in_order = False
-        try:
-            ord_res = (
-                client.table("order_items")
-                .select("id")
-                .eq("product_id", product_id)
-                .limit(1)
-                .execute()
-            )
-            if ord_res.data:
-                is_in_order = True
-        except Exception:
-            pass
-
-        if is_in_order:
-            client.table("products").update({
-                "stock": 0,
-                "is_featured": False,
-                "name": f"[Archived] {product_name}",
-            }).eq("id", product_id).execute()
-            logger.info("Product #%s referenced in orders: archived cleanly.", product_id)
-        else:
-            client.table("products").delete().eq("id", product_id).execute()
-            logger.info("Product #%s hard-deleted cleanly from database.", product_id)
-
-        # 3. Immediately invalidate memory cache
-        invalidate_supabase_rest_cache()
-        background_tasks.add_task(visual_search.invalidate_visual_cache)
-
-        # 4. Storage cleanup in BackgroundTasks
-        from .api.v1.endpoints.products import _cleanup_product_storage_files
-        background_tasks.add_task(
-            _cleanup_product_storage_files,
-            product_id,
-            existing.get("image_url"),
-        )
-
-        return {
-            "status": "deleted",
-            "product_id": product_id,
-            "product_name": product_name,
-            "message": f"Product '{product_name}' deleted successfully",
-        }
-    except Exception as exc:
-        logger.exception("Product deletion error: %s", exc)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Could not delete product: {str(exc)}",
-        )
 
 
 class UserCreate(BaseModel):
@@ -586,6 +531,9 @@ async def upload_file_to_supabase(
     file: UploadFile = File(...),
     admin_user: User = Depends(require_role(["admin"])),
 ):
+    import gc
+    from .core.upload_security import validate_image_upload
+
     try:
         if not file.filename:
             raise HTTPException(status_code=400, detail="Filename is missing.")
@@ -598,19 +546,21 @@ async def upload_file_to_supabase(
             )
 
         file_bytes = await file.read(MAX_UPLOAD_BYTES + 1)
-        if not file_bytes:
-            raise HTTPException(status_code=400, detail="Uploaded file is empty.")
-        if len(file_bytes) > MAX_UPLOAD_BYTES:
-            raise HTTPException(
-                status_code=413,
-                detail="Image exceeds the 10 MB upload limit.",
-            )
+        detected_ext, _ = validate_image_upload(
+            file_bytes,
+            file.filename,
+            max_bytes=MAX_UPLOAD_BYTES,
+            require_extension=True,
+        )
 
         norm_bytes, norm_ext, content_type = await run_in_threadpool(
             _normalize_studio_image,
             file_bytes,
-            extension,
+            detected_ext,
         )
+        del file_bytes
+        gc.collect()
+
         unique_filename = f"{uuid.uuid4().hex}{norm_ext}"
 
         supabase.storage.from_(PUBLIC_ASSET_BUCKET).upload(
@@ -721,13 +671,18 @@ def add_to_v1_cart(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    from .core.supabase_rest import _DELETED_PRODUCT_IDS
+
+    if item.product_id in _DELETED_PRODUCT_IDS:
+        raise HTTPException(status_code=404, detail="Product not found.")
+
     product = (
         db.query(models.Product)
         .options(load_only(models.Product.id, models.Product.name, models.Product.stock))
         .filter(models.Product.id == item.product_id)
         .first()
     )
-    if not product:
+    if not product or getattr(product, "is_active", True) is False:
         raise HTTPException(status_code=404, detail="Product not found.")
 
     variant = item.selected_variant.strip()

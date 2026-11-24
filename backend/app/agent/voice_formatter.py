@@ -315,3 +315,16 @@ def build_client_action_spoken_summary(
         return sanitize_spoken_text(f"Taking you to {dest} now.", max_sentences=2)
 
     return sanitize_spoken_text(fallback_text, max_sentences=3)
+
+
+class SpeechTextCleaner:
+    """Production helper facade for clean, symbol-free spoken summaries."""
+
+    @staticmethod
+    def clean(raw: Optional[str], max_sentences: int = 4) -> str:
+        return sanitize_spoken_text(raw, max_sentences=max_sentences)
+
+    @staticmethod
+    def format_price(amount: Any) -> str:
+        return format_price_for_speech(amount)
+

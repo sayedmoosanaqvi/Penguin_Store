@@ -307,9 +307,63 @@ class ProductProvider with ChangeNotifier {
     }
   }
 
+  /// Immediately purges a deleted product from ALL in-memory & disk caches
+  /// (Home, Discover, Trending, Recommendations, 3D Showcase, and SharedPreferences)
+  /// in 0ms so it vanishes everywhere immediately and stays gone on browser refresh.
+  Future<void> purgeDeletedProduct(int productId) async {
+    _products = _products.where((p) => p.id != productId).toList();
+    _showcaseItems =
+        _showcaseItems.where((s) => s.product.id != productId).toList();
+
+    for (final country in _trendingByCountry.keys.toList()) {
+      _trendingByCountry[country] = (_trendingByCountry[country] ?? const [])
+          .where((m) => (m['id'] as num?)?.toInt() != productId)
+          .toList();
+    }
+    for (final email in _recsByEmail.keys.toList()) {
+      _recsByEmail[email] = (_recsByEmail[email] ?? const [])
+          .where((m) => (m['id'] as num?)?.toInt() != productId)
+          .toList();
+    }
+
+    final updated3d = Set<int>.from(Catalog3D.ids.value)..remove(productId);
+    Catalog3D.ids.value = updated3d;
+    notifyListeners();
+
+    await ProductService.purgeDeletedProductFromCaches(productId);
+  }
+
+  /// Fast hybrid search query combining backend `/api/v1/products/search` with active catalog.
+  Future<List<Product>> searchCatalog(
+    String query, {
+    String? category,
+    double? minPrice,
+    double? maxPrice,
+    bool only3D = false,
+    String? sort,
+  }) {
+    return _productService.searchProducts(
+      query: query,
+      category: category,
+      minPrice: minPrice,
+      maxPrice: maxPrice,
+      only3D: only3D,
+      sort: sort,
+    );
+  }
+
+  /// Wipes private user-keyed recommendation and signed URL caches on logout or 401.
+  void clearUserRecommendations() {
+    _recsByEmail.clear();
+    _recsLoadedAt.clear();
+    _recsLoading.clear();
+    _signedUrlCache.clear();
+    notifyListeners();
+  }
+
   /// Called immediately after an Admin creates, updates, or deletes a product or 3D model.
   Future<void> invalidateAllAndRefresh() async {
-    ProductService.invalidateCache();
+    await ProductService.clearAllCaches();
     _productsLoadedAt = null;
     _showcaseLoadedAt = null;
     _signedUrlCache.clear();

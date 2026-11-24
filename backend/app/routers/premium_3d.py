@@ -49,11 +49,16 @@ SIGNED_URL_CACHE_SECONDS = 3300
 _signed_url_cache: dict[int, tuple[str, float]] = {}
 _signed_url_lock = Lock()
 
+
+def clear_signed_url_cache() -> None:
+    with _signed_url_lock:
+        _signed_url_cache.clear()
+
 # Raw uploads may be large downloads from the internet; they are optimised
 # (textures capped at 512 px) before being stored. Supabase free tier caps a
 # single object at 50 MB, so the optimised file must fit that limit.
-MAX_GLB_BYTES = 60 * 1024 * 1024
-MAX_STORED_GLB_BYTES = 50 * 1024 * 1024
+MAX_GLB_BYTES = 25 * 1024 * 1024
+MAX_STORED_GLB_BYTES = 25 * 1024 * 1024
 MAX_POSTER_BYTES = 10 * 1024 * 1024
 
 DEMO_DURATION = timedelta(hours=1)
@@ -306,11 +311,15 @@ def _sign_asset(
 # Automatically includes newly uploaded 3D shirts.
 def _optimize_for_web(content: bytes) -> bytes:
     """Validate + cap embedded textures at 512 px. Falls back to original."""
+    import gc
+
     t0 = time.perf_counter()
     try:
         optimized, stats = optimize_glb(content)
     except GLBError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+    finally:
+        gc.collect()
 
     elapsed_ms = round((time.perf_counter() - t0) * 1000.0, 2)
     orig_kb = round(len(content) / 1024.0, 2)
@@ -360,15 +369,26 @@ def get_3d_catalog(
         return {"product_ids": ids, "count": len(ids)}
 
     try:
-        rows = db.query(
-            Product3DAsset.product_id
-        ).filter(
-            Product3DAsset.is_active.is_(True),
-            Product3DAsset.storage_bucket == BUCKET,
-            Product3DAsset.model_format == "glb",
-        ).distinct().all()
+        from app.repositories.product_repo import apply_active_product_filter
+        from app.core.supabase_rest import _DELETED_PRODUCT_IDS
+
+        rows = (
+            apply_active_product_filter(
+                db.query(Product3DAsset.product_id).join(
+                    Product, Product.id == Product3DAsset.product_id
+                ),
+                deleted_ids=_DELETED_PRODUCT_IDS,
+            )
+            .filter(
+                Product3DAsset.is_active.is_(True),
+                Product3DAsset.storage_bucket == BUCKET,
+                Product3DAsset.model_format == "glb",
+            )
+            .distinct()
+            .all()
+        )
         ids = sorted(row[0] for row in rows)
-    except OperationalError:
+    except Exception:
         db.rollback()
         mark_pg_tcp_unreachable()
         ids = fetch_3d_catalog_ids_https(bucket=BUCKET)
@@ -776,10 +796,17 @@ def _upload_poster_image(poster: UploadFile | None) -> str | None:
         return None
     try:
         from PIL import Image
+        from app.core.upload_security import validate_image_upload
 
         raw = poster.file.read(MAX_POSTER_BYTES + 1)
         if not raw or len(raw) > MAX_POSTER_BYTES:
             raise ValueError("Poster exceeds maximum size limit.")
+        validate_image_upload(
+            raw,
+            poster.filename,
+            max_bytes=MAX_POSTER_BYTES,
+            require_extension=False,
+        )
 
         with Image.open(io.BytesIO(raw)) as im:
             im.thumbnail((1024, 1024))
@@ -1127,6 +1154,8 @@ def _store_glb(
 
 
 def _read_glb_upload(file: UploadFile) -> bytes:
+    from app.core.upload_security import validate_glb_upload
+
     if not file.filename or not file.filename.lower().endswith(".glb"):
         raise HTTPException(status_code=415, detail="Upload a .glb model file.")
 
@@ -1135,14 +1164,11 @@ def _read_glb_upload(file: UploadFile) -> bytes:
     finally:
         file.file.close()
 
-    if not content or len(content) > MAX_GLB_BYTES:
-        raise HTTPException(
-            status_code=413,
-            detail="GLB must be nonempty and at most 60 MB.",
-        )
-
-    if content[:4] != b"glTF":
-        raise HTTPException(status_code=422, detail="Invalid GLB 2.0 file.")
+    validate_glb_upload(
+        content,
+        file.filename,
+        max_bytes=MAX_GLB_BYTES,
+    )
 
     return _optimize_for_web(content)
 
@@ -1281,26 +1307,36 @@ def get_3d_showcase(
         return {"count": 0, "items": []}
 
     from sqlalchemy.orm import load_only
-    products = (
-        db.query(Product)
-        .options(
-            load_only(
-                Product.id,
-                Product.name,
-                Product.description,
-                Product.price,
-                Product.original_price,
-                Product.image_url,
-                Product.category,
-                Product.rating,
-                Product.reviews,
-                Product.discount_percent,
-                Product.is_featured,
+    from app.repositories.product_repo import apply_active_product_filter
+    from app.core.supabase_rest import _DELETED_PRODUCT_IDS
+
+    try:
+        products = (
+            apply_active_product_filter(
+                db.query(Product).options(
+                    load_only(
+                        Product.id,
+                        Product.name,
+                        Product.description,
+                        Product.price,
+                        Product.original_price,
+                        Product.image_url,
+                        Product.category,
+                        Product.rating,
+                        Product.reviews,
+                        Product.discount_percent,
+                        Product.is_featured,
+                        Product.stock,
+                    )
+                ),
+                deleted_ids=_DELETED_PRODUCT_IDS,
             )
+            .filter(Product.id.in_(list(by_product)))
+            .all()
         )
-        .filter(Product.id.in_(list(by_product)))
-        .all()
-    )
+    except Exception:
+        db.rollback()
+        return fetch_3d_showcase_https(bucket=BUCKET)
 
     items = []
     for product in sorted(products, key=lambda p: p.id, reverse=True):
@@ -1342,7 +1378,9 @@ def list_admin_models(
         items = []
         for a in assets:
             pid = int(a.get("product_id") or 0)
-            p = products_by_id.get(pid, {})
+            p = products_by_id.get(pid)
+            if p is None:
+                continue
             items.append(
                 {
                     "id": int(a["id"]),

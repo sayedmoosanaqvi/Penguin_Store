@@ -205,15 +205,21 @@ def get_product_decision_profile(
     pid = int(product_id or 144)
     product = fetch_product_by_id_https(pid)
     if not product:
-        candidates = search_products_db(query=str(pid), db=db, limit=1)
+        candidates = search_products_db(query="", db=db, limit=1)
+        if pid != 144 and not candidates:
+            return {
+                "found": False,
+                "product_id": pid,
+                "error": f"Product #{pid} is no longer active in Penguin Store.",
+            }
         product = candidates[0] if candidates else {
-            "id": pid,
-            "name": f"Penguin Store Product #{pid}",
+            "id": 144,
+            "name": "Penguin Store Product #144",
             "price": 129.99,
             "category": "Featured",
             "description": "High-performance precision product verified by Penguin Store.",
             "stock": 18,
-            "has_3d": pid == 144,
+            "has_3d": True,
         }
 
     raw_trust = check_reviews_and_trust.invoke({"product_id": pid})

@@ -304,10 +304,14 @@ class _VisualCatalogCache:
             except Exception as exc:
                 logger.warning("Visual catalog HTTPS vector load failed: %s", exc)
 
+        from app.core.supabase_rest import is_product_active_row
+
         products: list[dict[str, Any]] = []
         vectors: list[np.ndarray] = []
 
         for mapping in rows_data:
+            if not is_product_active_row(mapping):
+                continue
             emb_val = mapping.get("emb_text")
             if not emb_val:
                 continue
@@ -744,12 +748,23 @@ async def visual_product_search(
                 detail="Uploaded image is empty.",
             )
 
+        from app.core.upload_security import validate_image_upload
+        import gc
+
+        validate_image_upload(
+            image_bytes,
+            file.filename,
+            max_bytes=MAX_IMAGE_BYTES,
+            require_extension=False,
+        )
+
         # 3. Analyze image quality, deblur if needed, and compute embeddings
         try:
             embed_result = await run_in_threadpool(
                 analyze_and_embed_query,
                 image_bytes,
             )
+            gc.collect()
 
         except ValueError as exc:
             raise HTTPException(

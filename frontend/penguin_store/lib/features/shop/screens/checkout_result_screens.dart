@@ -22,12 +22,14 @@ class CheckoutSuccessScreen extends StatefulWidget {
   final String? sessionId;
   final int? orderId;
   final String? mode;
+  final String? receiptToken;
 
   const CheckoutSuccessScreen({
     super.key,
     this.sessionId,
     this.orderId,
     this.mode,
+    this.receiptToken,
   });
 
   @override
@@ -92,7 +94,10 @@ class _CheckoutSuccessScreenState extends State<CheckoutSuccessScreen> {
       }
 
       if (orderId != null && orderId > 0) {
-        final ord = await StripePaymentService.fetchOrderDetail(orderId);
+        final ord = await StripePaymentService.fetchOrderDetail(
+          orderId,
+          receiptToken: widget.receiptToken,
+        );
         if (!mounted) return;
         context.read<CartProvider>().clear();
         context

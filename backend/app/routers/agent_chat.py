@@ -642,30 +642,83 @@ async def chat_with_agent(
         raise
 
     except Exception:
-        logger.exception(
-            "AGENT EXECUTION FAILED"
-        )
+        logger.exception("AGENT EXECUTION FAILED — activating deterministic catalog fallback")
+        latency_ms = round((time.perf_counter() - start_ts) * 1000.0, 2)
         append_audit_log(
             {
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "thread_id": request.thread_id,
-                "user_input": request.user_input[:200],
-                "routed_agent": "CTRL-X",
-                "tools_called": [],
-                "data_type": "error",
-                "latency_ms": 0.0,
-                "status": "error",
+                "user_input": request.user_input[:160],
+                "routed_agent": "Deterministic_Catalog_Fallback",
+                "tools_called": ["search_products_db"],
+                "data_type": "products",
+                "latency_ms": latency_ms,
+                "status": "fallback",
             }
         )
 
-        # Do not expose internal stack traces, database details,
-        # environment variables, or provider errors to the client.
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "CTRL-X could not complete the request."
-            ),
-        )
+        # Availability fallback: when Groq LLM is rate-limited or unreachable,
+        # serve deterministic live Supabase catalog matches cleanly instead of HTTP 500.
+        try:
+            from app.agent.db_tools import search_products_db
+            from app.agent.voice_formatter import (
+                build_product_list_spoken_summary,
+                sanitize_spoken_text,
+            )
+
+            fallback_res = await run_in_threadpool(
+                search_products_db,
+                query=request.user_input,
+                limit=4,
+            )
+            matched = fallback_res.get("products") or []
+            spoken = build_product_list_spoken_summary(
+                matched,
+                user_query=request.user_input,
+                used_fallback=bool(fallback_res.get("used_relaxed_fallback")),
+            )
+            if matched:
+                md_lines = [
+                    f"Here are **{len(matched)} live in-stock matches** from the Penguin Store catalog:\n"
+                ]
+                for p in matched[:4]:
+                    md_lines.append(
+                        f"- **{p.get('name')}** — **${float(p.get('price') or 0.0):.2f}** "
+                        f"({float(p.get('rating') or 4.8):.1f}★)"
+                    )
+                reply_md = "\n".join(md_lines)
+            else:
+                reply_md = (
+                    "I checked the live Penguin Store catalog. Tell me a product category, "
+                    "style, or budget and I will pull up matching in-stock items right away."
+                )
+
+            return {
+                "reply": reply_md,
+                "display_markdown": reply_md,
+                "spoken_summary": sanitize_spoken_text(spoken),
+                "routed_agent": "Deterministic_Catalog_Fallback",
+                "data_type": "products" if matched else "text",
+                "suggested_products": matched,
+                "comparison_table": None,
+                "bundle_summary": None,
+                "decision_card": None,
+                "client_action": None,
+                "requires_approval": False,
+                "approval_context": None,
+                "action_logs": [
+                    {
+                        "agent": "Catalog_Resilience_Engine",
+                        "tools": ["search_products_db"],
+                    }
+                ],
+                "latency_ms": latency_ms,
+            }
+        except Exception:
+            raise HTTPException(
+                status_code=503,
+                detail="CTRL-X is temporarily busy. Please retry in a few seconds.",
+            )
 
 
 # ===========================================================================

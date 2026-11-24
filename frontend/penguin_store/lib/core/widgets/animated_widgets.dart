@@ -2,6 +2,8 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+export 'package:penguin_store/core/widgets/penguin_brand_logo.dart';
+
 /// Penguin brand motion kit: reusable, dependency-free animations.
 
 /// Fades + slides its child in once, optionally after [delay].
@@ -73,6 +75,9 @@ class _FadeSlideInState extends State<FadeSlideIn>
 
   @override
   Widget build(BuildContext context) {
+    if (MediaQuery.disableAnimationsOf(context)) {
+      return widget.child;
+    }
     return FadeTransition(
       opacity: _opacity,
       child: SlideTransition(position: _slide, child: widget.child),
@@ -106,18 +111,21 @@ class _PressableScaleState extends State<PressableScale> {
 
   @override
   Widget build(BuildContext context) {
+    final reduceMotion = MediaQuery.disableAnimationsOf(context);
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTapDown: (_) => _set(true),
       onTapCancel: () => _set(false),
       onTapUp: (_) => _set(false),
       onTap: widget.onTap,
-      child: AnimatedScale(
-        scale: _down ? widget.scale : 1,
-        duration: const Duration(milliseconds: 110),
-        curve: Curves.easeOut,
-        child: widget.child,
-      ),
+      child: reduceMotion
+          ? widget.child
+          : AnimatedScale(
+              scale: _down ? widget.scale : 1,
+              duration: const Duration(milliseconds: 110),
+              curve: Curves.easeOut,
+              child: widget.child,
+            ),
     );
   }
 }
@@ -179,6 +187,9 @@ class _SnowfallBackgroundState extends State<SnowfallBackground>
 
   @override
   Widget build(BuildContext context) {
+    if (MediaQuery.disableAnimationsOf(context)) {
+      return widget.child ?? const SizedBox.shrink();
+    }
     return Stack(
       fit: StackFit.passthrough,
       children: [
@@ -262,38 +273,41 @@ class _PulsingOrbState extends State<PulsingOrb>
 
   @override
   Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: _c,
-      builder: (context, child) {
-        final t = Curves.easeInOut.transform(_c.value);
-        return Container(
-          width: widget.size,
-          height: widget.size,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            gradient: LinearGradient(
-              colors: widget.colors,
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: widget.colors.first.withValues(alpha: 0.28 + 0.3 * t),
-                blurRadius: 18 + 26 * t,
-                spreadRadius: 1 + 6 * t,
+    final reduceMotion = MediaQuery.disableAnimationsOf(context);
+    return RepaintBoundary(
+      child: AnimatedBuilder(
+        animation: _c,
+        builder: (context, child) {
+          final t = reduceMotion ? 0.3 : Curves.easeInOut.transform(_c.value);
+          return Container(
+            width: widget.size,
+            height: widget.size,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              gradient: LinearGradient(
+                colors: widget.colors,
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
               ),
-            ],
-          ),
-          child: Transform.scale(
-            scale: 0.94 + 0.08 * t,
-            child: Icon(
-              widget.icon,
-              color: Colors.white,
-              size: widget.size * 0.46,
+              boxShadow: [
+                BoxShadow(
+                  color: widget.colors.first.withValues(alpha: 0.28 + 0.3 * t),
+                  blurRadius: 18 + 26 * t,
+                  spreadRadius: 1 + 6 * t,
+                ),
+              ],
             ),
-          ),
-        );
-      },
+            child: Transform.scale(
+              scale: reduceMotion ? 1.0 : (0.94 + 0.08 * t),
+              child: Icon(
+                widget.icon,
+                color: Colors.white,
+                size: widget.size * 0.46,
+              ),
+            ),
+          );
+        },
+      ),
     );
   }
 }
@@ -415,111 +429,7 @@ class _Badge3DState extends State<Badge3D>
   }
 }
 
-/// Crisp, icy-blue squircle brand emblem for Penguin Store.
-class PenguinBrandLogo extends StatelessWidget {
-  final double size;
-  final bool onLightBackground;
-
-  const PenguinBrandLogo({
-    super.key,
-    this.size = 34,
-    this.onLightBackground = false,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: size,
-      height: size,
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(size * 0.28),
-        gradient: LinearGradient(
-          colors: onLightBackground
-              ? const [Color(0xFF1E88E5), Color(0xFF00ACC1)]
-              : [
-                  Colors.white.withValues(alpha: 0.26),
-                  Colors.white.withValues(alpha: 0.12),
-                ],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        border: Border.all(
-          color: Colors.white.withValues(alpha: onLightBackground ? 0.2 : 0.45),
-          width: 1.2,
-        ),
-        boxShadow: onLightBackground
-            ? [
-                BoxShadow(
-                  color: const Color(0xFF1E88E5).withValues(alpha: 0.28),
-                  blurRadius: 10,
-                  offset: const Offset(0, 3),
-                ),
-              ]
-            : null,
-      ),
-      child: Center(
-        child: CustomPaint(
-          size: Size.square(size * 0.62),
-          painter: const _PenguinCrestPainter(),
-        ),
-      ),
-    );
-  }
-}
-
-class _PenguinCrestPainter extends CustomPainter {
-  const _PenguinCrestPainter();
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final w = size.width;
-    final h = size.height;
-
-    final darkBody = Paint()
-      ..color = const Color(0xFF0F172A)
-      ..style = PaintingStyle.fill;
-    final whiteBelly = Paint()
-      ..color = Colors.white
-      ..style = PaintingStyle.fill;
-    final beakPaint = Paint()
-      ..color = const Color(0xFFFFB300)
-      ..style = PaintingStyle.fill;
-
-    // Outer penguin silhouette
-    final body = Path()
-      ..moveTo(w * 0.5, h * 0.06)
-      ..cubicTo(w * 0.78, h * 0.06, w * 0.88, h * 0.42, w * 0.88, h * 0.72)
-      ..quadraticBezierTo(w * 0.88, h * 0.94, w * 0.5, h * 0.94)
-      ..quadraticBezierTo(w * 0.12, h * 0.94, w * 0.12, h * 0.72)
-      ..cubicTo(w * 0.12, h * 0.42, w * 0.22, h * 0.06, w * 0.5, h * 0.06)
-      ..close();
-    canvas.drawPath(body, darkBody);
-
-    // Snow-white belly & cheek arch
-    final belly = Path()
-      ..moveTo(w * 0.5, h * 0.34)
-      ..cubicTo(w * 0.72, h * 0.34, w * 0.76, h * 0.62, w * 0.72, h * 0.84)
-      ..quadraticBezierTo(w * 0.5, h * 0.92, w * 0.28, h * 0.84)
-      ..cubicTo(w * 0.24, h * 0.62, w * 0.28, h * 0.34, w * 0.5, h * 0.34)
-      ..close();
-    canvas.drawPath(belly, whiteBelly);
-
-    // Eyes
-    canvas.drawCircle(Offset(w * 0.39, h * 0.26), w * 0.055, whiteBelly);
-    canvas.drawCircle(Offset(w * 0.61, h * 0.26), w * 0.055, whiteBelly);
-
-    // Golden beak
-    final beak = Path()
-      ..moveTo(w * 0.42, h * 0.32)
-      ..lineTo(w * 0.58, h * 0.32)
-      ..lineTo(w * 0.50, h * 0.44)
-      ..close();
-    canvas.drawPath(beak, beakPaint);
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
-}
+/// PenguinBrandLogo is defined in `penguin_brand_logo.dart` and re-exported above.
 
 /// Modern, crisp circular account avatar with icy-blue gradient ring,
 /// user initial (or sharp person glyph for guests), online indicator dot,

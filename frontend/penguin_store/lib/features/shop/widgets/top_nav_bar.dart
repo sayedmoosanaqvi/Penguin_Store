@@ -47,28 +47,32 @@ class TopNavBar extends StatelessWidget implements PreferredSizeWidget {
           },
         ),
       ),
-      title: InkWell(
-        borderRadius: BorderRadius.circular(10),
-        onTap: () => context.go('/'),
-        child: const Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            PenguinBrandLogo(size: 32),
-            SizedBox(width: 8),
-            Flexible(
-              child: Text(
-                'PenguinStore',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 17.5,
-                  fontWeight: FontWeight.w800,
-                  letterSpacing: -0.4,
+      title: Semantics(
+        label: 'Penguin Store Home',
+        button: true,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(10),
+          onTap: () => context.go('/'),
+          child: const Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              PenguinBrandLogo(size: 32),
+              SizedBox(width: 8),
+              Flexible(
+                child: Text(
+                  'PenguinStore',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 17.5,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: -0.4,
+                  ),
                 ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
       actions: [

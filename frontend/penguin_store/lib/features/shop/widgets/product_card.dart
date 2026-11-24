@@ -1,5 +1,3 @@
-import 'dart:ui';
-
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
@@ -9,6 +7,8 @@ import 'package:penguin_store/features/shop/models/product_model.dart';
 import 'package:penguin_store/features/shop/providers/auth_provider.dart';
 import 'package:penguin_store/features/shop/providers/cart_provider.dart';
 import 'package:penguin_store/features/shop/providers/currency_provider.dart';
+import 'package:penguin_store/core/services/app_notifier.dart';
+import 'package:penguin_store/features/shop/providers/product_provider.dart';
 import 'package:penguin_store/features/shop/providers/shop_state_provider.dart';
 import 'package:penguin_store/features/shop/screens/product_details_screen.dart';
 import 'package:penguin_store/features/shop/services/product_service.dart';
@@ -106,33 +106,32 @@ class _ProductCardState extends State<ProductCard> {
     setState(() => _isDeleting = true);
 
     try {
-      final res = await ProductService().deleteProduct(
-        widget.product.id,
-      );
+      final res = await ProductService()
+          .deleteProduct(widget.product.id)
+          .timeout(const Duration(seconds: 15));
 
       if (!mounted) return;
 
       if (res.success) {
-        CustomToast.show(
-          context,
-          res.message.isNotEmpty ? res.message : 'Product deleted!',
+        await context.read<ProductProvider>().purgeDeletedProduct(widget.product.id);
+        if (mounted) {
+          await context.read<ShopStateProvider>().purgeDeletedProduct(widget.product.id);
+        }
+        AppNotifier.showSuccess(
+          res.message.isNotEmpty
+              ? res.message
+              : "Deleted '${widget.product.name}' permanently.",
         );
         widget.onProductDeleted();
       } else {
-        CustomToast.show(
-          context,
-          'Failed to delete: ${res.message}',
-          isError: true,
+        AppNotifier.showError(
+          "Delete failed for '${widget.product.name}': ${res.message}",
         );
       }
     } catch (e) {
-      if (mounted) {
-        CustomToast.show(
-          context,
-          'Failed to delete: $e',
-          isError: true,
-        );
-      }
+      AppNotifier.showError(
+        "Delete failed for '${widget.product.name}': $e",
+      );
     } finally {
       if (mounted) {
         setState(() => _isDeleting = false);
@@ -194,18 +193,23 @@ class _ProductCardState extends State<ProductCard> {
         final compact = constraints.maxWidth < 180;
         final veryCompact = constraints.maxWidth < 125;
 
-        return MouseRegion(
-          onEnter: (_) {
-            if (kIsWeb && mounted) {
-              setState(() => _isHovering = true);
-            }
-          },
-          onExit: (_) {
-            if (kIsWeb && mounted) {
-              setState(() => _isHovering = false);
-            }
-          },
-          child: Material(
+        return RepaintBoundary(
+          child: MouseRegion(
+            onEnter: (_) {
+              if (kIsWeb && mounted) {
+                setState(() => _isHovering = true);
+              }
+            },
+            onExit: (_) {
+              if (kIsWeb && mounted) {
+                setState(() => _isHovering = false);
+              }
+            },
+            child: Semantics(
+              container: true,
+              label:
+                  '${product.name}, ${currency.format(product.price)}, rated ${product.rating} stars',
+              child: Material(
             color: colors.surface,
             borderRadius: BorderRadius.circular(14),
             child: InkWell(
@@ -350,8 +354,9 @@ class _ProductCardState extends State<ProductCard> {
                                     _circleIconBtn(
                                       colors: colors,
                                       tooltip: wished
-                                          ? 'Remove from Wishlist'
-                                          : 'Add to Wishlist',
+                                          ? 'Remove ${product.name} from Wishlist'
+                                          : 'Save ${product.name} to Wishlist',
+                                      toggled: wished,
                                       icon: wished
                                           ? Icons.favorite_rounded
                                           : Icons.favorite_border_rounded,
@@ -372,8 +377,9 @@ class _ProductCardState extends State<ProductCard> {
                                     _circleIconBtn(
                                       colors: colors,
                                       tooltip: comparing
-                                          ? 'Comparing (tap to open tray)'
-                                          : 'Compare side-by-side',
+                                          ? 'Comparing ${product.name} (tap to toggle)'
+                                          : 'Compare ${product.name} side-by-side',
+                                      toggled: comparing,
                                       icon: Icons.compare_arrows_rounded,
                                       iconColor: comparing
                                           ? const Color(0xFF00ACC1)
@@ -596,7 +602,9 @@ class _ProductCardState extends State<ProductCard> {
               ),
             ),
           ),
-        );
+        ),
+      ),
+    );
       },
     );
   }
@@ -608,24 +616,31 @@ class _ProductCardState extends State<ProductCard> {
     required Color iconColor,
     VoidCallback? onTap,
     bool isLoading = false,
+    bool? toggled,
   }) {
-    return Tooltip(
-      message: tooltip,
-      child: Material(
-        color: colors.surface.withValues(alpha: 0.92),
-        shape: const CircleBorder(),
-        child: InkWell(
-          customBorder: const CircleBorder(),
-          onTap: onTap,
-          child: Padding(
-            padding: const EdgeInsets.all(6),
-            child: isLoading
-                ? const SizedBox(
-                    width: 14,
-                    height: 14,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : Icon(icon, color: iconColor, size: 15),
+    return Semantics(
+      label: tooltip,
+      button: true,
+      toggled: toggled,
+      enabled: onTap != null && !isLoading,
+      child: Tooltip(
+        message: tooltip,
+        child: Material(
+          color: colors.surface.withValues(alpha: 0.92),
+          shape: const CircleBorder(),
+          child: InkWell(
+            customBorder: const CircleBorder(),
+            onTap: onTap,
+            child: Padding(
+              padding: const EdgeInsets.all(7),
+              child: isLoading
+                  ? const SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : Icon(icon, color: iconColor, size: 15.5),
+            ),
           ),
         ),
       ),

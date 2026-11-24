@@ -123,7 +123,14 @@ final GoRouter appRouter = GoRouter(
           routes: [
             GoRoute(
               path: '/discover',
-              builder: (context, state) => const DiscoverScreen(),
+              builder: (context, state) {
+                final q = state.uri.queryParameters['q'];
+                final cat = state.uri.queryParameters['category'];
+                return DiscoverScreen(
+                  initialQuery: q,
+                  initialCategory: cat,
+                );
+              },
             ),
           ],
         ),
@@ -215,10 +222,12 @@ final GoRouter appRouter = GoRouter(
           state.uri.queryParameters['order_id'] ?? '',
         );
         final mode = state.uri.queryParameters['mode'];
+        final receiptToken = state.uri.queryParameters['receipt_token'];
         return CheckoutSuccessScreen(
           sessionId: sessionId,
           orderId: orderId,
           mode: mode,
+          receiptToken: receiptToken,
         );
       },
     ),
@@ -230,10 +239,12 @@ final GoRouter appRouter = GoRouter(
           state.uri.queryParameters['order_id'] ?? '',
         );
         final mode = state.uri.queryParameters['mode'];
+        final receiptToken = state.uri.queryParameters['receipt_token'];
         return CheckoutSuccessScreen(
           sessionId: sessionId,
           orderId: orderId,
           mode: mode,
+          receiptToken: receiptToken,
         );
       },
     ),

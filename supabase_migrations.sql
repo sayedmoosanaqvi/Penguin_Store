@@ -485,3 +485,178 @@ CREATE INDEX IF NOT EXISTS idx_ai_metrics_voice_concierge
     ON ai_metrics_logs (action_executed, decision_made, created_at DESC);
 
 
+
+-- ============================================================================
+-- 17. PRODUCT ACTIVE LIFECYCLE, SOFT-DELETE & SERVICE-ROLE RLS POLICIES
+-- ============================================================================
+
+ALTER TABLE products
+    ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;
+
+UPDATE products
+SET is_active = TRUE
+WHERE is_active IS NULL;
+
+-- Cleanly mark any previously soft-archived ghost rows as inactive
+UPDATE products
+SET is_active = FALSE
+WHERE name LIKE '[Archived] %' OR stock < 0;
+
+CREATE INDEX IF NOT EXISTS idx_products_is_active
+    ON products (is_active)
+    WHERE is_active = TRUE;
+
+-- Public read policy strictly hides soft-deleted / inactive products
+DROP POLICY IF EXISTS "Public read products" ON products;
+CREATE POLICY "Public read products" ON products
+    FOR SELECT USING (COALESCE(is_active, TRUE) = TRUE);
+
+-- Explicit service_role full-access policies on products & 3D assets
+DROP POLICY IF EXISTS "Service role full products" ON products;
+CREATE POLICY "Service role full products" ON products
+    FOR ALL USING (auth.role() = 'service_role')
+    WITH CHECK (auth.role() = 'service_role');
+
+DROP POLICY IF EXISTS "Service role full product_3d_assets" ON product_3d_assets;
+CREATE POLICY "Service role full product_3d_assets" ON product_3d_assets
+    FOR ALL USING (auth.role() = 'service_role')
+    WITH CHECK (auth.role() = 'service_role');
+
+-- ============================================================================
+-- 18. FINAL PRODUCTION HARDENING: CIA TRIAD RLS, ATOMIC STOCK RPC & INDEXES
+-- ============================================================================
+
+-- 18.1 Idempotent order fulfillment timestamp + unique Stripe session guard
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS fulfilled_at TIMESTAMPTZ;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_stripe_session_unique
+    ON orders (stripe_session_id)
+    WHERE stripe_session_id IS NOT NULL AND stripe_session_id <> '';
+
+-- 18.2 Atomic Stock Decrement RPC (prevents race-condition overselling)
+CREATE OR REPLACE FUNCTION decrement_product_stock_atomic(
+    p_product_id INTEGER,
+    p_qty INTEGER
+)
+RETURNS INTEGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_remaining INTEGER;
+BEGIN
+    IF p_qty IS NULL OR p_qty <= 0 THEN
+        RAISE EXCEPTION 'Quantity must be positive';
+    END IF;
+
+    UPDATE products
+    SET stock = stock - p_qty
+    WHERE id = p_product_id
+      AND COALESCE(is_active, TRUE) = TRUE
+      AND COALESCE(stock, 0) >= p_qty
+    RETURNING stock INTO v_remaining;
+
+    IF NOT FOUND THEN
+        RETURN -1;
+    END IF;
+
+    RETURN v_remaining;
+END;
+$$;
+
+-- 18.3 Least-Privilege Row-Level Security (RLS) across all user & commerce tables
+ALTER TABLE IF EXISTS users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE IF EXISTS products ENABLE ROW LEVEL SECURITY;
+ALTER TABLE IF EXISTS product_3d_assets ENABLE ROW LEVEL SECURITY;
+ALTER TABLE IF EXISTS cart_items ENABLE ROW LEVEL SECURITY;
+ALTER TABLE IF EXISTS wishlists ENABLE ROW LEVEL SECURITY;
+ALTER TABLE IF EXISTS orders ENABLE ROW LEVEL SECURITY;
+ALTER TABLE IF EXISTS order_items ENABLE ROW LEVEL SECURITY;
+ALTER TABLE IF EXISTS rfq_requests ENABLE ROW LEVEL SECURITY;
+ALTER TABLE IF EXISTS reviews ENABLE ROW LEVEL SECURITY;
+
+-- Service-role administrative policies (FastAPI backend service key)
+DROP POLICY IF EXISTS "Service role full users" ON users;
+CREATE POLICY "Service role full users" ON users
+    FOR ALL USING (auth.role() = 'service_role')
+    WITH CHECK (auth.role() = 'service_role');
+
+DROP POLICY IF EXISTS "Service role full cart_items" ON cart_items;
+CREATE POLICY "Service role full cart_items" ON cart_items
+    FOR ALL USING (auth.role() = 'service_role')
+    WITH CHECK (auth.role() = 'service_role');
+
+DROP POLICY IF EXISTS "Service role full wishlists" ON wishlists;
+CREATE POLICY "Service role full wishlists" ON wishlists
+    FOR ALL USING (auth.role() = 'service_role')
+    WITH CHECK (auth.role() = 'service_role');
+
+DROP POLICY IF EXISTS "Service role full orders" ON orders;
+CREATE POLICY "Service role full orders" ON orders
+    FOR ALL USING (auth.role() = 'service_role')
+    WITH CHECK (auth.role() = 'service_role');
+
+DROP POLICY IF EXISTS "Service role full order_items" ON order_items;
+CREATE POLICY "Service role full order_items" ON order_items
+    FOR ALL USING (auth.role() = 'service_role')
+    WITH CHECK (auth.role() = 'service_role');
+
+DROP POLICY IF EXISTS "Service role full rfq_requests" ON rfq_requests;
+CREATE POLICY "Service role full rfq_requests" ON rfq_requests
+    FOR ALL USING (auth.role() = 'service_role')
+    WITH CHECK (auth.role() = 'service_role');
+
+DROP POLICY IF EXISTS "Service role full reviews" ON reviews;
+CREATE POLICY "Service role full reviews" ON reviews
+    FOR ALL USING (auth.role() = 'service_role')
+    WITH CHECK (auth.role() = 'service_role');
+
+-- Public read-only access strictly scoped to active catalog & reviews
+DROP POLICY IF EXISTS "Public read active 3d assets" ON product_3d_assets;
+CREATE POLICY "Public read active 3d assets" ON product_3d_assets
+    FOR SELECT USING (COALESCE(is_active, TRUE) = TRUE);
+
+DROP POLICY IF EXISTS "Public read reviews" ON reviews;
+CREATE POLICY "Public read reviews" ON reviews
+    FOR SELECT USING (TRUE);
+
+-- Authenticated user least-privilege ownership policies (Anti-IDOR at DB layer)
+DROP POLICY IF EXISTS "Users read own profile" ON users;
+CREATE POLICY "Users read own profile" ON users
+    FOR SELECT USING (LOWER(email) = LOWER(COALESCE(auth.jwt() ->> 'email', '')));
+
+DROP POLICY IF EXISTS "Users read own orders" ON orders;
+CREATE POLICY "Users read own orders" ON orders
+    FOR SELECT USING (LOWER(customer_email) = LOWER(COALESCE(auth.jwt() ->> 'email', '')));
+
+DROP POLICY IF EXISTS "Users read own rfq_requests" ON rfq_requests;
+CREATE POLICY "Users read own rfq_requests" ON rfq_requests
+    FOR SELECT USING (LOWER(customer_email) = LOWER(COALESCE(auth.jwt() ->> 'email', '')));
+
+DROP POLICY IF EXISTS "Users manage own wishlists" ON wishlists;
+CREATE POLICY "Users manage own wishlists" ON wishlists
+    FOR ALL USING (LOWER(user_email) = LOWER(COALESCE(auth.jwt() ->> 'email', '')))
+    WITH CHECK (LOWER(user_email) = LOWER(COALESCE(auth.jwt() ->> 'email', '')));
+
+-- 18.4 Composite High-Throughput Indexes for Sub-Second Catalog, Order & RFQ Reads
+CREATE INDEX IF NOT EXISTS idx_products_active_id_desc
+    ON products (is_active, id DESC)
+    WHERE COALESCE(is_active, TRUE) = TRUE;
+
+CREATE INDEX IF NOT EXISTS idx_products_active_category
+    ON products (is_active, category)
+    WHERE COALESCE(is_active, TRUE) = TRUE;
+
+CREATE INDEX IF NOT EXISTS idx_products_active_price
+    ON products (is_active, price)
+    WHERE COALESCE(is_active, TRUE) = TRUE;
+
+CREATE INDEX IF NOT EXISTS idx_orders_customer_email_created
+    ON orders (LOWER(customer_email), id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_rfq_customer_email_id_desc
+    ON rfq_requests (LOWER(customer_email), id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_wishlists_user_email_product
+    ON wishlists (LOWER(user_email), product_id);
+

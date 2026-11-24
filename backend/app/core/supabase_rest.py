@@ -1,4 +1,4 @@
-"""Resilient Supabase HTTPS (Port 443) Data Access Layer.
+"""Resilient Supabase HTTPS (Port 443) Data Access Layer & Fast Hybrid Search.
 
 When local Wi-Fi or an ISP blocks outbound raw PostgreSQL TCP port 5432/6543,
 this module serves and mutates live Supabase PostgreSQL tables over HTTPS (port 443)
@@ -8,16 +8,15 @@ via PostgREST so the backend starts in <0.1s and responds in <250ms.
 from __future__ import annotations
 
 import logging
-import socket
+import re
 import time
 from threading import Lock
 from typing import Any, Optional
-from urllib.parse import urlparse
 
 from supabase import Client, create_client
 
 from app.core.config import settings
-from app.models import Product, Product3DAsset, User
+from app.models import Product3DAsset, User
 
 logger = logging.getLogger(__name__)
 
@@ -36,10 +35,74 @@ _ASSETS_3D_CACHE: list[dict[str, Any]] | None = None
 _ASSETS_3D_CACHE_TS: float = 0.0
 _CACHE_TTL_SECONDS: float = 120.0
 
+# Instant in-memory tombstone mask so deleted/soft-deleted IDs never leak
+# even during concurrent inflight reads.
+_DELETED_PRODUCT_IDS: set[int] = set()
+_HAS_IS_ACTIVE_COLUMN: Optional[bool] = None
+
 PUBLIC_PRODUCT_SELECT = (
     "id,name,description,price,original_price,image_url,category,"
     "rating,reviews,discount_percent,is_featured,stock,fulfillment_type"
 )
+
+# Synonym / stem & lifestyle expansion map for hybrid search fallback
+_SEARCH_SYNONYM_MAP: dict[str, list[str]] = {
+    "headphone": ["headphones", "headset", "earbuds", "audio", "pods", "speaker", "wireless"],
+    "headphones": ["headphone", "headset", "earbuds", "audio", "pods", "speaker", "wireless"],
+    "earbud": ["earbuds", "headphone", "headphones", "audio", "pods"],
+    "earbuds": ["earbud", "headphone", "headphones", "audio", "pods"],
+    "shoe": ["shoes", "sneaker", "sneakers", "footwear", "boots", "running", "mens-shoes"],
+    "shoes": ["shoe", "sneaker", "sneakers", "footwear", "boots", "running", "mens-shoes"],
+    "sneaker": ["sneakers", "shoe", "shoes", "footwear", "running"],
+    "sneakers": ["sneaker", "shoe", "shoes", "footwear", "running"],
+    "shirt": ["shirts", "top", "tops", "tee", "tshirt", "apparel", "mens-shirts"],
+    "shirts": ["shirt", "top", "tops", "tee", "tshirt", "apparel", "mens-shirts"],
+    "pant": ["pants", "trousers", "jeans", "denim", "bottoms"],
+    "pants": ["pant", "trousers", "jeans", "denim", "bottoms"],
+    "watch": ["watches", "smartwatch", "timepiece", "chronograph", "mens-watches"],
+    "watches": ["watch", "smartwatch", "timepiece", "chronograph", "mens-watches"],
+    "bag": ["bags", "backpack", "handbag", "tote", "luggage"],
+    "laptop": ["laptops", "notebook", "macbook", "computer", "pc"],
+    "phone": ["phones", "smartphone", "smartphones", "mobile", "iphone"],
+    "gaming": ["gamer", "headset", "headphone", "rgb", "controller", "console", "laptop"],
+    "audio": ["headphone", "headphones", "speaker", "earbuds", "sound", "music"],
+    "3d": ["glb", "interactive", "model", "showcase"],
+}
+
+
+def is_product_active_row(row: dict[str, Any]) -> bool:
+    """Single source of truth for whether a raw DB product row is active/public."""
+    try:
+        pid = int(row.get("id") or 0)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0 or pid in _DELETED_PRODUCT_IDS:
+        return False
+    if row.get("is_active") is False:
+        return False
+    name = str(row.get("name") or "").strip()
+    if name.startswith("[Archived]"):
+        return False
+    stock_raw = row.get("stock")
+    if stock_raw is not None:
+        try:
+            if int(stock_raw) < 0:
+                return False
+        except (TypeError, ValueError):
+            pass
+    return True
+
+
+def mark_product_deleted(product_id: int) -> None:
+    """Immediately tombstone a product ID in memory and clear all caches."""
+    with _CACHE_LOCK:
+        _DELETED_PRODUCT_IDS.add(int(product_id))
+    invalidate_supabase_rest_cache()
+
+
+def unmark_product_deleted(product_id: int) -> None:
+    with _CACHE_LOCK:
+        _DELETED_PRODUCT_IDS.discard(int(product_id))
 
 
 def invalidate_supabase_rest_cache() -> None:
@@ -53,6 +116,7 @@ def invalidate_supabase_rest_cache() -> None:
 
 
 def get_supabase_client() -> Client:
+    """Returns the Supabase Service Role / Admin client (bypasses anon RLS blocks)."""
     global _SUPABASE_CLIENT
     if _SUPABASE_CLIENT is not None:
         return _SUPABASE_CLIENT
@@ -65,43 +129,67 @@ def get_supabase_client() -> Client:
         return _SUPABASE_CLIENT
 
 
+def _query_raw_products_from_supabase(client: Client) -> list[dict[str, Any]]:
+    """Queries products from Supabase, gracefully handling pre-migration DBs without `is_active`."""
+    global _HAS_IS_ACTIVE_COLUMN
+    if _HAS_IS_ACTIVE_COLUMN is not False:
+        try:
+            res = (
+                client.table("products")
+                .select(f"{PUBLIC_PRODUCT_SELECT},is_active")
+                .neq("is_active", False)
+                .order("id")
+                .execute()
+            )
+            _HAS_IS_ACTIVE_COLUMN = True
+            return [r for r in (res.data or []) if isinstance(r, dict)]
+        except Exception as exc:
+            err_txt = str(exc).lower()
+            if "is_active" in err_txt or "42703" in err_txt or "column" in err_txt:
+                _HAS_IS_ACTIVE_COLUMN = False
+            else:
+                raise
+
+    res = (
+        client.table("products")
+        .select(PUBLIC_PRODUCT_SELECT)
+        .order("id")
+        .execute()
+    )
+    return [r for r in (res.data or []) if isinstance(r, dict)]
+
+
 def _get_all_products_cached() -> list[dict[str, Any]]:
-    """Coalesced & cached fetch of all public products over HTTPS (port 443)."""
+    """Coalesced & cached fetch of all ACTIVE public products over HTTPS (port 443)."""
     global _PRODUCTS_CACHE, _PRODUCTS_CACHE_TS
     now = time.monotonic()
     if _PRODUCTS_CACHE is not None and (now - _PRODUCTS_CACHE_TS) < _CACHE_TTL_SECONDS:
-        return _PRODUCTS_CACHE
+        return [p for p in _PRODUCTS_CACHE if is_product_active_row(p)]
 
     with _CACHE_LOCK:
         now = time.monotonic()
         if _PRODUCTS_CACHE is not None and (now - _PRODUCTS_CACHE_TS) < _CACHE_TTL_SECONDS:
-            return _PRODUCTS_CACHE
+            return [p for p in _PRODUCTS_CACHE if is_product_active_row(p)]
 
         last_err: Exception | None = None
         for attempt in range(3):
             try:
                 client = get_supabase_client()
-                res = (
-                    client.table("products")
-                    .select(PUBLIC_PRODUCT_SELECT)
-                    .order("id")
-                    .execute()
-                )
-                rows = res.data or []
+                rows = _query_raw_products_from_supabase(client)
                 _PRODUCTS_CACHE = [
                     _normalize_product_dict(r)
                     for r in rows
-                    if isinstance(r, dict)
+                    if is_product_active_row(r)
                 ]
                 _PRODUCTS_CACHE_TS = time.monotonic()
-                return _PRODUCTS_CACHE
+                return list(_PRODUCTS_CACHE)
             except Exception as exc:
                 last_err = exc
                 logger.warning("Supabase HTTPS products fetch retry %d/3: %s", attempt + 1, exc)
                 time.sleep(0.25 * (attempt + 1))
 
         if _PRODUCTS_CACHE is not None:
-            return _PRODUCTS_CACHE
+            return [p for p in _PRODUCTS_CACHE if is_product_active_row(p)]
         if last_err is not None:
             raise last_err
         return []
@@ -204,29 +292,261 @@ def _normalize_product_dict(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _norm_category(raw: str) -> str:
+    t = re.sub(r"[^a-z0-9]", "", (raw or "").lower())
+    t = re.sub(r"^mens", "men", t)
+    t = re.sub(r"^womens", "women", t)
+    if len(t) > 3 and t.endswith("s"):
+        t = t[:-1]
+    return t
+
+
+def _category_matches(db_cat: str, selected: str) -> bool:
+    if not selected or selected.strip().lower() in ("all", ""):
+        return True
+    a = _norm_category(db_cat)
+    b = _norm_category(selected)
+    if not a or not b:
+        return False
+    return a == b or (len(b) > 3 and b in a) or (len(a) > 3 and a in b)
+
+
+def _stem_token(tok: str) -> str:
+    if len(tok) > 4 and tok.endswith("es"):
+        return tok[:-2]
+    if len(tok) > 3 and tok.endswith("s"):
+        return tok[:-1]
+    return tok
+
+
+def _discount_of(p: dict[str, Any]) -> int:
+    dp = p.get("discount_percent")
+    if dp is not None and int(dp) > 0:
+        return int(dp)
+    orig = p.get("original_price")
+    price = float(p.get("price") or 0.0)
+    if orig is not None and float(orig) > price and float(orig) > 0:
+        return int(round((float(orig) - price) / float(orig) * 100))
+    return 0
+
+
+def _sort_product_dicts(
+    items: list[dict[str, Any]],
+    sort: Optional[str],
+    ids_3d: set[int],
+) -> list[dict[str, Any]]:
+    key = (sort or "featured").strip().lower()
+    if key in ("price_asc", "pricelow", "price_low"):
+        return sorted(items, key=lambda p: float(p.get("price") or 0.0))
+    if key in ("price_desc", "pricehigh", "price_high"):
+        return sorted(items, key=lambda p: float(p.get("price") or 0.0), reverse=True)
+    if key == "rating":
+        return sorted(items, key=lambda p: float(p.get("rating") or 0.0), reverse=True)
+    if key == "discount":
+        return sorted(items, key=_discount_of, reverse=True)
+    if key == "newest":
+        return sorted(items, key=lambda p: int(p.get("id") or 0), reverse=True)
+    return sorted(
+        items,
+        key=lambda p: (
+            1 if int(p.get("id") or 0) in ids_3d else 0,
+            1 if p.get("is_featured") else 0,
+            -int(p.get("id") or 0),
+        ),
+        reverse=True,
+    )
+
+
+def search_products_hybrid_https(
+    *,
+    search: Optional[str] = None,
+    category: Optional[str] = None,
+    min_price: Optional[float] = None,
+    max_price: Optional[float] = None,
+    only_3d: bool = False,
+    sort: Optional[str] = None,
+    limit: Optional[int] = None,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    """Fast case-insensitive hybrid search across name, description, category & semantic synonyms,
+    with pgvector / visual-neighborhood fallback when exact keywords return few matches.
+    Strictly excludes inactive/deleted products.
+    """
+    items = [p for p in _get_all_products_cached() if is_product_active_row(p)]
+    ids_3d = set(fetch_3d_catalog_ids_https())
+
+    eff_only_3d = bool(only_3d)
+    eff_category = (category or "").strip()
+    if eff_category.lower() == "3d":
+        eff_only_3d = True
+        eff_category = "All"
+
+    # 1. Apply hard structured filters (category, 3D, min/max price)
+    filtered: list[dict[str, Any]] = []
+    for p in items:
+        pid = int(p.get("id") or 0)
+        price = float(p.get("price") or 0.0)
+        if eff_category and not _category_matches(str(p.get("category") or ""), eff_category):
+            continue
+        if eff_only_3d and pid not in ids_3d:
+            continue
+        if min_price is not None and price < float(min_price):
+            continue
+        if max_price is not None and price > float(max_price):
+            continue
+        filtered.append(dict(p))
+
+    raw_q = (search or "").strip()
+    if not raw_q:
+        ranked = _sort_product_dicts(filtered, sort, ids_3d)
+        if offset > 0:
+            ranked = ranked[offset:]
+        if limit is not None and limit > 0:
+            ranked = ranked[:limit]
+        return ranked
+
+    q_lower = raw_q.lower()
+    raw_tokens = [t for t in re.split(r"[^a-z0-9]+", q_lower) if len(t) >= 2]
+    if not raw_tokens:
+        raw_tokens = [q_lower]
+
+    if "3d" in raw_tokens and len(raw_tokens) == 1:
+        only_3d_matches = [p for p in filtered if int(p.get("id") or 0) in ids_3d]
+        ranked = _sort_product_dicts(only_3d_matches, sort, ids_3d)
+        return ranked[offset : (offset + limit) if (limit and limit > 0) else None]
+
+    # 2. Tier 1: Direct / stem / multi-token keyword scoring across name, category, description
+    direct_scored: list[tuple[float, dict[str, Any]]] = []
+    semantic_scored: list[tuple[float, dict[str, Any]]] = []
+
+    expanded_terms: set[str] = set()
+    for tok in raw_tokens:
+        expanded_terms.update(_SEARCH_SYNONYM_MAP.get(tok, []))
+        expanded_terms.update(_SEARCH_SYNONYM_MAP.get(_stem_token(tok), []))
+    try:
+        from app.agent.tools import OCCASION_EXPANSION_MAP
+        for trigger, concepts in OCCASION_EXPANSION_MAP.items():
+            if trigger in raw_tokens or trigger == q_lower:
+                expanded_terms.update(concepts)
+    except Exception:
+        pass
+
+    for p in filtered:
+        pid = int(p.get("id") or 0)
+        name_l = str(p.get("name") or "").lower()
+        cat_l = str(p.get("category") or "").lower()
+        desc_l = str(p.get("description") or "").lower()
+        hay = f"{name_l} {cat_l} {desc_l}"
+
+        score = 0.0
+        matched_tokens = 0
+        for tok in raw_tokens:
+            stem = _stem_token(tok)
+            if tok in name_l or (len(stem) >= 3 and stem in name_l):
+                score += 40.0 if name_l.startswith(tok) else 28.0
+                matched_tokens += 1
+            elif tok in cat_l or (len(stem) >= 3 and stem in cat_l):
+                score += 20.0
+                matched_tokens += 1
+            elif tok in desc_l or (len(stem) >= 3 and stem in desc_l):
+                score += 12.0
+                matched_tokens += 1
+
+        if q_lower in name_l:
+            score += 35.0
+
+        if matched_tokens == len(raw_tokens) and score > 0:
+            if pid in ids_3d:
+                score += 3.0
+            direct_scored.append((score, p))
+        else:
+            # Partial multi-word or semantic synonym fallback
+            sem_score = score * 0.6 if matched_tokens > 0 else 0.0
+            for syn in expanded_terms:
+                if syn in name_l:
+                    sem_score += 14.0
+                elif syn in cat_l:
+                    sem_score += 10.0
+                elif syn in desc_l:
+                    sem_score += 5.0
+            if sem_score > 0:
+                semantic_scored.append((sem_score, p))
+
+    direct_scored.sort(key=lambda pair: pair[0], reverse=True)
+    results_map: dict[int, dict[str, Any]] = {}
+    for _, prod in direct_scored:
+        results_map[int(prod["id"])] = prod
+
+    # 3. Tier 2: Semantic + pgvector visual-embedding neighborhood fallback when < 3 exact matches
+    if len(results_map) < 3:
+        semantic_scored.sort(key=lambda pair: pair[0], reverse=True)
+        for _, prod in semantic_scored:
+            pid = int(prod["id"])
+            if pid not in results_map:
+                results_map[pid] = prod
+            if len(results_map) >= 12:
+                break
+
+        # If we have at least 1 strong anchor match, expand via pgvector cosine similarity
+        if 1 <= len(results_map) < 4:
+            try:
+                from app.routers.visual_search import _catalog_cache
+
+                anchor_id = next(iter(results_map.keys()))
+                cat_prods, cat_matrix = _catalog_cache.get_catalog()
+                if cat_prods and cat_matrix is not None:
+                    anchor_idx = next(
+                        (i for i, cp in enumerate(cat_prods) if int(cp["id"]) == anchor_id),
+                        None,
+                    )
+                    if anchor_idx is not None:
+                        sims = cat_matrix @ cat_matrix[anchor_idx]
+                        allowed_ids = {int(fp["id"]): fp for fp in filtered}
+                        ranked_idxs = sims.argsort()[::-1]
+                        for idx in ranked_idxs[:6]:
+                            cand_id = int(cat_prods[int(idx)]["id"])
+                            if cand_id not in results_map and cand_id in allowed_ids and float(sims[int(idx)]) >= 0.62:
+                                results_map[cand_id] = allowed_ids[cand_id]
+                                if len(results_map) >= 6:
+                                    break
+            except Exception:
+                pass
+
+    final_list = list(results_map.values())
+    if sort and sort.strip().lower() not in ("", "relevance", "featured"):
+        final_list = _sort_product_dicts(final_list, sort, ids_3d)
+
+    if offset > 0:
+        final_list = final_list[offset:]
+    if limit is not None and limit > 0:
+        final_list = final_list[:limit]
+    return final_list
+
+
 def fetch_products_https(
     *,
     limit: Optional[int] = None,
     offset: int = 0,
     category: Optional[str] = None,
     search: Optional[str] = None,
+    min_price: Optional[float] = None,
+    max_price: Optional[float] = None,
+    only_3d: bool = False,
+    sort: Optional[str] = None,
 ) -> list[dict[str, Any]]:
-    items = list(_get_all_products_cached())
+    if any([search, category, min_price is not None, max_price is not None, only_3d, sort]):
+        return search_products_hybrid_https(
+            search=search,
+            category=category,
+            min_price=min_price,
+            max_price=max_price,
+            only_3d=only_3d,
+            sort=sort,
+            limit=limit,
+            offset=offset,
+        )
 
-    if category and category.strip() and category.strip().lower() != "all":
-        cat_lower = category.strip().lower()
-        items = [p for p in items if cat_lower in str(p.get("category") or "").lower()]
-
-    if search and search.strip():
-        s_lower = search.strip().lower()
-        items = [
-            p
-            for p in items
-            if s_lower in str(p.get("name") or "").lower()
-            or s_lower in str(p.get("category") or "").lower()
-            or s_lower in str(p.get("description") or "").lower()
-        ]
-
+    items = [p for p in _get_all_products_cached() if is_product_active_row(p)]
     if offset > 0:
         items = items[offset:]
     if limit is not None and limit > 0:
@@ -235,13 +555,16 @@ def fetch_products_https(
 
 
 def fetch_product_by_id_https(product_id: int) -> Optional[dict[str, Any]]:
+    if int(product_id) in _DELETED_PRODUCT_IDS:
+        return None
     for p in _get_all_products_cached():
-        if int(p["id"]) == int(product_id):
+        if int(p["id"]) == int(product_id) and is_product_active_row(p):
             return dict(p)
     return None
 
 
 def fetch_3d_catalog_ids_https(bucket: str = "penguin-store-3d") -> list[int]:
+    active_product_ids = {int(p["id"]) for p in _get_all_products_cached() if is_product_active_row(p)}
     rows = _get_all_3d_assets_cached()
     ids = sorted(
         {
@@ -251,6 +574,7 @@ def fetch_3d_catalog_ids_https(bucket: str = "penguin-store-3d") -> list[int]:
             and r.get("storage_bucket") == bucket
             and r.get("model_format") == "glb"
             and r.get("product_id") is not None
+            and int(r["product_id"]) in active_product_ids
         }
     )
     return ids
@@ -262,6 +586,8 @@ def fetch_product_3d_assets_https(
     active_only: bool = True,
     bucket: str = "penguin-store-3d",
 ) -> list[dict[str, Any]]:
+    if product_id is not None and int(product_id) in _DELETED_PRODUCT_IDS:
+        return []
     rows = _get_all_3d_assets_cached()
     results: list[dict[str, Any]] = []
     for r in rows:
@@ -283,13 +609,16 @@ def fetch_3d_showcase_https(bucket: str = "penguin-store-3d") -> dict[str, Any]:
     by_product: dict[int, list[dict[str, Any]]] = {}
     for a in assets:
         pid = int(a["product_id"])
-        by_product.setdefault(pid, []).append(a)
+        if pid not in _DELETED_PRODUCT_IDS:
+            by_product.setdefault(pid, []).append(a)
 
     if not by_product:
         return {"count": 0, "items": []}
 
     products = [
-        p for p in _get_all_products_cached() if int(p["id"]) in by_product
+        p
+        for p in _get_all_products_cached()
+        if int(p["id"]) in by_product and is_product_active_row(p)
     ]
     items: list[dict[str, Any]] = []
     for p in sorted(products, key=lambda x: int(x["id"]), reverse=True):
@@ -315,6 +644,8 @@ def fetch_3d_asset_by_id_https(
     *,
     bucket: str = "penguin-store-3d",
 ) -> Optional[Product3DAsset]:
+    if int(product_id) in _DELETED_PRODUCT_IDS:
+        return None
     for r in _get_all_3d_assets_cached():
         if (
             int(r.get("id", -1)) == int(model_id)
@@ -366,7 +697,7 @@ def fetch_user_by_email_https(email: str) -> Optional[User]:
 
 
 def fetch_trending_products_https(limit: int = 10) -> list[dict[str, Any]]:
-    products = list(_get_all_products_cached())
+    products = [p for p in _get_all_products_cached() if is_product_active_row(p)]
     products.sort(
         key=lambda r: (bool(r.get("is_featured", False)), float(r.get("rating") or 0.0)),
         reverse=True,

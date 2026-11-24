@@ -364,4 +364,17 @@ class CartProvider with ChangeNotifier {
     notifyListeners();
     _saveAndSync();
   }
+
+  /// Wipes local in-memory and SharedPreferences cart state on logout or 401 expiry
+  /// without overwriting the user's server-side saved cart.
+  Future<void> clearLocalSession() async {
+    _items.clear();
+    _appliedPromoCode = null;
+    _promoDescription = null;
+    notifyListeners();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(_storageKey);
+    } catch (_) {}
+  }
 }

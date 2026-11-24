@@ -136,5 +136,39 @@ class TestPenguinStoreSuite(unittest.TestCase):
         for name in expected_models:
             self.assertTrue(hasattr(models, name), f"Model {name} missing from models.py")
 
+    def test_08_hybrid_search_and_gibberish_empty_state(self):
+        """Verify GET /api/v1/products/search returns relevant matches and 0 items on gibberish."""
+        from fastapi.testclient import TestClient
+        from app.main import app
+
+        client = TestClient(app)
+        res_search = client.get("/api/v1/products/search", params={"q": "shirt"})
+        self.assertEqual(res_search.status_code, 200)
+        self.assertIsInstance(res_search.json(), list)
+
+        res_gibberish = client.get("/api/v1/products/search", params={"q": "zzzzqxnonexistent998877"})
+        self.assertEqual(res_gibberish.status_code, 200)
+        self.assertEqual(res_gibberish.json(), [])
+
+    def test_09_active_product_filtering_and_tombstone_protection(self):
+        """Verify soft-deleted / tombstoned products are excluded and Product #144 is protected."""
+        from app.core.supabase_rest import (
+            is_product_active_row,
+            mark_product_deleted,
+            unmark_product_deleted,
+        )
+
+        self.assertTrue(is_product_active_row({"id": 144, "name": "Reference 3D", "stock": 10, "is_active": True}))
+        self.assertFalse(is_product_active_row({"id": 999991, "name": "Hidden", "stock": 10, "is_active": False}))
+        self.assertFalse(is_product_active_row({"id": 999992, "name": "[Archived] Old Item", "stock": 0}))
+        self.assertFalse(is_product_active_row({"id": 999993, "name": "Tombstoned", "stock": -1}))
+
+        mark_product_deleted(999994)
+        try:
+            self.assertFalse(is_product_active_row({"id": 999994, "name": "Active Row", "stock": 10}))
+        finally:
+            unmark_product_deleted(999994)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

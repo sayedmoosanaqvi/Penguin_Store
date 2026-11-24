@@ -1,7 +1,6 @@
 
 import 'dart:async';
 
-import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
@@ -23,6 +22,8 @@ import 'package:penguin_store/features/shop/widgets/trending_carousel.dart';
 import 'package:penguin_store/features/shop/widgets/personalized_carousel.dart';
 import 'package:penguin_store/features/shop/widgets/premium_interactive_card.dart';
 import 'package:penguin_store/features/shop/widgets/product_filters.dart';
+import 'package:penguin_store/features/shop/widgets/penguin_search_bar.dart';
+import 'package:penguin_store/features/shop/widgets/studio_product_image.dart';
 import 'package:penguin_store/features/shop/services/showcase_3d_service.dart';
 import 'package:penguin_store/core/widgets/animated_widgets.dart';
 import 'package:penguin_store/features/shop/screens/visual_search_results_screen.dart';
@@ -42,6 +43,8 @@ class _HomeScreenState extends State<HomeScreen>
 
   String _selectedCategory = 'All';
   String _searchQuery = '';
+  List<Product>? _backendSearchResults;
+  Timer? _homeSearchDebounce;
   bool _visualSearchLoading = false;
   bool _showColdStartBanner = false;
   Timer? _warmupTimer;
@@ -117,10 +120,41 @@ class _HomeScreenState extends State<HomeScreen>
   @override
   void dispose() {
     _warmupTimer?.cancel();
+    _homeSearchDebounce?.cancel();
     _searchFocusNode.removeListener(_onSearchFocusChanged);
     _searchFocusNode.dispose();
     _searchController.dispose();
     super.dispose();
+  }
+
+  void _handleHomeQueryChanged(String trimmed) {
+    setState(() {
+      _searchQuery = trimmed;
+      if (trimmed.isEmpty) {
+        _backendSearchResults = null;
+      }
+    });
+
+    _homeSearchDebounce?.cancel();
+    if (trimmed.isEmpty) return;
+
+    _homeSearchDebounce = Timer(const Duration(milliseconds: 300), () async {
+      if (!mounted) return;
+      try {
+        final res = await context.read<ProductProvider>().searchCatalog(trimmed);
+        if (!mounted || _searchQuery.trim() != trimmed) return;
+        setState(() => _backendSearchResults = res);
+      } catch (_) {}
+    });
+  }
+
+  void _clearHomeSearch() {
+    _homeSearchDebounce?.cancel();
+    _searchController.clear();
+    setState(() {
+      _searchQuery = '';
+      _backendSearchResults = null;
+    });
   }
 
   Future<void> _refreshProducts() async {
@@ -270,7 +304,7 @@ class _HomeScreenState extends State<HomeScreen>
 
     final clean = transcript.trim();
     _searchController.text = clean;
-    setState(() => _searchQuery = clean);
+    _handleHomeQueryChanged(clean);
   }
 
   void _showVisualSearchOptions() {
@@ -360,37 +394,40 @@ class _HomeScreenState extends State<HomeScreen>
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   _buildSearchBar(theme),
-                  _buildQuickCategories(theme),
-                  _buildWelcomeBanner(theme),
-                  _buildAiBanner(theme),
-                  const SizedBox(height: 10),
-                  _build3DBanner(theme),
-                  const SizedBox(height: 14),
-                  const TrendingCarousel(country: 'Pakistan'),
+                  if (_searchQuery.trim().isEmpty) ...[
+                    _buildQuickCategories(theme),
+                    _buildWelcomeBanner(theme),
+                    _buildAiBanner(theme),
+                    const SizedBox(height: 10),
+                    _build3DBanner(theme),
+                    const SizedBox(height: 14),
+                    const TrendingCarousel(country: 'Pakistan'),
 
-                  // Recommendations follow the authenticated account.
-                  Consumer<AuthProvider>(
-                    builder: (context, auth, child) {
-                      final currentEmail = auth.userEmail?.trim();
+                    // Recommendations follow the authenticated account.
+                    Consumer<AuthProvider>(
+                      builder: (context, auth, child) {
+                        final currentEmail = auth.userEmail?.trim();
 
-                      if (!auth.isAuthenticated ||
-                          currentEmail == null ||
-                          currentEmail.isEmpty) {
-                        return const SizedBox.shrink();
-                      }
+                        if (!auth.isAuthenticated ||
+                            currentEmail == null ||
+                            currentEmail.isEmpty) {
+                          return const SizedBox.shrink();
+                        }
 
-                      return PersonalizedCarousel(
-                        key: ValueKey(
-                          'recommendations-$currentEmail',
-                        ),
-                        userEmail: currentEmail,
-                      );
-                    },
-                  ),
+                        return PersonalizedCarousel(
+                          key: ValueKey(
+                            'recommendations-$currentEmail',
+                          ),
+                          userEmail: currentEmail,
+                        );
+                      },
+                    ),
 
-                  const SizedBox(height: 12),
-                  _buildRecentlyViewedStrip(theme),
-                  _buildSectionHeader(theme),
+                    const SizedBox(height: 12),
+                    _buildRecentlyViewedStrip(theme),
+                    _buildSectionHeader(theme),
+                  ] else
+                    _buildActiveSearchHeader(theme),
                   _buildCategoryFilter(theme),
                   if (_showColdStartBanner) _buildWarmupBanner(theme),
                   const SizedBox(height: 12),
@@ -466,17 +503,11 @@ class _HomeScreenState extends State<HomeScreen>
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Expanded(
-                          child: ClipRRect(
+                          child: StudioProductImage(
+                            productId: item.id,
+                            imageUrl: item.imageUrl,
                             borderRadius: BorderRadius.circular(8),
-                            child: CachedNetworkImage(
-                              imageUrl: item.imageUrl,
-                              width: double.infinity,
-                              fit: BoxFit.contain,
-                              errorWidget: (context, url, error) => const Icon(
-                                Icons.image_not_supported_outlined,
-                                size: 22,
-                              ),
-                            ),
+                            padding: 4.0,
                           ),
                         ),
                         const SizedBox(height: 5),
@@ -510,199 +541,95 @@ class _HomeScreenState extends State<HomeScreen>
     );
   }
 
-  Widget _buildSearchBar(ThemeData theme) {
-    final isDark = theme.brightness == Brightness.dark;
-    final shopState = context.watch<ShopStateProvider>();
-    final recentTerms = shopState.recentSearches;
-    final matchingProducts = _searchQuery.isEmpty
-        ? const <Product>[]
-        : _lastProducts
-            .where((p) =>
-                p.name.toLowerCase().contains(_searchQuery) ||
-                p.category.toLowerCase().contains(_searchQuery))
-            .take(5)
-            .toList();
-    final showSuggestions = _searchFocusNode.hasFocus &&
-        (recentTerms.isNotEmpty || matchingProducts.isNotEmpty);
+  Widget _buildActiveSearchHeader(ThemeData theme) {
+    final provider = context.watch<ProductProvider>();
+    final matched = _computeFilteredProducts(
+      provider.products,
+      Catalog3D.ids.value,
+    );
+    final q = _searchQuery.trim();
 
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(14, 6, 14, 10),
+      child: Wrap(
+        spacing: 10,
+        runSpacing: 8,
+        alignment: WrapAlignment.spaceBetween,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.manage_search_rounded, color: theme.primaryColor, size: 20),
+              const SizedBox(width: 8),
+              Flexible(
+                child: Text(
+                  "Showing ${matched.length} result${matched.length == 1 ? '' : 's'} for '$q'",
+                  style: TextStyle(
+                    fontSize: 15.5,
+                    fontWeight: FontWeight.w800,
+                    color: theme.colorScheme.onSurface,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextButton.icon(
+                style: TextButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                ),
+                onPressed: () => context.go('/discover?q=${Uri.encodeComponent(q)}'),
+                icon: const Icon(Icons.tune_rounded, size: 16),
+                label: const Text('Discover View'),
+              ),
+              const SizedBox(width: 4),
+              ActionChip(
+                avatar: const Icon(Icons.close_rounded, size: 15),
+                label: const Text(
+                  'Clear',
+                  style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w800),
+                ),
+                visualDensity: VisualDensity.compact,
+                onPressed: _clearHomeSearch,
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSearchBar(ThemeData theme) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Container(
-            height: 46,
-            decoration: BoxDecoration(
-              color: theme.colorScheme.surface,
-              borderRadius: BorderRadius.circular(11),
-              border: Border.all(
-                color: theme.primaryColor.withValues(alpha: 0.18),
-              ),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withValues(
-                    alpha: isDark ? 0.08 : 0.025,
-                  ),
-                  blurRadius: 6,
-                  offset: const Offset(0, 2),
-                ),
-              ],
-            ),
-            child: TextField(
-              controller: _searchController,
-              focusNode: _searchFocusNode,
-              textInputAction: TextInputAction.search,
-              onChanged: (value) {
-                setState(() {
-                  _searchQuery = value.trim().toLowerCase();
-                });
-              },
-              onSubmitted: (value) {
-                if (value.trim().length >= 2) {
-                  shopState.addSearchTerm(value);
+          PenguinSearchBar(
+            controller: _searchController,
+            focusNode: _searchFocusNode,
+            query: _searchQuery,
+            onQueryChanged: _handleHomeQueryChanged,
+            onSearchSubmitted: (q) {
+              _handleHomeQueryChanged(q);
+              if (q.isNotEmpty && _selectedCategory != 'All') {
+                // Ensure search isn't accidentally hidden by a stale saved category
+                final localInCat = _currentFilters.apply(
+                  context.read<ProductProvider>().products,
+                  Catalog3D.ids.value,
+                );
+                if (localInCat.isEmpty) {
+                  _selectCategory('All');
                 }
-                _searchFocusNode.unfocus();
-              },
-              decoration: InputDecoration(
-                hintText:
-                    "Search or ask Voice AI: 'Pick best headphones under \$350'...",
-                hintStyle: TextStyle(
-                  fontSize: 12,
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
-                prefixIcon: Icon(
-                  Icons.search_rounded,
-                  color: theme.primaryColor,
-                  size: 21,
-                ),
-                suffixIcon: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    if (_searchQuery.isNotEmpty)
-                      IconButton(
-                        tooltip: 'Clear Search',
-                        icon: const Icon(
-                          Icons.close,
-                          size: 18,
-                        ),
-                        onPressed: () {
-                          _searchController.clear();
-                          setState(() {
-                            _searchQuery = '';
-                          });
-                        },
-                      ),
-                    Consumer<VoiceProvider>(
-                      builder: (context, voice, _) {
-                        return IconButton(
-                          tooltip: voice.isRecording
-                              ? 'Tap to stop recording'
-                              : 'Voice Filter (Whisper STT)',
-                          icon: voice.isTranscribing
-                              ? SizedBox(
-                                  width: 18,
-                                  height: 18,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                    color: theme.primaryColor,
-                                  ),
-                                )
-                              : Icon(
-                                  voice.isRecording
-                                      ? Icons.stop_circle_rounded
-                                      : Icons.mic_none_rounded,
-                                  color: voice.isRecording
-                                      ? theme.colorScheme.error
-                                      : theme.primaryColor,
-                                  size: 21,
-                                ),
-                          onPressed: _handleVoiceSearch,
-                        );
-                      },
-                    ),
-                    // Prominent Glowing "Voice AI" Autonomous Concierge Pill
-                    Padding(
-                      padding: const EdgeInsets.only(right: 4),
-                      child: InkWell(
-                        borderRadius: BorderRadius.circular(999),
-                        onTap: () => GlobalVoiceOverlay.openConcierge(
-                          initialQuery: _searchQuery.trim().isNotEmpty
-                              ? _searchQuery.trim()
-                              : null,
-                        ),
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 10,
-                            vertical: 5,
-                          ),
-                          decoration: BoxDecoration(
-                            gradient: const LinearGradient(
-                              colors: [
-                                Color(0xFF0D47A1),
-                                Color(0xFF1E88E5),
-                                Color(0xFF00ACC1),
-                              ],
-                            ),
-                            borderRadius: BorderRadius.circular(999),
-                            boxShadow: [
-                              BoxShadow(
-                                color: const Color(0xFF00E5FF)
-                                    .withValues(alpha: 0.28),
-                                blurRadius: 8,
-                                offset: const Offset(0, 2),
-                              ),
-                            ],
-                          ),
-                          child: const Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(
-                                Icons.graphic_eq_rounded,
-                                color: Colors.white,
-                                size: 14,
-                              ),
-                              SizedBox(width: 4),
-                              Text(
-                                'Voice AI',
-                                style: TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 11,
-                                  fontWeight: FontWeight.w800,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                    Container(
-                      height: 25,
-                      width: 1,
-                      color: theme.dividerColor.withValues(alpha: 0.3),
-                    ),
-                    IconButton(
-                      tooltip: 'AI Visual & Multimodal Search',
-                      icon: Icon(
-                        Icons.camera_alt_outlined,
-                        color: theme.primaryColor,
-                        size: 21,
-                      ),
-                      onPressed: _visualSearchLoading
-                          ? null
-                          : _showVisualSearchOptions,
-                    ),
-                  ],
-                ),
-                contentPadding: const EdgeInsets.symmetric(
-                  horizontal: 8,
-                  vertical: 11,
-                ),
-                border: InputBorder.none,
-                enabledBorder: InputBorder.none,
-                focusedBorder: InputBorder.none,
-                filled: false,
-              ),
-            ),
+              }
+            },
+            onClear: _clearHomeSearch,
+            onVoiceTap: _handleVoiceSearch,
+            onVisualSearchTap: _showVisualSearchOptions,
+            visualSearchLoading: _visualSearchLoading,
           ),
           // Animated / Interactive Voice AI Hint Prompt Bar
           Padding(
@@ -732,94 +659,6 @@ class _HomeScreenState extends State<HomeScreen>
               ),
             ),
           ),
-          if (showSuggestions)
-            Container(
-              margin: const EdgeInsets.only(top: 6),
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: theme.colorScheme.surface,
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(
-                  color: theme.dividerColor.withValues(alpha: 0.25),
-                ),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.06),
-                    blurRadius: 10,
-                    offset: const Offset(0, 4),
-                  ),
-                ],
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  if (recentTerms.isNotEmpty) ...[
-                    Text(
-                      'Recent Searches',
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w700,
-                        color: theme.colorScheme.onSurfaceVariant,
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    Wrap(
-                      spacing: 6,
-                      runSpacing: 4,
-                      children: recentTerms.map((term) {
-                        return InputChip(
-                          label: Text(term, style: const TextStyle(fontSize: 11)),
-                          visualDensity: VisualDensity.compact,
-                          onPressed: () {
-                            _searchController.text = term;
-                            setState(() => _searchQuery = term.toLowerCase());
-                            _searchFocusNode.unfocus();
-                          },
-                          onDeleted: () => shopState.removeSearchTerm(term),
-                        );
-                      }).toList(),
-                    ),
-                  ],
-                  if (matchingProducts.isNotEmpty) ...[
-                    if (recentTerms.isNotEmpty) const Divider(height: 14),
-                    Text(
-                      'Suggestions',
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w700,
-                        color: theme.colorScheme.onSurfaceVariant,
-                      ),
-                    ),
-                    ...matchingProducts.map((p) {
-                      return ListTile(
-                        dense: true,
-                        contentPadding: EdgeInsets.zero,
-                        leading: const Icon(Icons.search_rounded, size: 17),
-                        title: Text(
-                          p.name,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(fontSize: 12.5),
-                        ),
-                        trailing: Text(
-                          '\$${p.price.toStringAsFixed(2)}',
-                          style: TextStyle(
-                            fontSize: 11.5,
-                            fontWeight: FontWeight.w700,
-                            color: theme.primaryColor,
-                          ),
-                        ),
-                        onTap: () {
-                          shopState.addSearchTerm(p.name);
-                          _searchFocusNode.unfocus();
-                          context.push('/product/${p.id}');
-                        },
-                      );
-                    }),
-                  ],
-                ],
-              ),
-            ),
         ],
       ),
     );
@@ -1318,66 +1157,96 @@ class _HomeScreenState extends State<HomeScreen>
 
     _lastProducts = allProducts;
 
-    final filteredProducts = _currentFilters.apply(
+    final filteredProducts = _computeFilteredProducts(
       allProducts,
       Catalog3D.ids.value,
     );
 
     if (filteredProducts.isEmpty) {
+      final q = _searchQuery.trim();
       return SliverToBoxAdapter(
         child: Padding(
-          padding: const EdgeInsets.all(35),
-          child: Column(
-            children: [
-              const Icon(
-                Icons.search_off_rounded,
-                size: 36,
-                color: Colors.grey,
-              ),
-              const SizedBox(height: 10),
-              Text(
-                _searchQuery.isNotEmpty
-                    ? 'No products match your search.'
-                    : 'No $_selectedCategory products available.',
-                textAlign: TextAlign.center,
-                style: const TextStyle(fontSize: 12),
-              ),
-              const SizedBox(height: 12),
-              Wrap(
-                spacing: 10,
-                runSpacing: 10,
-                alignment: WrapAlignment.center,
+          padding: const EdgeInsets.all(32),
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 480),
+              child: Column(
                 children: [
-                  FilledButton.icon(
-                    onPressed: () {
-                      final q = _searchQuery.trim();
-                      context.push(
-                        q.isNotEmpty
-                            ? '/ctrlx?q=${Uri.encodeComponent(q)}'
-                            : '/ctrlx',
-                      );
-                    },
-                    icon: const Icon(Icons.auto_awesome_rounded, size: 17),
-                    label: Text(
-                      _searchQuery.trim().isNotEmpty
-                          ? 'Ask CTRL-X AI: "${_searchQuery.trim()}"'
-                          : 'Ask CTRL-X AI Assistant',
+                  const PulsingOrb(
+                    icon: Icons.search_off_rounded,
+                    size: 62,
+                  ),
+                  const SizedBox(height: 14),
+                  Text(
+                    q.isNotEmpty
+                        ? 'No catalog items matched "$q"'
+                        : 'No $_selectedCategory products available.',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w800,
                     ),
                   ),
-                  OutlinedButton(
-                    onPressed: () {
-                      _searchController.clear();
-                      _selectCategory('All');
-                      setState(() {
-                        _searchQuery = '';
-                        _adv = const ProductFilters();
-                      });
-                    },
-                    child: const Text('Clear Filters'),
+                  const SizedBox(height: 6),
+                  Text(
+                    q.isNotEmpty
+                        ? 'Let CTRL-X AI search alternatives, bundles, or custom B2B sourcing for your exact request.'
+                        : 'Try selecting another category below.',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(fontSize: 12.5, color: Colors.grey),
+                  ),
+                  const SizedBox(height: 16),
+                  Wrap(
+                    spacing: 10,
+                    runSpacing: 10,
+                    alignment: WrapAlignment.center,
+                    children: [
+                      FilledButton.icon(
+                        onPressed: () {
+                          context.push(
+                            q.isNotEmpty
+                                ? '/ctrlx?q=${Uri.encodeComponent(q)}'
+                                : '/ctrlx',
+                          );
+                        },
+                        icon: const Icon(Icons.auto_awesome_rounded, size: 17),
+                        label: Text(
+                          q.isNotEmpty
+                              ? 'Ask CTRL-X AI to find this'
+                              : 'Ask CTRL-X AI Assistant',
+                          style: const TextStyle(fontWeight: FontWeight.w800),
+                        ),
+                      ),
+                      OutlinedButton.icon(
+                        onPressed: () {
+                          _clearHomeSearch();
+                          _selectCategory('All');
+                          setState(() => _adv = const ProductFilters());
+                        },
+                        icon: const Icon(Icons.restart_alt_rounded, size: 17),
+                        label: const Text('Clear Filters'),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 14),
+                  Wrap(
+                    spacing: 7,
+                    runSpacing: 7,
+                    alignment: WrapAlignment.center,
+                    children: _categories.map((cat) {
+                      return ActionChip(
+                        label: Text(cat, style: const TextStyle(fontSize: 11.5)),
+                        visualDensity: VisualDensity.compact,
+                        onPressed: () {
+                          _clearHomeSearch();
+                          _selectCategory(cat);
+                        },
+                      );
+                    }).toList(),
                   ),
                 ],
               ),
-            ],
+            ),
           ),
         ),
       );
@@ -1387,6 +1256,30 @@ class _HomeScreenState extends State<HomeScreen>
       products: filteredProducts,
       isLoading: false,
     );
+  }
+
+  List<Product> _computeFilteredProducts(
+    List<Product> allProducts,
+    Set<int> ids3d,
+  ) {
+    final local = _currentFilters.apply(allProducts, ids3d);
+    final q = _searchQuery.trim();
+    if (q.isEmpty || _backendSearchResults == null) {
+      return local;
+    }
+
+    final merged = <int, Product>{
+      for (final p in local) p.id: p,
+    };
+    for (final p in _backendSearchResults!) {
+      final catOk = _selectedCategory == '3D'
+          ? ids3d.contains(p.id)
+          : ProductFilters.categoryMatches(p.category, _selectedCategory);
+      if (catOk) {
+        merged.putIfAbsent(p.id, () => p);
+      }
+    }
+    return merged.values.toList();
   }
 
   Widget _buildResponsiveGrid({
@@ -1449,7 +1342,9 @@ class _HomeScreenState extends State<HomeScreen>
                   child: ProductCard(
                     product: products[index],
                     onProductDeleted: () {
-                      context.read<ProductProvider>().invalidateAllAndRefresh();
+                      final deletedId = products[index].id;
+                      context.read<ProductProvider>().purgeDeletedProduct(deletedId);
+                      context.read<ShopStateProvider>().purgeDeletedProduct(deletedId);
                     },
                   ),
                 );

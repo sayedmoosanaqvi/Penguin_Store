@@ -339,6 +339,14 @@ async def multimodal_rrf_search(
                 detail="Image exceeds the 8 MB limit.",
             )
         if raw:
+            from app.core.upload_security import validate_image_upload
+
+            validate_image_upload(
+                raw,
+                file.filename,
+                max_bytes=MAX_IMAGE_BYTES,
+                require_extension=False,
+            )
             image_bytes = raw
 
     if not image_bytes and not (query and query.strip()) and max_price is None and not category:

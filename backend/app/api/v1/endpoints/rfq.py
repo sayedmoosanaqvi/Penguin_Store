@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.security import (
+    get_current_user,
     get_optional_current_user,
     require_role,
     resolve_user_role,
@@ -137,13 +138,21 @@ def submit_rfq(
 @router.get("/rfq/my")
 def get_my_rfqs(
     email: Optional[str] = Query(default=None, max_length=254),
-    current_user: User | None = Depends(get_optional_current_user),
+    current_user: User = Depends(get_current_user),
 ):
-    target_email = ""
-    if current_user is not None and current_user.email:
-        target_email = current_user.email.strip().lower()
-    elif email:
-        target_email = email.strip().lower()
+    caller_email = (current_user.email or "").strip().lower()
+    is_admin = resolve_user_role(current_user) == "admin"
+
+    if email and email.strip():
+        requested_email = email.strip().lower()
+        if not is_admin and requested_email != caller_email:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You can only view your own B2B RFQ quotes.",
+            )
+        target_email = requested_email
+    else:
+        target_email = caller_email
 
     if not target_email:
         return {"count": 0, "items": []}

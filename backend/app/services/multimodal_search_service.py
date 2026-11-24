@@ -190,6 +190,10 @@ def execute_multimodal_rrf_search(
                         visual_scores[pid] = cal_score
         except Exception as exc:
             logger.warning("Multimodal visual branch fallback: %s", exc)
+        finally:
+            import gc
+
+            gc.collect()
 
     # 3. Text / Voice Intent branch
     text_ranks: dict[int, int] = {}

@@ -1,10 +1,11 @@
-"""Security headers, CORS configuration, and route-level sliding-window rate limiting."""
+"""Security headers, CORS configuration, and memory-bounded sliding-window rate limiting."""
 
 from __future__ import annotations
 
 import logging
+import math
 import time
-from collections import defaultdict, deque
+from collections import deque
 from threading import Lock
 
 from fastapi import FastAPI, Request, status
@@ -16,14 +17,57 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 _RATE_LOCK = Lock()
-_RATE_BUCKETS: dict[str, deque[float]] = defaultdict(deque)
+_RATE_BUCKETS: dict[str, deque[float]] = {}
+MAX_RATE_BUCKETS = 4096
 
-# (path_prefix, window_seconds, max_requests)
-_RATE_RULES: tuple[tuple[tuple[str, ...], float, int], ...] = (
-    (("/login", "/signup", "/api/v1/auth/login", "/api/v1/auth/register"), 60.0, 20),
-    (("/api/agent/chat", "/api/search/visual"), 60.0, 30),
-    (("/api/orders/checkout", "/api/v1/orders/"), 60.0, 15),
+# (allowed_methods, exact_paths, prefix_paths, window_seconds, max_requests, group_name)
+_RATE_RULES: tuple[tuple[frozenset[str], tuple[str, ...], tuple[str, ...], float, int, str], ...] = (
+    (
+        frozenset({"POST"}),
+        ("/login", "/signup", "/api/v1/auth/login", "/api/v1/auth/register"),
+        ("/api/v1/auth/",),
+        60.0,
+        15,
+        "auth",
+    ),
+    (
+        frozenset({"POST"}),
+        (
+            "/api/v1/ai/transcribe",
+            "/api/v1/ai/speak",
+            "/api/agent/chat",
+            "/api/agent/approve",
+            "/api/v1/search/multimodal",
+            "/api/search/multimodal",
+            "/api/search/visual",
+        ),
+        (),
+        60.0,
+        25,
+        "ai_compute",
+    ),
+    (
+        frozenset({"POST", "GET"}),
+        (
+            "/api/orders/checkout",
+            "/api/v1/orders/",
+            "/create-checkout-session",
+            "/api/v1/stripe/create-checkout-session",
+            "/api/premium-subscriptions/checkout",
+            "/api/payments/checkout-status",
+        ),
+        ("/api/v1/stripe/verify-session/",),
+        60.0,
+        20,
+        "checkout_stripe",
+    ),
 )
+
+
+def reset_rate_limiter_for_tests() -> None:
+    """Clear in-memory rate-limit sliding windows (used by automated test suites)."""
+    with _RATE_LOCK:
+        _RATE_BUCKETS.clear()
 
 
 def configure_cors(app: FastAPI) -> None:
@@ -56,40 +100,69 @@ def configure_cors(app: FastAPI) -> None:
     )
 
 
-def _match_rate_rule(method: str, path: str) -> tuple[float, int] | None:
-    if method != "POST":
-        return None
-    for paths, window, limit in _RATE_RULES:
-        if path in paths:
-            return window, limit
+def _match_rate_rule(method: str, path: str) -> tuple[float, int, str] | None:
+    upper_method = method.upper()
+    for methods, exact_paths, prefix_paths, window, limit, group in _RATE_RULES:
+        if upper_method not in methods:
+            continue
+        if path in exact_paths or any(path.startswith(pref) for pref in prefix_paths):
+            return window, limit, group
     return None
 
 
 def _client_ip(request: Request) -> str:
     forwarded = request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
     if forwarded:
-        return forwarded
+        return forwarded[:64]
     return request.client.host if request.client else "unknown"
+
+
+def _evict_stale_buckets_locked(now: float, max_window: float = 60.0) -> None:
+    expired_keys = [
+        k for k, q in _RATE_BUCKETS.items() if not q or (now - q[-1]) > max_window
+    ]
+    for k in expired_keys:
+        _RATE_BUCKETS.pop(k, None)
+    if len(_RATE_BUCKETS) >= MAX_RATE_BUCKETS:
+        # Evict oldest 25% keys to guarantee O(1) bounded memory on Render 512 MB RAM
+        victim_count = max(1, MAX_RATE_BUCKETS // 4)
+        for k in list(_RATE_BUCKETS.keys())[:victim_count]:
+            _RATE_BUCKETS.pop(k, None)
 
 
 async def security_and_rate_limit_middleware(request: Request, call_next):
     path = request.url.path
     rule = _match_rate_rule(request.method, path)
     if rule is not None:
-        window, limit = rule
+        window, limit, group = rule
         ip = _client_ip(request)
-        bucket_key = f"{ip}:{path}"
+        bucket_key = f"{ip}:{group}:{path}"
         now = time.monotonic()
 
         with _RATE_LOCK:
-            q = _RATE_BUCKETS[bucket_key]
+            if len(_RATE_BUCKETS) >= MAX_RATE_BUCKETS and bucket_key not in _RATE_BUCKETS:
+                _evict_stale_buckets_locked(now, window)
+
+            q = _RATE_BUCKETS.get(bucket_key)
+            if q is None:
+                q = deque()
+                _RATE_BUCKETS[bucket_key] = q
+
             while q and (now - q[0]) > window:
                 q.popleft()
+
             if len(q) >= limit:
+                retry_after = max(1, int(math.ceil(window - (now - q[0]))))
                 return JSONResponse(
                     status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    headers={
+                        "Retry-After": str(retry_after),
+                        "X-Content-Type-Options": "nosniff",
+                        "X-Frame-Options": "DENY",
+                    },
                     content={
-                        "detail": "Rate limit exceeded. Please wait a moment and try again."
+                        "detail": "Too many requests. Please wait a moment and try again.",
+                        "retry_after_seconds": retry_after,
                     },
                 )
             q.append(now)
@@ -101,11 +174,13 @@ async def security_and_rate_limit_middleware(request: Request, call_next):
         "Referrer-Policy",
         "strict-origin-when-cross-origin",
     )
+    # Allow self-origin microphone & camera so WebRTC Voice Concierge & Visual Search work on HTTPS
     response.headers.setdefault(
         "Permissions-Policy",
-        "camera=(self), microphone=(), geolocation=()",
+        "camera=(self), microphone=(self), geolocation=()",
     )
-    if settings.IS_PRODUCTION:
+    forwarded_proto = request.headers.get("x-forwarded-proto", "").lower()
+    if settings.IS_PRODUCTION or forwarded_proto == "https":
         response.headers.setdefault(
             "Strict-Transport-Security",
             "max-age=31536000; includeSubDomains",

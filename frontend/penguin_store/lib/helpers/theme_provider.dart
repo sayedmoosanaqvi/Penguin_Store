@@ -49,10 +49,14 @@ class ThemeProvider extends ChangeNotifier {
     );
   }
 
-  // Light Theme
+  // Light Theme (WCAG 2.1 AA High-Contrast + Visible Keyboard Focus + 48dp Touch Targets)
   static ThemeData lightTheme() {
     return ThemeData(
       useMaterial3: true,
+      materialTapTargetSize: MaterialTapTargetSize.padded,
+      visualDensity: VisualDensity.standard,
+      focusColor: PRIMARY_BLUE.withValues(alpha: 0.22),
+      hoverColor: PRIMARY_BLUE.withValues(alpha: 0.08),
       pageTransitionsTheme: const PageTransitionsTheme(
         builders: {
           TargetPlatform.android: ZoomPageTransitionsBuilder(),
@@ -64,7 +68,6 @@ class ThemeProvider extends ChangeNotifier {
       ),
       brightness: Brightness.light,
       primaryColor: PRIMARY_BLUE,
-      // Icy-white canvas: white cards now float on a faint snow-blue.
       scaffoldBackgroundColor: Color(0xFFF5F9FE),
       fontFamily: 'Poppins',
       colorScheme: ColorScheme.light(
@@ -72,11 +75,15 @@ class ThemeProvider extends ChangeNotifier {
         secondary: ACCENT_TEAL,
         tertiary: GRADIENT_INDIGO,
         surface: WHITE,
-        error: LIGHT_RED,
+        onSurface: Color(0xFF0F172A),
+        onSurfaceVariant: Color(0xFF475569), // 7.5:1 contrast on white
+        outline: Color(0xFF64748B),          // >= 3:1 UI component contrast
+        outlineVariant: Color(0xFFCBD5E1),
+        error: Color(0xFFB91C1C),            // 6.4:1 contrast on white
       ),
       appBarTheme: AppBarTheme(
-        backgroundColor: WHITE, // Changed to match the clean look
-        foregroundColor: PRIMARY_BLUE, // Dark text/icons on light app bar
+        backgroundColor: WHITE,
+        foregroundColor: PRIMARY_BLUE,
         elevation: 0,
         centerTitle: true,
         titleTextStyle: TextStyle(
@@ -86,27 +93,45 @@ class ThemeProvider extends ChangeNotifier {
           color: PRIMARY_BLUE,
         ),
       ),
-      // --- UPDATED BUTTON THEMES ---
+      iconButtonTheme: IconButtonThemeData(
+        style: ButtonStyle(
+          minimumSize: WidgetStatePropertyAll(Size(44, 44)),
+          overlayColor: WidgetStateProperty.resolveWith((states) {
+            if (states.contains(WidgetState.focused)) {
+              return PRIMARY_BLUE.withValues(alpha: 0.24);
+            }
+            return null;
+          }),
+          side: WidgetStateProperty.resolveWith((states) {
+            if (states.contains(WidgetState.focused)) {
+              return BorderSide(color: PRIMARY_BLUE, width: 2);
+            }
+            return null;
+          }),
+        ),
+      ),
       elevatedButtonTheme: ElevatedButtonThemeData(
         style: ElevatedButton.styleFrom(
           foregroundColor: WHITE,
-          backgroundColor: PRIMARY_BLUE, // Solid primary color 
-          elevation: 4, // Soft floating shadow
+          backgroundColor: PRIMARY_BLUE,
+          minimumSize: Size(48, 44),
+          elevation: 4,
           shadowColor: PRIMARY_BLUE.withValues(alpha: 0.4),
           padding: EdgeInsets.symmetric(horizontal: 24, vertical: 14),
           textStyle: TextStyle(
             fontFamily: 'Poppins',
-            fontWeight: FontWeight.bold, // Bolder text like the reference
+            fontWeight: FontWeight.bold,
             letterSpacing: 0.5,
           ),
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(30), // Fully rounded pill shape
+            borderRadius: BorderRadius.circular(30),
           ),
         ),
       ),
       textButtonTheme: TextButtonThemeData(
         style: TextButton.styleFrom(
-          foregroundColor: PRIMARY_BLUE,
+          foregroundColor: Color(0xFF0D47A1),
+          minimumSize: Size(48, 44),
           padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           textStyle: TextStyle(
             fontFamily: 'Poppins',
@@ -117,48 +142,50 @@ class ThemeProvider extends ChangeNotifier {
           ),
         ),
       ),
-      // -----------------------------
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
         fillColor: Color(0xFFFAFAFA),
-        contentPadding: EdgeInsets.symmetric(horizontal: 20, vertical: 16), // Taller inputs
+        contentPadding: EdgeInsets.symmetric(horizontal: 20, vertical: 16),
         border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(16), // Softer corners
-          borderSide: BorderSide.none, // Removes harsh line, relies on fill
+          borderRadius: BorderRadius.circular(16),
+          borderSide: BorderSide(color: Color(0xFF94A3B8)),
         ),
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(16),
-          borderSide: BorderSide(color: Colors.grey.withValues(alpha: 0.1)), 
+          borderSide: BorderSide(color: Color(0xFFCBD5E1)),
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(16),
-          borderSide: BorderSide(color: PRIMARY_BLUE, width: 2),
+          borderSide: BorderSide(color: PRIMARY_BLUE, width: 2.2),
         ),
         labelStyle: TextStyle(
           fontFamily: 'Poppins',
-          color: GREY,
+          color: Color(0xFF334155), // 9.7:1 contrast
         ),
         hintStyle: TextStyle(
           fontFamily: 'Poppins',
-          color: GREY.withValues(alpha: 0.6),
+          color: Color(0xFF475569), // 7.2:1 contrast (WCAG AA >= 4.5:1)
         ),
       ),
       cardTheme: CardThemeData(
         color: WHITE,
-        elevation: 0, // Flat cards...
+        elevation: 0,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(16),
-          // ...with soft custom borders instead of heavy elevation shadows
-          side: BorderSide(color: Colors.grey.withValues(alpha: 0.1), width: 1), 
+          side: BorderSide(color: Colors.grey.withValues(alpha: 0.16), width: 1),
         ),
       ),
     );
   }
 
-  // Dark Theme - Eye-friendly colors
+  // Dark Theme - WCAG 2.1 AA High-Contrast + Visible Keyboard Focus
   static ThemeData darkTheme() {
     return ThemeData(
       useMaterial3: true,
+      materialTapTargetSize: MaterialTapTargetSize.padded,
+      visualDensity: VisualDensity.standard,
+      focusColor: Color(0xFF38BDF8).withValues(alpha: 0.28),
+      hoverColor: Color(0xFF38BDF8).withValues(alpha: 0.10),
       pageTransitionsTheme: const PageTransitionsTheme(
         builders: {
           TargetPlatform.android: ZoomPageTransitionsBuilder(),
@@ -170,33 +197,53 @@ class ThemeProvider extends ChangeNotifier {
       ),
       brightness: Brightness.dark,
       primaryColor: PRIMARY_BLUE,
-      scaffoldBackgroundColor: Color(0xFF121212), // Deep clean dark
+      scaffoldBackgroundColor: Color(0xFF121212),
       fontFamily: 'Poppins',
       colorScheme: ColorScheme.dark(
-        primary: PRIMARY_BLUE,
+        primary: Color(0xFF38BDF8),          // High-contrast icy sky on dark surface
         secondary: ACCENT_TEAL,
         tertiary: GRADIENT_INDIGO,
         surface: Color(0xFF1E1E1E),
-        error: LIGHT_RED,
-        onSurface: Color(0xFFF0F0F0), 
+        error: Color(0xFFF87171),
+        onSurface: Color(0xFFF8FAFC),        // 15.6:1 contrast
+        onSurfaceVariant: Color(0xFFCBD5E1), // 10.4:1 contrast (WCAG AAA)
+        outline: Color(0xFF94A3B8),          // >= 4.5:1 UI border contrast
+        outlineVariant: Color(0xFF334155),
       ),
       appBarTheme: AppBarTheme(
-        backgroundColor: Color(0xFF121212), // Matches background
-        foregroundColor: Color(0xFFF0F0F0), 
+        backgroundColor: Color(0xFF121212),
+        foregroundColor: Color(0xFFF8FAFC),
         elevation: 0,
         centerTitle: true,
         titleTextStyle: TextStyle(
           fontFamily: 'Poppins',
           fontSize: 18,
           fontWeight: FontWeight.w600,
-          color: Color(0xFFF0F0F0), 
+          color: Color(0xFFF8FAFC),
         ),
       ),
-      // --- UPDATED BUTTON THEMES ---
+      iconButtonTheme: IconButtonThemeData(
+        style: ButtonStyle(
+          minimumSize: WidgetStatePropertyAll(Size(44, 44)),
+          overlayColor: WidgetStateProperty.resolveWith((states) {
+            if (states.contains(WidgetState.focused)) {
+              return Color(0xFF38BDF8).withValues(alpha: 0.28);
+            }
+            return null;
+          }),
+          side: WidgetStateProperty.resolveWith((states) {
+            if (states.contains(WidgetState.focused)) {
+              return BorderSide(color: Color(0xFF38BDF8), width: 2);
+            }
+            return null;
+          }),
+        ),
+      ),
       elevatedButtonTheme: ElevatedButtonThemeData(
         style: ElevatedButton.styleFrom(
           foregroundColor: WHITE,
           backgroundColor: PRIMARY_BLUE,
+          minimumSize: Size(48, 44),
           elevation: 4,
           shadowColor: PRIMARY_BLUE.withValues(alpha: 0.3),
           padding: EdgeInsets.symmetric(horizontal: 24, vertical: 14),
@@ -206,13 +253,14 @@ class ThemeProvider extends ChangeNotifier {
             letterSpacing: 0.5,
           ),
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(30), 
+            borderRadius: BorderRadius.circular(30),
           ),
         ),
       ),
       textButtonTheme: TextButtonThemeData(
         style: TextButton.styleFrom(
-          foregroundColor: ACCENT_TEAL, // Pop of color in dark mode
+          foregroundColor: Color(0xFF38BDF8),
+          minimumSize: Size(48, 44),
           padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           textStyle: TextStyle(
             fontFamily: 'Poppins',
@@ -223,47 +271,46 @@ class ThemeProvider extends ChangeNotifier {
           ),
         ),
       ),
-      // -----------------------------
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
-        fillColor: Color(0xFF1E1E1E), // Slightly lighter than background
+        fillColor: Color(0xFF1E1E1E),
         contentPadding: EdgeInsets.symmetric(horizontal: 20, vertical: 16),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(16),
-          borderSide: BorderSide.none,
+          borderSide: BorderSide(color: Color(0xFF475569)),
         ),
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(16),
-          borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.05)),
+          borderSide: BorderSide(color: Color(0xFF334155)),
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(16),
-          borderSide: BorderSide(color: PRIMARY_BLUE, width: 2),
+          borderSide: BorderSide(color: Color(0xFF38BDF8), width: 2.2),
         ),
         labelStyle: TextStyle(
           fontFamily: 'Poppins',
-          color: Color(0xFF909090),
+          color: Color(0xFFCBD5E1), // 10.4:1 contrast
         ),
         hintStyle: TextStyle(
           fontFamily: 'Poppins',
-          color: Color(0xFF707070), 
+          color: Color(0xFF94A3B8), // 5.5:1 contrast on #1E1E1E (WCAG AA >= 4.5:1)
         ),
       ),
       cardTheme: CardThemeData(
-        color: Color(0xFF1E1E1E), 
+        color: Color(0xFF1E1E1E),
         elevation: 0,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(16),
-          side: BorderSide(color: Colors.white.withValues(alpha: 0.05), width: 1),
+          side: BorderSide(color: Colors.white.withValues(alpha: 0.10), width: 1),
         ),
       ),
       textTheme: TextTheme(
-        bodyLarge: TextStyle(color: Color(0xFFF0F0F0)),
-        bodyMedium: TextStyle(color: Color(0xFFD0D0D0)),
-        bodySmall: TextStyle(color: Color(0xFFA0A0A0)), 
-        titleLarge: TextStyle(color: Color(0xFFF0F0F0), fontWeight: FontWeight.bold),
-        titleMedium: TextStyle(color: Color(0xFFF0F0F0), fontWeight: FontWeight.w600),
-        titleSmall: TextStyle(color: Color(0xFFD0D0D0)), 
+        bodyLarge: TextStyle(color: Color(0xFFF8FAFC)),
+        bodyMedium: TextStyle(color: Color(0xFFE2E8F0)),
+        bodySmall: TextStyle(color: Color(0xFFCBD5E1)),
+        titleLarge: TextStyle(color: Color(0xFFF8FAFC), fontWeight: FontWeight.bold),
+        titleMedium: TextStyle(color: Color(0xFFF8FAFC), fontWeight: FontWeight.w600),
+        titleSmall: TextStyle(color: Color(0xFFE2E8F0)),
       ),
     );
   }

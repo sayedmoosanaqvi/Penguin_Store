@@ -116,6 +116,7 @@ class _CartScreenState extends State<CartScreen> {
 
       final orderData = jsonDecode(checkoutResponse.body) as Map;
       final int createdOrderId = (orderData['order_id'] as num).toInt();
+      final String receiptToken = (orderData['receipt_token'] ?? '').toString();
 
       if (!mounted) return;
 
@@ -163,7 +164,10 @@ class _CartScreenState extends State<CartScreen> {
         context,
         'COD Order #$createdOrderId confirmed! View your invoice.',
       );
-      context.go('/checkout-success?order_id=$createdOrderId&mode=cod');
+      final tokenParam = receiptToken.isNotEmpty
+          ? '&receipt_token=${Uri.encodeComponent(receiptToken)}'
+          : '';
+      context.go('/checkout-success?order_id=$createdOrderId&mode=cod$tokenParam');
     } catch (e) {
       if (!mounted) return;
       CustomToast.show(

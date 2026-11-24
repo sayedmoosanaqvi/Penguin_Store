@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -6,10 +8,13 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 
+import 'package:penguin_store/core/services/app_notifier.dart';
+import 'package:penguin_store/core/widgets/penguin_brand_logo.dart';
 import 'package:penguin_store/features/shop/models/product_model.dart';
 import 'package:penguin_store/features/shop/providers/auth_provider.dart';
 import 'package:penguin_store/features/shop/providers/currency_provider.dart';
 import 'package:penguin_store/features/shop/providers/product_provider.dart';
+import 'package:penguin_store/features/shop/providers/shop_state_provider.dart';
 import 'package:penguin_store/features/shop/screens/product_3d_viewer_screen.dart';
 import 'package:penguin_store/features/shop/services/admin_3d_service.dart';
 import 'package:penguin_store/features/shop/services/commerce_service.dart';
@@ -130,18 +135,7 @@ class _AdminScreenState extends State<AdminScreen>
         ),
         title: Row(
           children: [
-            Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: colors.primaryContainer,
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: Icon(
-                Icons.admin_panel_settings_rounded,
-                color: colors.onPrimaryContainer,
-                size: 20,
-              ),
-            ),
+            const PenguinBrandLogo(size: 32, onLightBackground: true),
             const SizedBox(width: 10),
             Flexible(
               child: Text(
@@ -245,6 +239,7 @@ class _AddProductFormState extends State<_AddProductForm> {
   Product? _selectedExistingProduct;
   bool _isLoadingAdminData = true;
   bool _appliedInitialEditId = false;
+  final Set<int> _deletingProductIds = <int>{};
 
   static const List<String> _categories = [
     'Electronics',
@@ -277,6 +272,7 @@ class _AddProductFormState extends State<_AddProductForm> {
   Future<void> _refreshAdminData() async {
     setState(() => _isLoadingAdminData = true);
     try {
+      await ProductService.clearAllCaches();
       final results = await Future.wait([
         _productService.fetchProducts(forceRefresh: true),
         _admin3DService.listModels(),
@@ -290,6 +286,8 @@ class _AddProductFormState extends State<_AddProductForm> {
         _models3D = models;
         _isLoadingAdminData = false;
       });
+      // Keep storefront ProductProvider synced with fresh server inventory
+      context.read<ProductProvider>().ensureProductsLoaded(forceRefresh: true);
 
       if (!_appliedInitialEditId && widget.initialEditProductId != null) {
         _appliedInitialEditId = true;
@@ -407,51 +405,14 @@ class _AddProductFormState extends State<_AddProductForm> {
     required String message,
     bool isSuccess = false,
     bool isError = false,
-    IconData? icon,
   }) {
-    final bg = isSuccess
-        ? const Color(0xFF059669) // Emerald Green
-        : isError
-            ? const Color(0xFFDC2626) // Crimson Red
-            : const Color(0xFF1E293B); // Slate
-
-    ScaffoldMessenger.of(context).hideCurrentSnackBar();
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        behavior: SnackBarBehavior.floating,
-        duration: const Duration(milliseconds: 3500),
-        margin: const EdgeInsets.fromLTRB(16, 0, 16, 24),
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        backgroundColor: bg,
-        elevation: 8,
-        content: Row(
-          children: [
-            Icon(
-              icon ??
-                  (isSuccess
-                      ? Icons.check_circle_rounded
-                      : isError
-                          ? Icons.error_rounded
-                          : Icons.info_rounded),
-              color: Colors.white,
-              size: 22,
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Text(
-                message,
-                style: GoogleFonts.inter(
-                  color: Colors.white,
-                  fontWeight: FontWeight.w600,
-                  fontSize: 13.5,
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
+    if (isSuccess) {
+      AppNotifier.showSuccess(message, fallbackContext: context);
+    } else if (isError) {
+      AppNotifier.showError(message, fallbackContext: context);
+    } else {
+      AppNotifier.showInfo(message, fallbackContext: context);
+    }
   }
 
   Future<void> _submitForm() async {
@@ -877,13 +838,13 @@ class _AddProductFormState extends State<_AddProductForm> {
 
   Future<void> _deleteStoreProduct(Product product) async {
     if (product.id == 144) {
-      _showAdminNotification(
-        context,
-        message: 'Product #144 is protected for 3D testing and cannot be deleted.',
-        isError: true,
+      AppNotifier.showError(
+        'Product #144 is protected as the reference 3D showcase item.',
       );
       return;
     }
+
+    if (_deletingProductIds.contains(product.id)) return;
 
     final has3D = _models3D.any((m) => m.productId == product.id);
 
@@ -925,7 +886,7 @@ class _AddProductFormState extends State<_AddProductForm> {
               const SizedBox(height: 8),
               Text(
                 has3D
-                    ? '⚠️ Notice: This product has an active 3D Digital Twin attached. Deleting it will permanently remove the product, its 3D assets, cart entries, and customer reviews.'
+                    ? 'Notice: This product has an active 3D Digital Twin attached. Deleting it will remove the product, its 3D assets, cart entries, and customer reviews.'
                     : 'This will remove the product from the active store catalog immediately.',
                 style: GoogleFonts.inter(
                   fontSize: 12.5,
@@ -954,55 +915,57 @@ class _AddProductFormState extends State<_AddProductForm> {
 
     if (confirmed != true || !mounted) return;
 
-    // Optimistic UI removal
-    final backupCatalog = List<Product>.from(_catalogProducts);
-    final backupModels = List<Admin3DModelRow>.from(_models3D);
+    final productProvider = context.read<ProductProvider>();
+    final shopState = context.read<ShopStateProvider>();
 
-    setState(() {
-      _catalogProducts.removeWhere((p) => p.id == product.id);
-      _models3D.removeWhere((m) => m.productId == product.id);
-      if (_selectedExistingProduct?.id == product.id) {
-        _resetForm();
-      }
-    });
+    setState(() => _deletingProductIds.add(product.id));
 
     try {
-      final res = await _productService.deleteProduct(product.id);
+      final res = await _productService
+          .deleteProduct(product.id)
+          .timeout(const Duration(seconds: 15));
+
       if (!mounted) return;
 
       if (res.success) {
-        _showAdminNotification(
-          context,
-          message: res.message.isNotEmpty
-              ? res.message
-              : 'Deleted "${product.name}".',
-          isSuccess: true,
-        );
-        // Refresh product provider in background
-        context.read<ProductProvider>().invalidateAllAndRefresh();
-      } else {
-        // Rollback optimistic removal
+        // 1. Immediately remove from Admin state
         setState(() {
-          _catalogProducts = backupCatalog;
-          _models3D = backupModels;
+          _catalogProducts.removeWhere((p) => p.id == product.id);
+          _models3D.removeWhere((m) => m.productId == product.id);
+          if (_selectedExistingProduct?.id == product.id) {
+            _resetForm();
+          }
         });
-        _showAdminNotification(
-          context,
-          message: 'Failed to delete: ${res.message}',
-          isError: true,
+
+        // 2. Purge from ProductProvider (Home, Discover, Showcase3D) + SharedPreferences SWR cache
+        await productProvider.purgeDeletedProduct(product.id);
+        await shopState.purgeDeletedProduct(product.id);
+
+        // 3. Trigger unmistakable root green toast immediately
+        AppNotifier.showSuccess(
+          res.message.isNotEmpty
+              ? res.message
+              : "Deleted '${product.name}' permanently.",
+        );
+
+        // 4. Silent background catalog verification
+        unawaited(productProvider.invalidateAllAndRefresh());
+      } else {
+        AppNotifier.showError(
+          "Delete failed for '${product.name}': ${res.message}",
         );
       }
     } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _catalogProducts = backupCatalog;
-        _models3D = backupModels;
-      });
-      _showAdminNotification(
-        context,
-        message: 'Deletion error: $e',
-        isError: true,
+      final reason = e.toString().contains('TimeoutException')
+          ? 'Request timed out after 15s.'
+          : e.toString().replaceFirst('Exception: ', '');
+      AppNotifier.showError(
+        "Delete failed for '${product.name}': $reason",
       );
+    } finally {
+      if (mounted) {
+        setState(() => _deletingProductIds.remove(product.id));
+      }
     }
   }
 
@@ -2059,26 +2022,44 @@ class _AddProductFormState extends State<_AddProductForm> {
                                 ),
                                 IconButton(
                                   tooltip: 'Edit Product',
-                                  onPressed: () => _startEditingProduct(p),
+                                  onPressed: _deletingProductIds.contains(p.id)
+                                      ? null
+                                      : () => _startEditingProduct(p),
                                   icon: Icon(
                                     Icons.edit_rounded,
-                                    color: colors.primary,
-                                  ),
-                                ),
-                                IconButton(
-                                  tooltip: p.id == 144
-                                      ? 'Protected (#144)'
-                                      : 'Delete Product',
-                                  onPressed: p.id == 144
-                                      ? null
-                                      : () => _deleteStoreProduct(p),
-                                  icon: Icon(
-                                    Icons.delete_outline_rounded,
-                                    color: p.id == 144
+                                    color: _deletingProductIds.contains(p.id)
                                         ? colors.outlineVariant
-                                        : Colors.redAccent,
+                                        : colors.primary,
                                   ),
                                 ),
+                                _deletingProductIds.contains(p.id)
+                                    ? const Padding(
+                                        padding: EdgeInsets.symmetric(
+                                          horizontal: 11,
+                                        ),
+                                        child: SizedBox(
+                                          width: 18,
+                                          height: 18,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 2.2,
+                                            color: Colors.redAccent,
+                                          ),
+                                        ),
+                                      )
+                                    : IconButton(
+                                        tooltip: p.id == 144
+                                            ? 'Protected (#144)'
+                                            : 'Delete Product',
+                                        onPressed: p.id == 144
+                                            ? null
+                                            : () => _deleteStoreProduct(p),
+                                        icon: Icon(
+                                          Icons.delete_outline_rounded,
+                                          color: p.id == 144
+                                              ? colors.outlineVariant
+                                              : Colors.redAccent,
+                                        ),
+                                      ),
                               ],
                             ),
                           );

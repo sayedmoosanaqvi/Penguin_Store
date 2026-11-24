@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
 
 import 'package:penguin_store/config/api_config.dart';
+import 'package:penguin_store/core/services/secure_storage_service.dart';
 
 class StripePaymentService {
   static String get _baseUrl =>
@@ -103,14 +104,25 @@ class StripePaymentService {
     return Map<String, dynamic>.from(jsonDecode(res.body) as Map);
   }
 
-  /// Fetches an order record directly by ID (used for COD confirmation or fallback).
-  static Future<Map<String, dynamic>?> fetchOrderDetail(int orderId) async {
+  /// Fetches an order record directly by ID using anti-IDOR JWT + receipt_token.
+  static Future<Map<String, dynamic>?> fetchOrderDetail(
+    int orderId, {
+    String? receiptToken,
+  }) async {
     try {
+      final token = (await SecureStorageService.getToken())?.trim();
+      final headers = <String, String>{
+        'Accept': 'application/json',
+        if (token != null && token.isNotEmpty) 'Authorization': 'Bearer $token',
+      };
+      final cleanReceipt = receiptToken?.trim() ?? '';
+      final uri = Uri.parse('$_baseUrl/api/orders/detail/$orderId').replace(
+        queryParameters: cleanReceipt.isNotEmpty
+            ? {'receipt_token': cleanReceipt}
+            : null,
+      );
       final res = await http
-          .get(
-            Uri.parse('$_baseUrl/api/orders/detail/$orderId'),
-            headers: const {'Accept': 'application/json'},
-          )
+          .get(uri, headers: headers)
           .timeout(const Duration(seconds: 15));
       if (res.statusCode != 200) return null;
       final data = jsonDecode(res.body);

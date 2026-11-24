@@ -31,19 +31,21 @@ class BottomNavBar extends StatelessWidget {
     final cartCount = context.watch<CartProvider>().itemCount;
     final auth = context.watch<AuthProvider>();
 
+    final reduceMotion = MediaQuery.disableAnimationsOf(context);
+
     return Container(
       decoration: BoxDecoration(
         color: theme.colorScheme.surface,
         border: Border(
           top: BorderSide(
             color: isDark
-                ? Colors.white.withOpacity(0.08)
-                : Colors.grey.withOpacity(0.15),
+                ? Colors.white.withValues(alpha: 0.08)
+                : Colors.grey.withValues(alpha: 0.15),
           ),
         ),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(isDark ? 0.15 : 0.04),
+            color: Colors.black.withValues(alpha: isDark ? 0.15 : 0.04),
             blurRadius: 12,
             offset: const Offset(0, -3),
           ),
@@ -55,7 +57,7 @@ class BottomNavBar extends StatelessWidget {
           height: 62,
           elevation: 0,
           backgroundColor: Colors.transparent,
-          indicatorColor: theme.primaryColor.withOpacity(0.12),
+          indicatorColor: theme.primaryColor.withValues(alpha: 0.12),
           selectedIndex: currentIndex,
           labelBehavior:
               NavigationDestinationLabelBehavior.alwaysShow,
@@ -68,20 +70,28 @@ class BottomNavBar extends StatelessWidget {
           },
           destinations: [
             const NavigationDestination(
+              tooltip: 'Home Storefront',
               icon: Icon(Icons.home_outlined),
               selectedIcon: Icon(Icons.home_rounded),
               label: 'Home',
             ),
             const NavigationDestination(
+              tooltip: 'Discover Catalog',
               icon: Icon(Icons.grid_view_outlined),
               selectedIcon: Icon(Icons.grid_view_rounded),
               label: 'Discover',
             ),
             NavigationDestination(
+              tooltip: 'Shopping Cart ($cartCount items)',
               icon: TweenAnimationBuilder<double>(
                 key: ValueKey('cart-badge-$cartCount'),
-                tween: Tween<double>(begin: 1.24, end: 1.0),
-                duration: const Duration(milliseconds: 260),
+                tween: Tween<double>(
+                  begin: reduceMotion ? 1.0 : 1.24,
+                  end: 1.0,
+                ),
+                duration: reduceMotion
+                    ? Duration.zero
+                    : const Duration(milliseconds: 260),
                 curve: Curves.easeOutBack,
                 builder: (context, scale, child) =>
                     Transform.scale(scale: scale, child: child),

@@ -190,10 +190,20 @@ class ShopStateProvider with ChangeNotifier {
     }
   }
 
-  void clearPrivateSessionData() {
+  Future<void> clearPrivateSessionData() async {
     _addresses = [];
     _unreadNotifications = 0;
+    _wishlist = [];
+    _recentlyViewed = [];
+    _compareList = [];
+    _recentSearches = [];
     notifyListeners();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(_wishlistKey);
+      await prefs.remove(_recentKey);
+      await prefs.remove(_searchesKey);
+    } catch (_) {}
   }
 
   Future<void> refreshAddresses() async {
@@ -230,6 +240,37 @@ class ShopStateProvider with ChangeNotifier {
     await _commerce.deleteAddress(id);
     _addresses.removeWhere((a) => a.id == id);
     notifyListeners();
+  }
+
+  /// Immediately removes a deleted product from Wishlist, Recently Viewed, and Compare tray,
+  /// and persists updated lists to SharedPreferences so ghost thumbnails never reappear.
+  Future<void> purgeDeletedProduct(int productId) async {
+    final hadWish = _wishlist.any((p) => p.id == productId);
+    final hadRecent = _recentlyViewed.any((p) => p.id == productId);
+    final hadCompare = _compareList.any((p) => p.id == productId);
+
+    if (!hadWish && !hadRecent && !hadCompare) return;
+
+    _wishlist.removeWhere((p) => p.id == productId);
+    _recentlyViewed.removeWhere((p) => p.id == productId);
+    _compareList.removeWhere((p) => p.id == productId);
+    notifyListeners();
+
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (hadWish) {
+        await prefs.setString(
+          _wishlistKey,
+          jsonEncode(_wishlist.map((p) => p.toJson()).toList()),
+        );
+      }
+      if (hadRecent) {
+        await prefs.setString(
+          _recentKey,
+          jsonEncode(_recentlyViewed.map((p) => p.toJson()).toList()),
+        );
+      }
+    } catch (_) {}
   }
 
   void setUnreadNotifications(int count) {

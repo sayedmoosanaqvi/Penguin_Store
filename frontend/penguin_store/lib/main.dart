@@ -1,6 +1,7 @@
 
 import 'package:flutter/material.dart';
 import 'package:penguin_store/core/providers/voice_provider.dart';
+import 'package:penguin_store/core/services/app_notifier.dart';
 import 'package:penguin_store/features/shop/providers/auth_provider.dart';
 import 'package:penguin_store/features/shop/providers/cart_provider.dart';
 import 'package:penguin_store/features/shop/providers/currency_provider.dart';
@@ -89,6 +90,7 @@ class PenguinStoreApp extends StatelessWidget {
           return MaterialApp.router(
             title: 'Penguin Store',
             debugShowCheckedModeBanner: false,
+            scaffoldMessengerKey: rootScaffoldMessengerKey,
             routerConfig: appRouter,
             theme: ThemeProvider.lightTheme(),
             darkTheme: ThemeProvider.darkTheme(),
@@ -138,7 +140,9 @@ class _AuthSessionSyncBridgeState extends State<_AuthSessionSyncBridge> {
       _lastSyncedToken = null;
       Future.microtask(() {
         if (!mounted) return;
+        context.read<CartProvider>().clearLocalSession();
         context.read<ShopStateProvider>().clearPrivateSessionData();
+        context.read<ProductProvider>().clearUserRecommendations();
       });
     }
   }

@@ -9,6 +9,7 @@ import 'package:penguin_store/features/shop/providers/auth_provider.dart';
 import 'package:penguin_store/features/shop/providers/cart_provider.dart';
 import 'package:penguin_store/features/shop/providers/currency_provider.dart';
 import 'package:penguin_store/features/shop/providers/product_provider.dart';
+import 'package:penguin_store/core/services/app_notifier.dart';
 import 'package:penguin_store/features/shop/providers/shop_state_provider.dart';
 import 'package:penguin_store/features/shop/screens/product_3d_viewer_screen.dart';
 import 'package:penguin_store/features/shop/services/commerce_service.dart';
@@ -547,20 +548,21 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
     if (!mounted) return;
 
     if (res.success) {
-      await context.read<ProductProvider>().invalidateAllAndRefresh();
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Deleted "${product.name}".')),
+      await context.read<ProductProvider>().purgeDeletedProduct(product.id);
+      if (mounted) {
+        await context.read<ShopStateProvider>().purgeDeletedProduct(product.id);
+      }
+      AppNotifier.showSuccess(
+        res.message.isNotEmpty
+            ? res.message
+            : "Deleted '${product.name}' permanently.",
       );
-      context.go('/');
+      if (mounted) {
+        context.go('/');
+      }
     } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(res.message.isNotEmpty
-              ? res.message
-              : 'Failed to delete product. Check admin permissions.'),
-          backgroundColor: Colors.redAccent,
-        ),
+      AppNotifier.showError(
+        "Delete failed for '${product.name}': ${res.message}",
       );
     }
   }

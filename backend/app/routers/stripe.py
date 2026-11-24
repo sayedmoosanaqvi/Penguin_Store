@@ -378,7 +378,7 @@ def create_checkout_session(
 
     frontend = resolve_frontend_url(data.frontend_origin)
 
-    from app.routers.orders import get_order_record
+    from app.routers.orders import generate_order_receipt_token, get_order_record
 
     order_record = get_order_record(data.order_id)
     if not order_record:
@@ -414,6 +414,11 @@ def create_checkout_session(
         summary_desc += f" [Promo: {order_record['promo_code']}]"
 
     customer_email = str(order_record.get("customer_email") or "").strip() or None
+    receipt_token = (
+        generate_order_receipt_token(data.order_id, customer_email)
+        if customer_email
+        else ""
+    )
 
     try:
         session = stripe.checkout.Session.create(
@@ -437,6 +442,7 @@ def create_checkout_session(
                 f"{frontend}/#/checkout-success"
                 f"?session_id={{CHECKOUT_SESSION_ID}}"
                 f"&order_id={data.order_id}"
+                f"&receipt_token={receipt_token}"
             ),
             cancel_url=f"{frontend}/#/checkout-cancel?order_id={data.order_id}",
             metadata={
@@ -450,6 +456,7 @@ def create_checkout_session(
             "checkout_url": session.url,
             "session_id": session.id,
             "order_id": data.order_id,
+            "receipt_token": receipt_token,
         }
 
     except stripe.error.StripeError as exc:
@@ -659,9 +666,18 @@ async def verify_stripe_checkout_session(
 
             order_record = get_order_record(resolved_order_id)
 
+        receipt_token = ""
+        if order_record and resolved_order_id is not None:
+            from app.routers.orders import generate_order_receipt_token
+
+            ord_email = str(order_record.get("customer_email") or "").strip()
+            if ord_email:
+                receipt_token = generate_order_receipt_token(resolved_order_id, ord_email)
+
         return {
             "session_id": session_id,
             "order_id": resolved_order_id,
+            "receipt_token": receipt_token,
             "payment_status": session.payment_status,
             "checkout_status": session.status,
             "paid": is_paid,
