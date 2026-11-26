@@ -28,13 +28,18 @@ class StripePaymentService {
   static Future<void> startCheckout({
     required int orderId,
     String currency = 'usd',
+    String? idempotencyKey,
   }) async {
+    final idem = (idempotencyKey != null && idempotencyKey.trim().isNotEmpty)
+        ? idempotencyKey.trim()
+        : 'order-session-$orderId';
     final response = await http
         .post(
           Uri.parse('$_baseUrl/api/v1/stripe/create-checkout-session'),
-          headers: const {
+          headers: {
             'Content-Type': 'application/json',
             'Accept': 'application/json',
+            'Idempotency-Key': idem,
           },
           body: jsonEncode({
             'order_id': orderId,

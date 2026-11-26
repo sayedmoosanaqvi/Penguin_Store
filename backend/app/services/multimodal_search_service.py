@@ -1,7 +1,8 @@
 """Multimodal RRF (Reciprocal Rank Fusion) Search Service.
 
 Combines visual ResNet-50 ONNX pgvector similarity with natural-language/voice
-intent, numeric budget constraints, category filtering, 3D flags, and Trust Score.
+intent, spoken/numeric budget constraints, category filtering, 3D flags,
+calibrated confidence tiers, and explainable `match_reason` badges.
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ def _parse_inline_price_constraints(
     min_price: Optional[float],
     max_price: Optional[float],
 ) -> tuple[Optional[float], Optional[float], bool]:
-    """Extract numeric min/max budget and 3D intent directly from natural language."""
+    """Extract numeric/spoken min/max budget and 3D intent directly from natural language."""
     eff_min = min_price
     eff_max = max_price
     only_3d = False
@@ -37,7 +38,15 @@ def _parse_inline_price_constraints(
     if not query_text or not query_text.strip():
         return eff_min, eff_max, only_3d
 
-    q = re.sub(r"(\d),(\d{3})", r"\1\2", query_text.lower())
+    raw = query_text
+    try:
+        from app.routers.voice_ai import normalize_spoken_numbers
+
+        raw = normalize_spoken_numbers(raw)
+    except Exception:
+        pass
+
+    q = re.sub(r"(\d),(\d{3})", r"\1\2", raw.lower())
 
     if re.search(r"\b(?:3d|ar|glb|360)\b", q):
         only_3d = True
@@ -56,9 +65,9 @@ def _parse_inline_price_constraints(
 
     if eff_max is None:
         max_patterns = (
-            r"(?:under|below|less\s+than|max|up\s+to|budget(?:\s+of)?|within)\s*\$?\s*(\d+(?:\.\d+)?)",
+            r"(?:under|below|less\s+than|max|maximum|up\s+to|budget(?:\s+of)?|within|around)\s*\$?\s*(\d+(?:\.\d+)?)",
             r"\$\s*(\d+(?:\.\d+)?)\s*(?:or\s+less|max)",
-            r"(\d+(?:\.\d+)?)\s*dollars?\s*(?:or\s+less|max)?",
+            r"(\d+(?:\.\d+)?)\s*(?:dollars?|bucks?|usd)\s*(?:or\s+less|max)?",
         )
         for pat in max_patterns:
             m = re.search(pat, q)
@@ -96,10 +105,21 @@ def execute_multimodal_rrf_search(
     """
     Execute hybrid Multimodal Search using Reciprocal Rank Fusion (RRF):
       rrf_score = 1/(60 + rank_visual) + 1/(60 + rank_text) + trust_boost
+    with honest, calibrated confidence tiers (`strong_match`, `similar_style`,
+    `closest_alternatives`) instead of artificial rank-1 inflation.
     """
     started = time.perf_counter()
 
-    clean_query = (query_text or "").strip()
+    raw_query = (query_text or "").strip()
+    clean_query = raw_query
+    if raw_query:
+        try:
+            from app.routers.voice_ai import normalize_spoken_numbers
+
+            clean_query = normalize_spoken_numbers(raw_query)
+        except Exception:
+            clean_query = raw_query
+
     eff_min, eff_max, inferred_3d = _parse_inline_price_constraints(
         clean_query,
         min_price,
@@ -137,57 +157,65 @@ def execute_multimodal_rrf_search(
     visual_ranks: dict[int, int] = {}
     visual_scores: dict[int, float] = {}
     analysis_info: dict[str, Any] = {}
+    is_blank_or_noise = False
+
+    from app.routers.visual_search import (
+        _calibrate_display_score,
+        _catalog_cache,
+        build_visual_search_summary,
+        classify_visual_confidence,
+    )
 
     if image_bytes:
         try:
-            from app.routers.visual_search import (
-                _calibrate_display_score,
-                _catalog_cache,
-            )
-
             query_info = analyze_and_embed_query(image_bytes)
+            is_blank_or_noise = bool(query_info.get("is_blank_or_noise"))
             analysis_info = {
                 "was_deblurred": bool(query_info.get("was_deblurred")),
                 "sharpness_score": query_info.get("sharpness_score"),
+                "is_blank_or_noise": is_blank_or_noise,
             }
-            catalog_prods, catalog_matrix = _catalog_cache.get_catalog()
-            if catalog_prods and catalog_matrix is not None:
-                variant_vecs = query_info.get("variant_vectors") or [
-                    query_info["primary_vector"]
-                ]
-                variant_weights = query_info.get("variant_weights") or [
-                    1.0 for _ in variant_vecs
-                ]
-                best_raw: Optional[np.ndarray] = None
-                for vec, w in zip(variant_vecs, variant_weights):
-                    q_arr = np.asarray(vec, dtype=np.float32)
-                    sims = catalog_matrix @ q_arr
-                    weighted = sims * float(0.95 + 0.05 * float(w))
-                    best_raw = (
-                        weighted
-                        if best_raw is None
-                        else np.maximum(best_raw, weighted)
-                    )
-
-                if best_raw is not None:
-                    scored_vis: list[tuple[int, float]] = []
-                    for idx, cat_prod in enumerate(catalog_prods):
-                        pid = int(cat_prod["id"])
-                        if pid not in candidate_by_id:
-                            continue
-                        cal = _calibrate_display_score(
-                            float(best_raw[idx]),
-                            was_deblurred=bool(query_info.get("was_deblurred")),
-                            is_heavily_blurred=bool(
-                                query_info.get("is_heavily_blurred")
-                            ),
+            if not is_blank_or_noise:
+                catalog_prods, catalog_matrix = _catalog_cache.get_catalog()
+                if catalog_prods and catalog_matrix is not None:
+                    variant_vecs = query_info.get("variant_vectors") or [
+                        query_info["primary_vector"]
+                    ]
+                    variant_weights = query_info.get("variant_weights") or [
+                        1.0 for _ in variant_vecs
+                    ]
+                    best_raw: Optional[np.ndarray] = None
+                    for vec, w in zip(variant_vecs, variant_weights):
+                        q_arr = np.asarray(vec, dtype=np.float32)
+                        sims = catalog_matrix @ q_arr
+                        weighted = sims * float(0.95 + 0.05 * float(w))
+                        best_raw = (
+                            weighted
+                            if best_raw is None
+                            else np.maximum(best_raw, weighted)
                         )
-                        scored_vis.append((pid, float(cal)))
 
-                    scored_vis.sort(key=lambda pair: pair[1], reverse=True)
-                    for rank_idx, (pid, cal_score) in enumerate(scored_vis, start=1):
-                        visual_ranks[pid] = rank_idx
-                        visual_scores[pid] = cal_score
+                    if best_raw is not None:
+                        scored_vis: list[tuple[int, float]] = []
+                        for idx, cat_prod in enumerate(catalog_prods):
+                            pid = int(cat_prod["id"])
+                            if pid not in candidate_by_id:
+                                continue
+                            cal = _calibrate_display_score(
+                                float(best_raw[idx]),
+                                was_deblurred=bool(query_info.get("was_deblurred")),
+                                is_heavily_blurred=bool(
+                                    query_info.get("is_heavily_blurred")
+                                ),
+                            )
+                            scored_vis.append((pid, float(cal)))
+
+                        scored_vis.sort(key=lambda pair: pair[1], reverse=True)
+                        for rank_idx, (pid, cal_score) in enumerate(scored_vis, start=1):
+                            visual_ranks[pid] = rank_idx
+                            visual_scores[pid] = cal_score
+        except ValueError:
+            raise
         except Exception as exc:
             logger.warning("Multimodal visual branch fallback: %s", exc)
         finally:
@@ -197,74 +225,95 @@ def execute_multimodal_rrf_search(
 
     # 3. Text / Voice Intent branch
     text_ranks: dict[int, int] = {}
+    text_scores: dict[int, float] = {}
     text_reasons: dict[int, str] = {}
+    has_keyword_intent = False
+
     if clean_query:
-        # Strip explicit price clauses before keyword scoring so "under 200" doesn't dilute keyword match
         keyword_query = re.sub(
-            r"\b(?:under|below|less\s+than|between|over|above|max|min|budget|similar\s+to\s+this|dollars?)\b|\$\s*\d+(?:\.\d+)?",
+            r"\b(?:under|below|less\s+than|between|over|above|at\s+least|max|maximum|min|minimum|up\s+to|within|around|budget(?:\s+of)?|similar\s+to\s+this|like\s+this|with\s+3d(?:\s+model|\s+view)?|dollars?|bucks?|usd)\b|\$\s*\d+(?:\.\d+)?",
             " ",
             clean_query,
             flags=re.IGNORECASE,
         )
-        keyword_query = " ".join(keyword_query.split()).strip() or clean_query
+        keyword_query = " ".join(keyword_query.split()).strip()
+        if keyword_query:
+            has_keyword_intent = True
+            scored_txt: list[tuple[int, float, str]] = []
+            for p in candidates:
+                pid = int(p["id"])
+                score, reason = _score_product_dict(
+                    p,
+                    keyword_query,
+                    category,
+                    active_3d_ids,
+                )
+                if score > 2.5:
+                    scored_txt.append((pid, float(score), reason))
 
-        scored_txt: list[tuple[int, float, str]] = []
-        for p in candidates:
-            pid = int(p["id"])
-            score, reason = _score_product_dict(
-                p,
-                keyword_query,
-                category,
-                active_3d_ids,
+            scored_txt.sort(
+                key=lambda item: (item[1], float(candidate_by_id[item[0]].get("rating") or 0.0)),
+                reverse=True,
             )
-            if score > 2.5:
-                scored_txt.append((pid, score, reason))
+            for rank_idx, (pid, sc, reason) in enumerate(scored_txt, start=1):
+                text_ranks[pid] = rank_idx
+                text_scores[pid] = sc
+                text_reasons[pid] = reason
 
-        scored_txt.sort(
-            key=lambda item: (item[1], float(candidate_by_id[item[0]].get("rating") or 4.8)),
-            reverse=True,
-        )
-        for rank_idx, (pid, _sc, reason) in enumerate(scored_txt, start=1):
-            text_ranks[pid] = rank_idx
-            text_reasons[pid] = reason
-
-    # 4. Reciprocal Rank Fusion (RRF) & Trust Boost
+    # 4. Reciprocal Rank Fusion (RRF) & Calibrated Confidence
     rrf_k = 60.0
     fused: list[dict[str, Any]] = []
+
+    if is_blank_or_noise and not has_keyword_intent:
+        candidates = []
 
     for p in candidates:
         pid = int(p["id"])
         r_vis = visual_ranks.get(pid)
         r_txt = text_ranks.get(pid)
 
-        # If both visual and text queries exist, include candidates found in either branch
-        # (or top visual candidates if text was purely a price filter)
         if image_bytes and r_vis is None and r_txt is None:
             continue
-        if not image_bytes and clean_query and r_txt is None and eff_max is None and eff_min is None:
+        if not image_bytes and has_keyword_intent and r_txt is None:
             continue
 
         vis_rrf = (1.0 / (rrf_k + r_vis)) if r_vis is not None else 0.0
         txt_rrf = (1.0 / (rrf_k + r_txt)) if r_txt is not None else 0.0
-        trust_rating = float(p.get("rating") or 4.8)
-        trust_boost = (trust_rating / 5.0) * 0.0025
+        rating_val = float(p.get("rating") or 0.0)
+        review_cnt = int(p.get("reviews") or 0)
+        trust_boost = ((rating_val / 5.0) * 0.0020) if review_cnt > 0 else 0.0005
         rrf_score = round(vis_rrf + txt_rrf + trust_boost, 6)
 
-        vis_score = visual_scores.get(pid, 0.0)
-        max_possible_rrf = (
-            (1.0 / 61.0 if image_bytes else 0.0)
-            + (1.0 / 61.0 if clean_query else 0.0)
-            + 0.0025
+        vis_score = float(visual_scores.get(pid, 0.0))
+        raw_txt_sc = float(text_scores.get(pid, 0.0))
+        txt_conf = (
+            min(0.95, 0.58 + (raw_txt_sc / 95.0))
+            if r_txt is not None
+            else 0.0
         )
-        norm_confidence = (
-            min(0.99, max(0.55, rrf_score / max(0.001, max_possible_rrf)))
-            if rrf_score > 0
-            else 0.72
-        )
-        if r_vis == 1 and vis_score > 0.7:
-            norm_confidence = max(norm_confidence, vis_score)
 
-        # Build concise explainable match badge
+        # Calibrated confidence (NEVER inflated to 99% solely for being rank #1)
+        if image_bytes and has_keyword_intent:
+            if r_txt is not None and r_vis is not None:
+                calibrated_conf = min(
+                    0.98,
+                    0.62 * vis_score + 0.38 * txt_conf + (0.04 if vis_score >= 0.65 else 0.0),
+                )
+            elif r_vis is not None:
+                calibrated_conf = vis_score * 0.88
+            else:
+                calibrated_conf = txt_conf * 0.82
+        elif image_bytes:
+            calibrated_conf = vis_score
+        elif has_keyword_intent:
+            calibrated_conf = txt_conf
+        else:
+            calibrated_conf = 0.76
+
+        calibrated_conf = round(float(max(0.05, min(0.99, calibrated_conf))), 4)
+        tier, tier_label = classify_visual_confidence(calibrated_conf)
+
+        # Build concise explainable match_reason
         reason_parts: list[str] = []
         if r_vis is not None and vis_score > 0:
             reason_parts.append(f"{int(round(vis_score * 100))}% Visual")
@@ -274,21 +323,19 @@ def execute_multimodal_rrf_search(
             reason_parts.append(f"Under ${eff_max:.0f}")
         if pid in active_3d_ids:
             reason_parts.append("3D Twin Ready")
-        reason_parts.append(f"{trust_rating:.1f}★ Trust")
+        stock_cnt = int(p.get("stock") if p.get("stock") is not None else 50)
+        reason_parts.append(f"Only {stock_cnt} Left" if 0 < stock_cnt <= 5 else "In Stock")
 
         match_reason = " • ".join(reason_parts)
 
         fused.append(
             {
                 "product": p,
-                "score": round(float(norm_confidence), 4),
-                "visual_score": round(float(vis_score), 4),
+                "score": calibrated_conf,
+                "visual_score": round(vis_score, 4),
                 "rrf_score": rrf_score,
-                "match_label": (
-                    "Exact Multimodal Match"
-                    if norm_confidence >= 0.85
-                    else ("Strong Hybrid Match" if norm_confidence >= 0.68 else "Relevant Match")
-                ),
+                "confidence_tier": tier,
+                "match_label": tier_label,
                 "match_reason": match_reason,
                 "has_3d_model": pid in active_3d_ids,
             }
@@ -302,6 +349,25 @@ def execute_multimodal_rrf_search(
 
     latency_ms = round((time.perf_counter() - started) * 1000.0, 2)
     top1 = matches[0]["score"] if matches else 0.0
+    overall_tier = (
+        matches[0]["confidence_tier"]
+        if matches
+        else ("blank_or_noise" if is_blank_or_noise else "none")
+    )
+    search_summary = (
+        build_visual_search_summary(
+            confidence_tier=overall_tier,
+            match_count=len(matches),
+            is_blank_or_noise=is_blank_or_noise,
+            has_text_refinement=bool(clean_query),
+        )
+        if image_bytes
+        else (
+            f"Found {len(matches)} matching in-stock product{'s' if len(matches) != 1 else ''} in {latency_ms:.0f} ms."
+            if matches
+            else "No in-stock products matched all search constraints."
+        )
+    )
     avg5 = (
         round(sum(m["score"] for m in matches[:5]) / min(5, len(matches)), 4)
         if matches
@@ -322,20 +388,27 @@ def execute_multimodal_rrf_search(
 
     return {
         "status": "success",
-        "query_status": "success" if matches else "not_in_database",
-        "in_database": bool(matches),
-        "message": (
-            f"Found {len(matches)} multimodal match{'es' if len(matches) != 1 else ''} in {latency_ms:.0f} ms."
-            if matches
-            else "No in-stock products matched all multimodal constraints."
+        "query_status": (
+            "closest_alternatives"
+            if overall_tier == "closest_alternatives"
+            else ("success" if matches else "not_in_database")
         ),
+        "in_database": bool(matches),
+        "confidence_tier": overall_tier,
+        "search_summary": search_summary,
+        "message": search_summary,
         "latency_ms": latency_ms,
         "analysis": {
             **analysis_info,
+            "search_mode": "multimodal_rrf",
+            "confidence_tier": overall_tier,
+            "search_summary": search_summary,
             "query_text": clean_query,
+            "max_price": eff_max,
             "effective_max_price": eff_max,
             "effective_min_price": eff_min,
             "only_3d": eff_only_3d,
+            "search_time_ms": round(latency_ms, 1),
             "fusion_method": "Reciprocal Rank Fusion (k=60)",
         },
         "matches": matches,

@@ -200,8 +200,8 @@ class _HomeScreenState extends State<HomeScreen>
                   borderRadius: BorderRadius.circular(8),
                   child: Image.memory(
                     picked.bytes,
-                    width: 42,
-                    height: 42,
+                    width: 46,
+                    height: 46,
                     fit: BoxFit.cover,
                   ),
                 ),
@@ -215,12 +215,23 @@ class _HomeScreenState extends State<HomeScreen>
                 ),
                 const SizedBox(width: 14),
                 const Flexible(
-                  child: Text(
-                    'AI is analyzing your image...',
-                    style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600,
-                    ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Extracting visual features...',
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      SizedBox(height: 2),
+                      Text(
+                        'Searching catalog vectors & calibrating confidence',
+                        style: TextStyle(fontSize: 11),
+                      ),
+                    ],
                   ),
                 ),
               ],

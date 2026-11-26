@@ -635,8 +635,37 @@ CREATE POLICY "Users read own rfq_requests" ON rfq_requests
 
 DROP POLICY IF EXISTS "Users manage own wishlists" ON wishlists;
 CREATE POLICY "Users manage own wishlists" ON wishlists
-    FOR ALL USING (LOWER(user_email) = LOWER(COALESCE(auth.jwt() ->> 'email', '')))
-    WITH CHECK (LOWER(user_email) = LOWER(COALESCE(auth.jwt() ->> 'email', '')));
+    FOR ALL USING (
+        EXISTS (
+            SELECT 1 FROM users
+            WHERE users.id = wishlists.user_id
+              AND LOWER(users.email) = LOWER(COALESCE(auth.jwt() ->> 'email', ''))
+        )
+    )
+    WITH CHECK (
+        EXISTS (
+            SELECT 1 FROM users
+            WHERE users.id = wishlists.user_id
+              AND LOWER(users.email) = LOWER(COALESCE(auth.jwt() ->> 'email', ''))
+        )
+    );
+
+DROP POLICY IF EXISTS "Users manage own favorites" ON favorites;
+CREATE POLICY "Users manage own favorites" ON favorites
+    FOR ALL USING (
+        EXISTS (
+            SELECT 1 FROM users
+            WHERE users.id = favorites.user_id
+              AND LOWER(users.email) = LOWER(COALESCE(auth.jwt() ->> 'email', ''))
+        )
+    )
+    WITH CHECK (
+        EXISTS (
+            SELECT 1 FROM users
+            WHERE users.id = favorites.user_id
+              AND LOWER(users.email) = LOWER(COALESCE(auth.jwt() ->> 'email', ''))
+        )
+    );
 
 -- 18.4 Composite High-Throughput Indexes for Sub-Second Catalog, Order & RFQ Reads
 CREATE INDEX IF NOT EXISTS idx_products_active_id_desc
@@ -657,6 +686,282 @@ CREATE INDEX IF NOT EXISTS idx_orders_customer_email_created
 CREATE INDEX IF NOT EXISTS idx_rfq_customer_email_id_desc
     ON rfq_requests (LOWER(customer_email), id DESC);
 
-CREATE INDEX IF NOT EXISTS idx_wishlists_user_email_product
-    ON wishlists (LOWER(user_email), product_id);
+DROP INDEX IF EXISTS idx_wishlists_user_email_product;
+CREATE INDEX IF NOT EXISTS idx_wishlists_user_product
+    ON wishlists (user_id, product_id);
+
+CREATE INDEX IF NOT EXISTS idx_favorites_user_product
+    ON favorites (user_id, product_id);
+
+
+-- ============================================================================
+-- 19. Model Context Protocol (MCP 2026-07-28 / 2025-11-25) Infrastructure
+-- Scoped API Key Store + Auditable Telemetry Persistence
+-- ============================================================================
+
+-- 19.1 Scoped MCP API Keys (`mcp_api_keys`)
+CREATE TABLE IF NOT EXISTS mcp_api_keys (
+    id BIGSERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_email VARCHAR(254) NOT NULL,
+    name VARCHAR(80) NOT NULL DEFAULT 'MCP key',
+    key_prefix VARCHAR(32) NOT NULL,
+    key_hash VARCHAR(128) NOT NULL UNIQUE,
+    scopes JSONB NOT NULL DEFAULT '[]'::jsonb,
+    expires_at TIMESTAMPTZ,
+    revoked_at TIMESTAMPTZ,
+    last_used_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_mcp_api_keys_hash ON mcp_api_keys (key_hash);
+CREATE INDEX IF NOT EXISTS idx_mcp_api_keys_user ON mcp_api_keys (user_id, revoked_at);
+CREATE INDEX IF NOT EXISTS idx_mcp_api_keys_email ON mcp_api_keys (LOWER(user_email));
+
+-- 19.2 High-Throughput MCP Audit Telemetry (`mcp_audit_logs`)
+CREATE TABLE IF NOT EXISTS mcp_audit_logs (
+    id BIGSERIAL PRIMARY KEY,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    source VARCHAR(24) NOT NULL DEFAULT 'http',
+    method VARCHAR(128) NOT NULL,
+    tool_name VARCHAR(128),
+    protocol_version VARCHAR(16),
+    principal_type VARCHAR(16) NOT NULL DEFAULT 'anonymous',
+    user_id INTEGER,
+    key_id BIGINT,
+    latency_ms DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+    success BOOLEAN NOT NULL DEFAULT TRUE,
+    error_code INTEGER,
+    http_status INTEGER,
+    client_name VARCHAR(80),
+    metadata_json JSONB
+);
+
+CREATE INDEX IF NOT EXISTS idx_mcp_audit_logs_created ON mcp_audit_logs (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_mcp_audit_logs_tool ON mcp_audit_logs (tool_name, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_mcp_audit_logs_user ON mcp_audit_logs (user_id, created_at DESC);
+
+-- 19.3 Row-Level Security for MCP Tables
+ALTER TABLE mcp_api_keys ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mcp_audit_logs ENABLE ROW LEVEL SECURITY;
+
+-- Service role full access
+DROP POLICY IF EXISTS "Service role manages mcp_api_keys" ON mcp_api_keys;
+CREATE POLICY "Service role manages mcp_api_keys" ON mcp_api_keys
+    FOR ALL TO service_role USING (TRUE) WITH CHECK (TRUE);
+
+DROP POLICY IF EXISTS "Service role manages mcp_audit_logs" ON mcp_audit_logs;
+CREATE POLICY "Service role manages mcp_audit_logs" ON mcp_audit_logs
+    FOR ALL TO service_role USING (TRUE) WITH CHECK (TRUE);
+
+-- Authenticated users manage own MCP keys
+DROP POLICY IF EXISTS "Users manage own mcp_api_keys" ON mcp_api_keys;
+CREATE POLICY "Users manage own mcp_api_keys" ON mcp_api_keys
+    FOR ALL USING (LOWER(user_email) = LOWER(COALESCE(auth.jwt() ->> 'email', '')))
+    WITH CHECK (LOWER(user_email) = LOWER(COALESCE(auth.jwt() ->> 'email', '')));
+
+-- Admin access for audit logs
+DROP POLICY IF EXISTS "Admins read mcp_audit_logs" ON mcp_audit_logs;
+CREATE POLICY "Admins read mcp_audit_logs" ON mcp_audit_logs
+    FOR SELECT USING (
+        EXISTS (
+            SELECT 1 FROM users
+            WHERE LOWER(users.email) = LOWER(COALESCE(auth.jwt() ->> 'email', ''))
+              AND users.role = 'admin'
+        )
+    );
+
+
+-- ============================================================================
+-- 20. PRE-LAUNCH HIGH-CONCURRENCY, IDEMPOTENCY & FLAGSHIP REVIEWS HARDENING
+-- Built for 100+ simultaneous shoppers: zero overselling, atomic cart upserts,
+-- order idempotency keys, helpful review votes, and zero-template review cache.
+-- ============================================================================
+
+-- 20.1 Atomic Checkout Stock Decrement & Rollback Compensation RPCs
+CREATE OR REPLACE FUNCTION decrement_stock_atomic(
+    p_product_id INTEGER,
+    p_qty INTEGER
+)
+RETURNS INTEGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_remaining INTEGER;
+BEGIN
+    IF p_qty IS NULL OR p_qty <= 0 THEN
+        RAISE EXCEPTION 'Quantity must be positive';
+    END IF;
+
+    UPDATE products
+    SET stock = stock - p_qty
+    WHERE id = p_product_id
+      AND COALESCE(is_active, TRUE) = TRUE
+      AND COALESCE(stock, 0) >= p_qty
+    RETURNING stock INTO v_remaining;
+
+    IF NOT FOUND THEN
+        RETURN -1;
+    END IF;
+
+    RETURN v_remaining;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION increment_stock_atomic(
+    p_product_id INTEGER,
+    p_qty INTEGER
+)
+RETURNS INTEGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_remaining INTEGER;
+BEGIN
+    IF p_qty IS NULL OR p_qty <= 0 THEN
+        RETURN -1;
+    END IF;
+
+    UPDATE products
+    SET stock = COALESCE(stock, 0) + p_qty
+    WHERE id = p_product_id
+    RETURNING stock INTO v_remaining;
+
+    IF NOT FOUND THEN
+        RETURN -1;
+    END IF;
+
+    RETURN v_remaining;
+END;
+$$;
+
+-- 20.2 Atomic Cart Upsert RPC (prevents race-condition duplicate rows & stock overflow)
+CREATE OR REPLACE FUNCTION upsert_cart_item_atomic(
+    p_user_id INTEGER,
+    p_product_id INTEGER,
+    p_qty INTEGER,
+    p_variant VARCHAR(100) DEFAULT '',
+    p_mode VARCHAR(16) DEFAULT 'increment'
+)
+RETURNS INTEGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    v_stock INTEGER;
+    v_active BOOLEAN;
+    v_existing INTEGER;
+    v_target INTEGER;
+    v_clean_variant VARCHAR(100);
+BEGIN
+    IF p_qty IS NULL OR p_qty <= 0 THEN
+        RAISE EXCEPTION 'Quantity must be positive';
+    END IF;
+
+    SELECT COALESCE(stock, 50), COALESCE(is_active, TRUE)
+    INTO v_stock, v_active
+    FROM products
+    WHERE id = p_product_id;
+
+    IF NOT FOUND OR NOT v_active THEN
+        RETURN -2; -- Product not found or inactive
+    END IF;
+
+    v_clean_variant := COALESCE(TRIM(p_variant), '');
+
+    SELECT quantity INTO v_existing
+    FROM cart_items
+    WHERE user_id = p_user_id
+      AND product_id = p_product_id
+      AND selected_variant = v_clean_variant
+    FOR UPDATE;
+
+    IF p_mode = 'set' THEN
+        v_target := LEAST(100, p_qty);
+    ELSE
+        v_target := LEAST(100, COALESCE(v_existing, 0) + p_qty);
+    END IF;
+
+    IF v_target > v_stock THEN
+        RETURN -1; -- Insufficient stock
+    END IF;
+
+    INSERT INTO cart_items (user_id, product_id, quantity, selected_variant, updated_at)
+    VALUES (p_user_id, p_product_id, v_target, v_clean_variant, NOW())
+    ON CONFLICT (user_id, product_id, selected_variant)
+    DO UPDATE SET
+        quantity = EXCLUDED.quantity,
+        updated_at = NOW()
+    RETURNING quantity INTO v_target;
+
+    RETURN v_target;
+END;
+$$;
+
+-- 20.3 Order Idempotency Guard (prevents duplicate orders on double-tap or network retry)
+ALTER TABLE orders
+    ADD COLUMN IF NOT EXISTS idempotency_key VARCHAR(128);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_idempotency_key_unique
+    ON orders (idempotency_key)
+    WHERE idempotency_key IS NOT NULL AND idempotency_key <> '';
+
+-- 20.4 Flagship Customer Reviews: Fit/Quality Tags & Persistent Helpful Votes
+ALTER TABLE reviews
+    ADD COLUMN IF NOT EXISTS helpful_count INTEGER NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS tags_json TEXT NOT NULL DEFAULT '[]';
+
+CREATE TABLE IF NOT EXISTS review_helpful_votes (
+    id BIGSERIAL PRIMARY KEY,
+    review_id INTEGER NOT NULL REFERENCES reviews(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_review_helpful_user UNIQUE (review_id, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_review_helpful_votes_review
+    ON review_helpful_votes (review_id);
+CREATE INDEX IF NOT EXISTS idx_review_helpful_votes_user
+    ON review_helpful_votes (user_id);
+
+CREATE OR REPLACE FUNCTION sync_review_helpful_count()
+RETURNS TRIGGER AS $$
+DECLARE
+    target_review_id INTEGER;
+BEGIN
+    target_review_id := COALESCE(NEW.review_id, OLD.review_id);
+    UPDATE reviews
+    SET helpful_count = (
+        SELECT COUNT(*)::integer
+        FROM review_helpful_votes
+        WHERE review_id = target_review_id
+    )
+    WHERE id = target_review_id;
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_sync_review_helpful_count ON review_helpful_votes;
+CREATE TRIGGER trg_sync_review_helpful_count
+AFTER INSERT OR DELETE ON review_helpful_votes
+FOR EACH ROW EXECUTE FUNCTION sync_review_helpful_count();
+
+ALTER TABLE review_helpful_votes ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Public read review_helpful_votes" ON review_helpful_votes;
+CREATE POLICY "Public read review_helpful_votes" ON review_helpful_votes
+    FOR SELECT USING (TRUE);
+
+DROP POLICY IF EXISTS "Service role full review_helpful_votes" ON review_helpful_votes;
+CREATE POLICY "Service role full review_helpful_votes" ON review_helpful_votes
+    FOR ALL USING (auth.role() = 'service_role')
+    WITH CHECK (auth.role() = 'service_role');
+
+-- Purge any legacy fabricated zero-review insight rows so 0-review products stay 100% honest
+DELETE FROM product_review_insights
+WHERE review_count_at_generation = 0 OR total_reviews = 0;
+
+
 

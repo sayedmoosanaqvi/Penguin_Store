@@ -19,7 +19,7 @@ from fastapi import (
     status,
 )
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, ORJSONResponse
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, Field
 from sqlalchemy import func
@@ -53,6 +53,7 @@ from .repositories.product_repo import PRODUCT_PUBLIC_COLUMNS  # noqa: E402
 from .routers import (  # noqa: E402
     agent,
     agent_chat,
+    mcp_server,
     notifications,
     orders,
     premium_3d,
@@ -133,8 +134,9 @@ app = FastAPI(
         "Enterprise AI-powered e-commerce platform with strict RBAC, "
         "Supabase PostgreSQL + Storage, visual search, CTRL-X agents, and Premium 3D."
     ),
-    version="2.1.0",
+    version="2.2.0",
     lifespan=app_lifespan,
+    default_response_class=ORJSONResponse,
 )
 
 configure_cors(app)
@@ -164,6 +166,7 @@ app.include_router(notifications.router)
 app.include_router(visual_search.router)
 app.include_router(voice_ai.router)
 app.include_router(premium_3d.router)
+app.include_router(mcp_server.router)
 
 
 @app.get("/")
@@ -275,7 +278,7 @@ def create_product(
 
 
 @app.get("/products/", response_model=list[schemas.Product])
-def get_products(
+async def get_products(
     search: str | None = None,
     q: str | None = None,
     category: str | None = None,
@@ -285,13 +288,11 @@ def get_products(
     sort: str | None = None,
     limit: int | None = None,
     offset: int = 0,
-    db: Session = Depends(get_db),
 ):
-    from .repositories.product_repo import list_public_products
+    from .core.supabase_rest import fetch_products_singleflight_async
 
     eff_search = search if (search and search.strip()) else q
-    return list_public_products(
-        db,
+    return await fetch_products_singleflight_async(
         limit=limit,
         offset=offset,
         category=category,
@@ -304,7 +305,7 @@ def get_products(
 
 
 @app.get("/products/search", response_model=list[schemas.Product])
-def search_products_legacy(
+async def search_products_legacy(
     q: str | None = None,
     search: str | None = None,
     category: str | None = None,
@@ -315,10 +316,10 @@ def search_products_legacy(
     limit: int = 60,
     offset: int = 0,
 ):
-    from .core.supabase_rest import search_products_hybrid_https
+    from .core.supabase_rest import fetch_products_singleflight_async
 
     eff_query = q if (q and q.strip()) else search
-    return search_products_hybrid_https(
+    return await fetch_products_singleflight_async(
         search=eff_query,
         category=category,
         min_price=min_price,
@@ -331,10 +332,10 @@ def search_products_legacy(
 
 
 @app.get("/products/{product_id}", response_model=schemas.Product)
-def get_product_by_id(product_id: int, db: Session = Depends(get_db)):
-    from .repositories.product_repo import get_public_product_by_id
+async def get_product_by_id(product_id: int):
+    from .core.supabase_rest import fetch_product_by_id_singleflight_async
 
-    product = get_public_product_by_id(db, product_id)
+    product = await fetch_product_by_id_singleflight_async(product_id)
     if product is None:
         raise HTTPException(status_code=404, detail="Product not found.")
     return product
@@ -563,18 +564,20 @@ async def upload_file_to_supabase(
 
         unique_filename = f"{uuid.uuid4().hex}{norm_ext}"
 
-        supabase.storage.from_(PUBLIC_ASSET_BUCKET).upload(
-            path=unique_filename,
-            file=norm_bytes,
-            file_options={
-                "content-type": content_type,
-                "upsert": "false",
-            },
-        )
+        def _upload_and_get_url() -> str:
+            supabase.storage.from_(PUBLIC_ASSET_BUCKET).upload(
+                path=unique_filename,
+                file=norm_bytes,
+                file_options={
+                    "content-type": content_type,
+                    "upsert": "false",
+                },
+            )
+            return supabase.storage.from_(PUBLIC_ASSET_BUCKET).get_public_url(
+                unique_filename
+            )
 
-        file_url = supabase.storage.from_(PUBLIC_ASSET_BUCKET).get_public_url(
-            unique_filename
-        )
+        file_url = await run_in_threadpool(_upload_and_get_url)
 
         return {
             "url": file_url,
@@ -614,13 +617,17 @@ app.add_api_route(
 @app.get("/api/v1/cart/", tags=["API v1"])
 def get_v1_cart(
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
 ):
-    rows = (
-        db.query(CartItemModel)
-        .filter(CartItemModel.user_id == current_user.id)
-        .all()
+    from .core.supabase_rest import fetch_product_by_id_https, get_supabase_client
+
+    client = get_supabase_client()
+    res = (
+        client.table("cart_items")
+        .select("product_id,quantity,selected_variant")
+        .eq("user_id", current_user.id)
+        .execute()
     )
+    rows = res.data or []
     if not rows:
         return {
             "user_email": current_user.email.strip().lower(),
@@ -628,32 +635,27 @@ def get_v1_cart(
             "subtotal": 0.0,
         }
 
-    pids = [r.product_id for r in rows]
-    products = (
-        db.query(models.Product)
-        .options(load_only(*PRODUCT_PUBLIC_COLUMNS))
-        .filter(models.Product.id.in_(pids))
-        .all()
-    )
-    by_id = {p.id: p for p in products}
-
     items_out = []
     subtotal = 0.0
     for row in rows:
-        p = by_id.get(row.product_id)
+        pid = int(row.get("product_id") or 0)
+        p = fetch_product_by_id_https(pid)
         if not p:
             continue
-        line_total = round(float(p.price) * row.quantity, 2)
+        qty = int(row.get("quantity") or 1)
+        price_val = float(p.get("price") or 0.0)
+        line_total = round(price_val * qty, 2)
         subtotal += line_total
         items_out.append(
             {
-                "product_id": p.id,
-                "name": p.name,
-                "price": float(p.price),
-                "image_url": p.image_url,
-                "category": p.category,
-                "quantity": row.quantity,
-                "selected_variant": row.selected_variant,
+                "product_id": pid,
+                "name": p.get("name") or f"Product #{pid}",
+                "price": price_val,
+                "image_url": p.get("image_url") or "",
+                "category": p.get("category") or "CATALOG",
+                "stock": int(p.get("stock") if p.get("stock") is not None else 50),
+                "quantity": qty,
+                "selected_variant": row.get("selected_variant") or "",
                 "line_total": line_total,
             }
         )
@@ -669,76 +671,78 @@ def get_v1_cart(
 def add_to_v1_cart(
     item: schemas.CartSyncItem,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
 ):
-    from .core.supabase_rest import _DELETED_PRODUCT_IDS
+    from .core.supabase_rest import upsert_cart_item_atomic_sync
 
-    if item.product_id in _DELETED_PRODUCT_IDS:
-        raise HTTPException(status_code=404, detail="Product not found.")
-
-    product = (
-        db.query(models.Product)
-        .options(load_only(models.Product.id, models.Product.name, models.Product.stock))
-        .filter(models.Product.id == item.product_id)
-        .first()
-    )
-    if not product or getattr(product, "is_active", True) is False:
-        raise HTTPException(status_code=404, detail="Product not found.")
-
-    variant = item.selected_variant.strip()
-    existing = (
-        db.query(CartItemModel)
-        .filter(
-            CartItemModel.user_id == current_user.id,
-            CartItemModel.product_id == item.product_id,
-            CartItemModel.selected_variant == variant,
-        )
-        .first()
+    return upsert_cart_item_atomic_sync(
+        user_id=current_user.id,
+        product_id=item.product_id,
+        quantity=item.quantity,
+        selected_variant=item.selected_variant.strip(),
+        mode="increment",
     )
 
-    if existing:
-        existing.quantity = min(100, existing.quantity + item.quantity)
-        new_qty = existing.quantity
-    else:
-        db.add(
-            CartItemModel(
-                user_id=current_user.id,
-                product_id=item.product_id,
-                quantity=item.quantity,
-                selected_variant=variant,
-            )
-        )
-        new_qty = item.quantity
 
-    db.commit()
-    return {
-        "status": "added",
-        "product_id": item.product_id,
-        "selected_variant": variant,
-        "quantity": new_qty,
-    }
+@app.delete("/api/v1/cart/{product_id}", tags=["API v1"])
+def remove_from_v1_cart(
+    product_id: int,
+    selected_variant: str = "",
+    current_user: User = Depends(get_current_user),
+):
+    from .core.supabase_rest import get_supabase_client
+
+    client = get_supabase_client()
+    q = client.table("cart_items").delete().eq("user_id", current_user.id).eq("product_id", int(product_id))
+    if selected_variant:
+        q = q.eq("selected_variant", selected_variant.strip())
+    q.execute()
+    return {"status": "removed", "product_id": int(product_id)}
 
 
 @app.put("/api/v1/cart/sync", tags=["API v1"])
 def replace_v1_cart(
     payload: schemas.CartBulkSyncRequest,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
 ):
-    db.query(CartItemModel).filter(CartItemModel.user_id == current_user.id).delete()
+    from datetime import datetime, timezone
+    from .core.concurrency import KeyedLockPool
+    from .core.supabase_rest import fetch_live_product_row_https, get_supabase_client
+
+    global _BULK_CART_SYNC_LOCKS
+    try:
+        locks = _BULK_CART_SYNC_LOCKS
+    except NameError:
+        _BULK_CART_SYNC_LOCKS = KeyedLockPool(64)
+        locks = _BULK_CART_SYNC_LOCKS
+
     merged: dict[tuple[int, str], int] = {}
     for entry in payload.items:
-        key = (entry.product_id, entry.selected_variant.strip())
-        merged[key] = min(100, merged.get(key, 0) + entry.quantity)
+        prod = fetch_live_product_row_https(entry.product_id)
+        if prod is None:
+            continue
+        avail = int(prod.get("stock") if prod.get("stock") is not None else 50)
+        if avail <= 0:
+            continue
+        key = (entry.product_id, entry.selected_variant.strip()[:100])
+        merged[key] = min(100, avail, merged.get(key, 0) + entry.quantity)
 
-    for (pid, variant), qty in merged.items():
-        db.add(
-            CartItemModel(
-                user_id=current_user.id,
-                product_id=pid,
-                quantity=qty,
-                selected_variant=variant,
-            )
-        )
-    db.commit()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    client = get_supabase_client()
+    with locks.for_key(current_user.id):
+        client.table("cart_items").delete().eq("user_id", current_user.id).execute()
+        if merged:
+            batch = [
+                {
+                    "user_id": current_user.id,
+                    "product_id": pid,
+                    "quantity": qty,
+                    "selected_variant": variant,
+                    "updated_at": now_iso,
+                }
+                for (pid, variant), qty in merged.items()
+            ]
+            client.table("cart_items").upsert(
+                batch,
+                on_conflict="user_id,product_id,selected_variant",
+            ).execute()
     return {"status": "synced", "item_count": len(merged)}

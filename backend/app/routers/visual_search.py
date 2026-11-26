@@ -474,21 +474,85 @@ def _sniff_image_media_type(data: bytes, fallback: str = "image/jpeg") -> str:
     return "image/jpeg"
 
 
+def classify_visual_confidence(score: float) -> tuple[str, str]:
+    """
+    Map a calibrated cosine similarity score into industry-honest confidence tiers:
+      - >= 0.75 : ('strong_match', 'Strong Match')
+      - 0.55..0.74 : ('similar_style', 'Similar Style')
+      - < 0.55 : ('closest_alternatives', 'Closest Alternative')
+    """
+    s = float(score)
+    if s >= 0.75:
+        return "strong_match", ("Exact Match" if s >= 0.88 else "Strong Match")
+    if s >= 0.55:
+        return "similar_style", "Similar Style"
+    return "closest_alternatives", "Closest Alternative"
+
+
+def build_visual_search_summary(
+    *,
+    confidence_tier: str,
+    match_count: int,
+    is_blank_or_noise: bool = False,
+    has_text_refinement: bool = False,
+) -> str:
+    if is_blank_or_noise:
+        return (
+            "The uploaded image appears blank or lacks recognizable visual detail. "
+            "Please upload a clearer photo of the item."
+        )
+    if match_count == 0:
+        return (
+            "No in-stock products matched all visual and filter constraints. "
+            "Try relaxing your price filter or refining with text below."
+        )
+    if confidence_tier == "strong_match":
+        return (
+            f"Found {match_count} high-confidence visual match{'es' if match_count != 1 else ''} "
+            "in the Penguin Store catalog."
+        )
+    if confidence_tier == "similar_style":
+        return (
+            f"Found {match_count} visually similar style{'s' if match_count != 1 else ''} "
+            "currently in stock. Refine with text or voice below to narrow further."
+        )
+    return (
+        "We couldn't find an exact visual match for this item, so here are the "
+        "closest styles currently in stock—or refine with a text filter below."
+    )
+
+
 def _calibrate_display_score(
     raw_score: float,
     was_deblurred: bool,
     is_heavily_blurred: bool,
 ) -> float:
     """
-    Calibrate raw ResNet-50 cosine similarity into an intuitive user-facing
-    confidence score in [0.0, 0.999], accounting for high-frequency attenuation
-    on blurred user photos while preserving strict ranking order.
+    Calibrate raw ResNet-50 cosine similarity into an honest user-facing
+    confidence score in [0.0, 0.995]. Weak matches (<0.42) are NEVER inflated
+    into fake high percentages.
     """
     score = float(raw_score)
-    if was_deblurred:
-        boost = 0.14 if is_heavily_blurred else 0.08
+    if was_deblurred and score >= 0.42:
+        boost = 0.08 if is_heavily_blurred else 0.05
         score = min(0.995, score + boost * (1.0 - score * 0.5))
-    return round(float(max(0.0, min(0.999, score))), 4)
+    return round(float(max(0.0, min(0.995, score))), 4)
+
+
+def _format_visual_match_reason(
+    *,
+    display_score: float,
+    match_label: str,
+    product: dict[str, Any],
+) -> str:
+    pct = int(round(display_score * 100))
+    cat = str(product.get("category") or "").strip()
+    stock = int(product.get("stock") if product.get("stock") is not None else 50)
+    parts = [f"{pct}% {match_label}"]
+    if cat:
+        parts.append(cat.title())
+    parts.append(f"Only {stock} Left" if 0 < stock <= 5 else "In Stock")
+    return " • ".join(parts)
 
 
 def _rank_and_filter_matches(
@@ -496,21 +560,15 @@ def _rank_and_filter_matches(
     limit: int = 6,
 ) -> list[dict[str, Any]]:
     """
-    Rank all indexed catalog products against the query variants, apply
-    strict database presence thresholds, and enforce category coherence.
+    Rank indexed in-stock catalog products against query variants and classify into
+    calibrated confidence tiers (`Strong Match`, `Similar Style`, or `Closest Alternative`)
+    while rejecting blank/noise images cleanly.
     """
     if embed_result.get("is_blank_or_noise"):
         return []
 
-    is_blurry = bool(embed_result.get("is_blurry"))
     is_heavily_blurred = bool(embed_result.get("is_heavily_blurred"))
     was_deblurred = bool(embed_result.get("was_deblurred"))
-
-    min_threshold = (
-        MIN_BLUR_MATCH_SCORE
-        if is_blurry
-        else MIN_SHARP_MATCH_SCORE
-    )
 
     products, matrix = _catalog_cache.get_catalog()
 
@@ -522,75 +580,69 @@ def _rank_and_filter_matches(
             dtype=np.float32,
         )
 
-        # Score against ensemble vector
         best_scores = matrix @ primary_vec
 
-        # Also score against each individual query variant (original, deblurred, center-crop)
         for vec_list, weight in zip(variant_vectors, variant_weights):
             v_arr = np.asarray(vec_list, dtype=np.float32)
-            # Apply slight discount only to cropped variant so full-image exact match wins ties
             penalty = 1.0 if weight >= 0.96 else float(weight)
             variant_scores = (matrix @ v_arr) * penalty
             best_scores = np.maximum(best_scores, variant_scores)
 
-        top_index = int(np.argmax(best_scores))
+        sorted_indices = np.argsort(best_scores)[::-1]
+        in_stock_indices = [
+            int(idx)
+            for idx in sorted_indices
+            if int(products[int(idx)].get("stock") if products[int(idx)].get("stock") is not None else 50) > 0
+        ]
+        if not in_stock_indices:
+            in_stock_indices = [int(i) for i in sorted_indices]
+
+        top_index = in_stock_indices[0]
         top_raw_score = float(best_scores[top_index])
-
-        # Check if the top product is genuinely in the database!
-        if top_raw_score < min_threshold:
-            return []
-
-        # Also check margin between #1 and median catalog score to reject flat ambiguous noise
-        median_score = float(np.median(best_scores))
-        if (top_raw_score - median_score) < 0.11 and top_raw_score < 0.54:
-            return []
-
+        top_display = _calibrate_display_score(
+            top_raw_score,
+            was_deblurred=was_deblurred,
+            is_heavily_blurred=is_heavily_blurred,
+        )
+        top_tier, _ = classify_visual_confidence(top_display)
         top_product = products[top_index]
         top_family = _category_family(top_product.get("category"))
 
-        # Sort candidates descending
-        sorted_indices = np.argsort(best_scores)[::-1]
-
         results: list[dict[str, Any]] = []
-        relative_floor = max(
-            min_threshold - 0.02,
-            top_raw_score - 0.40,
-        )
+        relative_floor = max(0.32, top_raw_score - 0.35)
 
-        for idx in sorted_indices:
-            raw_s = float(best_scores[int(idx)])
-            prod = products[int(idx)]
+        for idx in in_stock_indices:
+            raw_s = float(best_scores[idx])
+            prod = products[idx]
             prod_family = _category_family(prod.get("category"))
 
-            if prod_family == top_family:
-                if raw_s < max(min_threshold - 0.03, relative_floor):
-                    continue
-            else:
-                # Filter out unrelated category noise unless similarity is very high
-                if raw_s < 0.65 or (top_raw_score - raw_s) > 0.035:
-                    continue
+            if top_tier in ("strong_match", "similar_style"):
+                if prod_family == top_family:
+                    if raw_s < relative_floor:
+                        continue
+                else:
+                    if raw_s < 0.62 or (top_raw_score - raw_s) > 0.04:
+                        continue
 
             display_score = _calibrate_display_score(
                 raw_s,
                 was_deblurred=was_deblurred,
                 is_heavily_blurred=is_heavily_blurred,
             )
-
-            match_label = (
-                "Exact Match"
-                if display_score >= 0.85
-                else (
-                    "Strong Match"
-                    if display_score >= 0.65
-                    else "Visual Match"
-                )
+            tier, match_label = classify_visual_confidence(display_score)
+            match_reason = _format_visual_match_reason(
+                display_score=display_score,
+                match_label=match_label,
+                product=prod,
             )
 
             results.append(
                 {
                     "score": display_score,
                     "raw_score": round(raw_s, 4),
+                    "confidence_tier": tier,
                     "match_label": match_label,
+                    "match_reason": match_reason,
                     "product": prod,
                 }
             )
@@ -614,36 +666,26 @@ def _rank_and_filter_matches(
     if not raw_matches:
         return []
 
-    top_raw_score = float(raw_matches[0].get("score", 0.0))
-    if top_raw_score < min_threshold:
-        return []
-
-    top_prod = _sanitize_public_product(raw_matches[0].get("product") or {})
-    top_family = _category_family(top_prod.get("category"))
-
     scored_products: list[dict[str, Any]] = []
     for match in raw_matches:
         raw_s = float(match.get("score", 0.0))
-        if raw_s < min_threshold - 0.02:
-            continue
         prod = _sanitize_public_product(match.get("product") or {})
-        prod_family = _category_family(prod.get("category"))
-        if prod_family != top_family and raw_s < 0.65:
-            continue
-
         display_score = _calibrate_display_score(
             raw_s,
             was_deblurred=was_deblurred,
             is_heavily_blurred=is_heavily_blurred,
         )
+        tier, match_label = classify_visual_confidence(display_score)
         scored_products.append(
             {
                 "score": display_score,
                 "raw_score": round(raw_s, 4),
-                "match_label": (
-                    "Exact Match"
-                    if display_score >= 0.85
-                    else "Visual Match"
+                "confidence_tier": tier,
+                "match_label": match_label,
+                "match_reason": _format_visual_match_reason(
+                    display_score=display_score,
+                    match_label=match_label,
+                    product=prod,
                 ),
                 "product": prod,
             }
@@ -818,14 +860,27 @@ async def visual_product_search(
             ) from exc
 
         elapsed_ms = round((time.perf_counter() - started_at) * 1000, 1)
-        in_database = len(scored_products) > 0
+        is_blank = bool(embed_result.get("is_blank_or_noise", False))
+        has_results = len(scored_products) > 0
+        top1_sim = float(scored_products[0]["score"]) if has_results else 0.0
+        confidence_tier = (
+            scored_products[0]["confidence_tier"]
+            if has_results
+            else ("blank_or_noise" if is_blank else "none")
+        )
+        # Exact/Strong or Similar Style counts as direct visual match; Closest Alternatives are honest fallbacks
+        in_database = has_results
+        search_summary = build_visual_search_summary(
+            confidence_tier=confidence_tier,
+            match_count=len(scored_products),
+            is_blank_or_noise=is_blank,
+        )
         detected_category = (
             scored_products[0]["product"].get("category")
-            if in_database
+            if has_results
             else None
         )
 
-        top1_sim = float(scored_products[0]["score"]) if in_database else 0.0
         top5_slice = scored_products[:5]
         avg_top5_sim = (
             round(sum(float(m["score"]) for m in top5_slice) / len(top5_slice), 4)
@@ -845,20 +900,23 @@ async def visual_product_search(
 
         return {
             "query_status": (
-                "success" if in_database else "not_in_database"
+                "closest_alternatives"
+                if confidence_tier == "closest_alternatives"
+                else ("success" if has_results else "not_in_database")
             ),
             "in_database": in_database,
-            "message": (
-                f"Found {len(scored_products)} matching products in the database."
-                if in_database
-                else "This product is not in the Penguin Store database."
-            ),
+            "confidence_tier": confidence_tier,
+            "search_summary": search_summary,
+            "message": search_summary,
             "total_matches": len(scored_products),
             "matches": scored_products,
             "analysis": {
+                "confidence_tier": confidence_tier,
+                "search_summary": search_summary,
                 "sharpness_score": embed_result.get("sharpness_score"),
                 "is_blurry": embed_result.get("is_blurry", False),
                 "was_deblurred": embed_result.get("was_deblurred", False),
+                "is_blank_or_noise": is_blank,
                 "detected_category": detected_category,
                 "search_time_ms": elapsed_ms,
             },

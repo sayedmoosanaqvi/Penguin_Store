@@ -8,10 +8,15 @@ import stripe
 from dotenv import load_dotenv
 from fastapi import (
     APIRouter,
+    Header,
     Request,
     HTTPException,
     Depends,
 )
+from starlette.concurrency import run_in_threadpool
+from app.core.concurrency import BoundedLRUDict
+
+_STRIPE_IDEMPOTENCY_CACHE: BoundedLRUDict[dict] = BoundedLRUDict(max_size=512, ttl_seconds=86400)
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -368,13 +373,20 @@ def create_payment_intent(data: PaymentRequest):
     )
 
 
-# Existing & v1 one-time product checkout session (Supabase HTTPS + memory-aware)
+# Existing & v1 one-time product checkout session (Supabase HTTPS + memory-aware + Idempotency-Key)
 @router.post("/create-checkout-session")
 @router.post("/api/v1/stripe/create-checkout-session")
 def create_checkout_session(
     data: PaymentRequest,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key", max_length=128),
 ):
     require_stripe()
+
+    clean_idem = (idempotency_key or "").strip()
+    if clean_idem:
+        cached_resp = _STRIPE_IDEMPOTENCY_CACHE.get(f"stripe_session:{clean_idem}")
+        if cached_resp is not None:
+            return cached_resp
 
     frontend = resolve_frontend_url(data.frontend_origin)
 
@@ -421,10 +433,10 @@ def create_checkout_session(
     )
 
     try:
-        session = stripe.checkout.Session.create(
-            payment_method_types=["card"],
-            customer_email=customer_email,
-            line_items=[
+        create_kwargs = {
+            "payment_method_types": ["card"],
+            "customer_email": customer_email,
+            "line_items": [
                 {
                     "price_data": {
                         "currency": "usd",
@@ -437,27 +449,34 @@ def create_checkout_session(
                     "quantity": 1,
                 }
             ],
-            mode="payment",
-            success_url=(
+            "mode": "payment",
+            "success_url": (
                 f"{frontend}/#/checkout-success"
                 f"?session_id={{CHECKOUT_SESSION_ID}}"
                 f"&order_id={data.order_id}"
                 f"&receipt_token={receipt_token}"
             ),
-            cancel_url=f"{frontend}/#/checkout-cancel?order_id={data.order_id}",
-            metadata={
+            "cancel_url": f"{frontend}/#/checkout-cancel?order_id={data.order_id}",
+            "metadata": {
                 "internal_order_id": str(data.order_id),
                 "customer_email": customer_email or "",
             },
-        )
+        }
+        if clean_idem:
+            create_kwargs["idempotency_key"] = f"ps-checkout-{data.order_id}-{clean_idem}"
 
-        return {
+        session = stripe.checkout.Session.create(**create_kwargs)
+
+        resp_payload = {
             "url": session.url,
             "checkout_url": session.url,
             "session_id": session.id,
             "order_id": data.order_id,
             "receipt_token": receipt_token,
         }
+        if clean_idem:
+            _STRIPE_IDEMPOTENCY_CACHE.set(f"stripe_session:{clean_idem}", resp_payload)
+        return resp_payload
 
     except stripe.error.StripeError as exc:
         logger.exception("Product checkout session failed: %s", exc)
@@ -636,7 +655,7 @@ async def verify_stripe_checkout_session(
     require_stripe()
 
     try:
-        session = stripe.checkout.Session.retrieve(session_id)
+        session = await run_in_threadpool(stripe.checkout.Session.retrieve, session_id)
 
         if session.mode != "payment":
             raise HTTPException(
@@ -664,7 +683,7 @@ async def verify_stripe_checkout_session(
         elif resolved_order_id is not None:
             from app.routers.orders import get_order_record
 
-            order_record = get_order_record(resolved_order_id)
+            order_record = await run_in_threadpool(get_order_record, resolved_order_id)
 
         receipt_token = ""
         if order_record and resolved_order_id is not None:
@@ -825,8 +844,9 @@ async def stripe_webhook(request: Request):
                         "status": "subscription_pending"
                     }
 
-                synced = _sync_subscription_from_stripe(
-                    subscription_id
+                synced = await run_in_threadpool(
+                    _sync_subscription_from_stripe,
+                    subscription_id,
                 )
 
                 return {
@@ -867,8 +887,9 @@ async def stripe_webhook(request: Request):
             )
 
             if subscription_id:
-                synced = _sync_subscription_from_stripe(
-                    subscription_id
+                synced = await run_in_threadpool(
+                    _sync_subscription_from_stripe,
+                    subscription_id,
                 )
 
                 return {
@@ -880,8 +901,9 @@ async def stripe_webhook(request: Request):
                 }
 
         if event_type == "customer.subscription.deleted":
-            canceled = _mark_subscription_canceled(
-                event_data
+            canceled = await run_in_threadpool(
+                _mark_subscription_canceled,
+                event_data,
             )
 
             return {
@@ -901,8 +923,9 @@ async def stripe_webhook(request: Request):
             )
 
             if subscription_id:
-                synced = _sync_subscription_from_stripe(
-                    subscription_id
+                synced = await run_in_threadpool(
+                    _sync_subscription_from_stripe,
+                    subscription_id,
                 )
 
                 return {

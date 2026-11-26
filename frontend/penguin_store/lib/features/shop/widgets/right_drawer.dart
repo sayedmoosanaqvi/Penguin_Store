@@ -151,6 +151,22 @@ class RightDrawer extends StatelessWidget {
                     trailingBadge: 'AI',
                   ),
                 ),
+                FadeSlideIn.staggered(
+                  index: 5,
+                  child: _buildNavTile(
+                    context: context,
+                    icon: Icons.hub_rounded,
+                    title: 'MCP Agent Hub',
+                    subtitle: 'JSON-RPC 2.0 & Autonomous Agents',
+                    route: '/mcp-hub',
+                    currentPath: currentPath,
+                    isDark: isDark,
+                    cardBg: cardBg,
+                    textColor: textColor,
+                    accentColor: const Color(0xFF0284C7),
+                    trailingBadge: 'MCP',
+                  ),
+                ),
                 const SizedBox(height: 14),
                 _buildSectionHeader('YOUR SHOPPING', subTextColor),
                 FadeSlideIn.staggered(

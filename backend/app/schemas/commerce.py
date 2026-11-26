@@ -11,6 +11,14 @@ class ReviewCreate(BaseModel):
     rating: int = Field(..., ge=1, le=5)
     title: Optional[str] = Field(default=None, max_length=150)
     comment: str = Field(..., min_length=3, max_length=2000)
+    tags: list[str] = Field(default_factory=list, max_length=8)
+
+
+class ReviewUpdate(BaseModel):
+    rating: int = Field(..., ge=1, le=5)
+    title: Optional[str] = Field(default=None, max_length=150)
+    comment: str = Field(..., min_length=3, max_length=2000)
+    tags: list[str] = Field(default_factory=list, max_length=8)
 
 
 class WishlistToggleRequest(BaseModel):

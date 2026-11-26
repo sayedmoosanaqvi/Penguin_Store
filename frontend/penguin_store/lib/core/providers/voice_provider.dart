@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
@@ -24,7 +26,12 @@ class VoiceProvider with ChangeNotifier {
   bool _isSpeaking = false;
   bool _autoplayBlocked = false;
   bool _suppressNextRouteStop = false;
+  double _micLevel = 0.0;
+  Timer? _micLevelTimer;
   double _lastSttLatencyMs = 0.0;
+  String? _lastHeardTranscript;
+  String? _lastRawTranscript;
+  bool _wasLastTranscriptRepaired = false;
   String? _activeLabel;
   String? _lastError;
 
@@ -41,9 +48,49 @@ class VoiceProvider with ChangeNotifier {
   bool get isTranscribing => _isTranscribing;
   bool get isSpeaking => _isSpeaking;
   bool get autoplayBlocked => _autoplayBlocked;
+  double get micLevel => _micLevel;
   double get lastSttLatencyMs => _lastSttLatencyMs;
+  String? get lastHeardTranscript => _lastHeardTranscript;
+  String? get lastRawTranscript => _lastRawTranscript;
+  bool get wasLastTranscriptRepaired => _wasLastTranscriptRepaired;
   String? get activeLabel => _activeLabel;
   String? get lastError => _lastError;
+
+  void dismissLastHeard() {
+    if (_lastHeardTranscript == null) return;
+    _lastHeardTranscript = null;
+    _lastRawTranscript = null;
+    _wasLastTranscriptRepaired = false;
+    notifyListeners();
+  }
+
+  void _startMicMeter() {
+    _micLevelTimer?.cancel();
+    _micLevel = 0.12;
+    _micLevelTimer = Timer.periodic(const Duration(milliseconds: 90), (_) async {
+      if (!_isRecording) {
+        _stopMicMeter();
+        return;
+      }
+      final lvl = await _voice.sampleMicLevel();
+      if (_isRecording && (lvl - _micLevel).abs() > 0.02) {
+        _micLevel = lvl;
+        notifyListeners();
+      }
+    });
+  }
+
+  void _stopMicMeter() {
+    _micLevelTimer?.cancel();
+    _micLevelTimer = null;
+    _micLevel = 0.0;
+  }
+
+  @override
+  void dispose() {
+    _stopMicMeter();
+    super.dispose();
+  }
 
   void markNavigationConfirmation() {
     _suppressNextRouteStop = true;
@@ -168,11 +215,13 @@ class VoiceProvider with ChangeNotifier {
         return null;
       }
       _isRecording = true;
+      _startMicMeter();
       notifyListeners();
       return null;
     }
 
     _isRecording = false;
+    _stopMicMeter();
     _isTranscribing = true;
     notifyListeners();
 
@@ -194,6 +243,9 @@ class VoiceProvider with ChangeNotifier {
       return null;
     }
 
+    _lastHeardTranscript = result.transcript;
+    _lastRawTranscript = result.rawTranscript;
+    _wasLastTranscriptRepaired = result.wasRepaired;
     notifyListeners();
     return result.transcript;
   }
@@ -224,12 +276,14 @@ class VoiceProvider with ChangeNotifier {
       return false;
     }
     _isRecording = true;
+    _startMicMeter();
     notifyListeners();
     return true;
   }
 
   Future<void> cancelRecording() async {
     _isRecording = false;
+    _stopMicMeter();
     _isTranscribing = false;
     await _voice.cancelRecording();
     notifyListeners();

@@ -164,27 +164,21 @@ def search_products_db(
 def _compute_b2b_moq_tiers(unit_price: float) -> List[Dict[str, Any]]:
     """Compute B2B wholesale MOQ tiers for any product."""
     base = max(float(unit_price or 0.0), 1.0)
+    # Mirrors the checkout engine (ProductDetailScreen tiers): 10-49 => 12%, 50+ => 22%.
     return [
         {
-            "tier": "Starter Bulk (10-24 units)",
+            "tier": "Corporate Wholesale (10-49 units)",
             "min_qty": 10,
-            "max_qty": 24,
-            "discount_pct": 10,
-            "unit_price": round(base * 0.90, 2),
-        },
-        {
-            "tier": "Commercial Tier (25-49 units)",
-            "min_qty": 25,
             "max_qty": 49,
-            "discount_pct": 15,
-            "unit_price": round(base * 0.85, 2),
+            "discount_pct": 12,
+            "unit_price": round(base * 0.88, 2),
         },
         {
-            "tier": "Enterprise Wholesale (50+ units)",
+            "tier": "Enterprise Distributor (50+ units)",
             "min_qty": 50,
             "max_qty": 9999,
-            "discount_pct": 20,
-            "unit_price": round(base * 0.80, 2),
+            "discount_pct": 22,
+            "unit_price": round(base * 0.78, 2),
         },
     ]
 
@@ -254,25 +248,17 @@ def get_product_decision_profile(
         or product.get("rating")
         or 4.8
     )
-    review_count = int(trust_info.get("total_reviews") or trust_info.get("review_count") or 14)
+    review_count = int(trust_info.get("total_reviews") or trust_info.get("review_count") or 0)
     fake_flagged = int(trust_info.get("flagged_suspicious_count") or trust_info.get("fake_review_count") or 0)
-    pros = list(
-        trust_info.get("pros")
-        or [
-            "Verified buyer satisfaction and build durability",
-            "Fast shipping with full warranty coverage",
-            "Strong price-to-performance ratio in category",
-        ]
-    )
-    cons = list(
-        trust_info.get("cons")
-        or [
-            "High demand can cause occasional stock fluctuations",
-        ]
-    )
+    pros = list(trust_info.get("pros") or [])
+    cons = list(trust_info.get("cons") or [])
     verdict = str(
         trust_info.get("verdict")
-        or "AI Trust Engine audited verified buyer reviews for authenticity."
+        or (
+            "No customer reviews yet. Be the first verified shopper to share your experience."
+            if review_count == 0
+            else "AI Trust Engine audited buyer reviews for authenticity."
+        )
     )
 
     # Single-product decision confidence score (0-100)
@@ -506,6 +492,23 @@ def calculate_best_deal(
     Computes B2C vs B2B MOQ tiered pricing and evaluates active promo codes
     (PENGUIN10, WELCOME20, WHOLESALE15, ARCTIC5) to return the lowest final total.
     """
+    # Single source of truth: price exactly like checkout (variant deltas, 12%/22% MOQ
+    # tiers, add-on fees, promo rules, 5% tax) so quoted deals always match what is charged.
+    if product_id:
+        try:
+            from app.mcp.pricing import authoritative_deal_quote
+
+            quote = authoritative_deal_quote(
+                int(product_id),
+                quantity=int(quantity or 1),
+                variant=variant,
+                gift_wrap=bool(gift_wrap),
+            )
+            if quote is not None:
+                return quote
+        except Exception as exc:  # pragma: no cover - defensive legacy fallback
+            logger.debug("Authoritative deal quote fallback to legacy engine: %s", exc)
+
     qty = max(1, int(quantity or 1))
     unit_price = 0.0
     product_name = "Cart Subtotal"

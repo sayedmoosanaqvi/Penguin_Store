@@ -248,7 +248,7 @@ def get_current_admin_user(
     return current_user
 
 
-async def verify_agent(
+def verify_agent(
     api_key: str | None = Security(api_key_header),
 ) -> str:
     if not api_key or not hmac.compare_digest(api_key, AGENT_API_KEY):
@@ -259,7 +259,7 @@ async def verify_agent(
     return api_key
 
 
-async def verify_admin_or_agent(
+def verify_admin_or_agent(
     api_key: str | None = Security(api_key_header),
     credentials: HTTPAuthorizationCredentials | None = Security(bearer_scheme),
     db: Session = Depends(get_db),

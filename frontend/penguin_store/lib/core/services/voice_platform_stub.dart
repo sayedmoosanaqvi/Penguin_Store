@@ -55,6 +55,8 @@ Future<PlatformRecordedAudio?> stopWebRecording() async => null;
 
 Future<void> cancelWebRecording() async {}
 
+double sampleWebMicLevel() => 0.0;
+
 Future<String> createTempRecordingPath({String extension = 'm4a'}) async {
   final dir = Directory.systemTemp;
   final ts = DateTime.now().millisecondsSinceEpoch;

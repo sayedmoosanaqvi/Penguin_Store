@@ -1,3 +1,5 @@
+import asyncio
+from collections import deque
 import hashlib
 import hmac
 import json
@@ -6,21 +8,24 @@ from datetime import datetime, timezone
 from threading import Lock
 from typing import Any, List, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy import func
+from sqlalchemy import func, text
 from sqlalchemy.orm import Session, load_only
+from starlette.concurrency import run_in_threadpool
 
 from app.adapters.supplier_adapter import DummyJSONAdapter
+from app.core.concurrency import BoundedLRUDict, KeyedLockPool, SingleFlightAsyncCache
 from app.core.config import settings
 from app.core.supabase_rest import (
+    fetch_live_product_row_https,
     fetch_product_by_id_https,
     get_supabase_client,
     invalidate_supabase_rest_cache,
     is_pg_tcp_reachable,
     is_product_active_row,
 )
-from app.database import SessionLocal
+from app.database import SessionLocal, engine
 from app.email_utils import send_order_confirmation
 from app.models import Notification, Order, OrderItem, Product, User
 from app.push_utils import send_push_notification
@@ -31,12 +36,15 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Order Dispatch"])
 
 _MEM_ORDERS_LOCK = Lock()
-_MEM_ORDERS: list[dict[str, Any]] = []
+_MEM_ORDERS: deque[dict[str, Any]] = deque(maxlen=256)
 _MEM_ORDER_SEQ: int = 5000
 
 _FULFILLMENT_LOCK = Lock()
-_FULFILLED_ORDER_IDS: set[int] = set()
-_FULFILLED_SESSION_IDS: set[str] = set()
+_FULFILLED_ORDER_IDS: BoundedLRUDict[bool] = BoundedLRUDict(max_size=1024, ttl_seconds=86400)
+_FULFILLED_SESSION_IDS: BoundedLRUDict[bool] = BoundedLRUDict(max_size=1024, ttl_seconds=86400)
+_ORDER_IDEMPOTENCY_CACHE: BoundedLRUDict[dict[str, Any]] = BoundedLRUDict(max_size=512, ttl_seconds=86400)
+_ORDER_IDEMPOTENCY_FLIGHT = SingleFlightAsyncCache(max_entries=256, default_ttl=86400.0)
+_STOCK_LOCK_POOL = KeyedLockPool(64)
 
 # Authoritative server-side add-on catalog (never trust client-supplied prices)
 _ADDON_FEES: tuple[tuple[str, tuple[str, ...], float], ...] = (
@@ -155,16 +163,17 @@ def compute_authoritative_promo_discount(
 def calculate_server_order_pricing(
     items: List["CartItem"],
     promo_code: Optional[str] = None,
-    product_lookup=fetch_product_by_id_https,
+    product_lookup=None,
 ) -> dict[str, Any]:
     """
     Recalculate all unit prices, B2B MOQ discounts, add-ons, promo discounts,
     and 5% tax strictly on the server from live product records.
     """
+    lookup_fn = product_lookup or fetch_live_product_row_https
     subtotal = 0.0
     resolved_lines: list[dict[str, Any]] = []
     for cart_item in items:
-        prod_dict = product_lookup(cart_item.product_id)
+        prod_dict = lookup_fn(cart_item.product_id)
         if prod_dict is None or not is_product_active_row(prod_dict):
             raise HTTPException(
                 status_code=404,
@@ -220,46 +229,119 @@ def decrement_stock_atomic(
     known_available: Optional[int] = None,
 ) -> bool:
     """
-    Atomically decrement stock in Supabase PostgreSQL so concurrent checkouts
-    cannot oversell inventory below zero.
-    Tries RPC `decrement_product_stock_atomic` first, then conditional `.gte("stock", qty)`.
+    Atomically decrement stock in PostgreSQL so 100+ concurrent checkouts
+    can NEVER oversell inventory below zero.
+    1) Single-statement atomic SQL `UPDATE ... WHERE stock >= qty RETURNING stock`
+    2) Supabase RPC `decrement_stock_atomic` / `decrement_product_stock_atomic`
+    3) Optimistic Compare-And-Swap (`.eq("stock", live_stock)`) retry loop
     """
-    try:
-        rpc_res = client.rpc(
-            "decrement_product_stock_atomic",
-            {"p_product_id": int(product_id), "p_qty": int(quantity)},
-        ).execute()
-        if rpc_res.data is not None:
-            if isinstance(rpc_res.data, int):
-                return rpc_res.data >= 0
-            if isinstance(rpc_res.data, list) and rpc_res.data:
-                return True
-    except Exception:
-        pass
+    pid = int(product_id)
+    qty = int(quantity)
+    if qty <= 0:
+        return False
 
-    try:
-        current = known_available
-        if current is None:
-            prod = fetch_product_by_id_https(product_id)
-            if prod is None:
+    with _STOCK_LOCK_POOL.for_key(pid):
+        # 1. Fastest & 100% atomic PostgreSQL row-locked conditional UPDATE
+        if is_pg_tcp_reachable():
+            try:
+                with engine.begin() as conn:
+                    row = conn.execute(
+                        text(
+                            """
+                            UPDATE products
+                            SET stock = stock - :qty
+                            WHERE id = :pid
+                              AND COALESCE(is_active, TRUE) = TRUE
+                              AND COALESCE(stock, 0) >= :qty
+                            RETURNING stock
+                            """
+                        ),
+                        {"pid": pid, "qty": qty},
+                    ).fetchone()
+                    return row is not None and int(row[0]) >= 0
+            except Exception as pg_exc:
+                logger.debug("PG atomic stock update fallback to RPC/CAS for #%s: %s", pid, pg_exc)
+
+        # 2. Supabase RPC functions
+        for rpc_name in ("decrement_stock_atomic", "decrement_product_stock_atomic"):
+            try:
+                rpc_res = client.rpc(
+                    rpc_name,
+                    {"p_product_id": pid, "p_qty": qty},
+                ).execute()
+                if rpc_res.data is not None:
+                    if isinstance(rpc_res.data, int):
+                        return rpc_res.data >= 0
+                    if isinstance(rpc_res.data, list) and rpc_res.data:
+                        val = rpc_res.data[0]
+                        return int(val) >= 0 if isinstance(val, int) else True
+            except Exception:
+                continue
+
+        # 3. Optimistic CAS loop against LIVE database stock (never stale cache!)
+        for _attempt in range(6):
+            try:
+                res = (
+                    client.table("products")
+                    .select("id,stock,is_active")
+                    .eq("id", pid)
+                    .limit(1)
+                    .execute()
+                )
+                rows = res.data or []
+                if not rows:
+                    return False
+                live_row = rows[0]
+                if live_row.get("is_active") is False:
+                    return False
+                live_stock = int(live_row.get("stock") if live_row.get("stock") is not None else 0)
+                if live_stock < qty:
+                    return False
+
+                upd = (
+                    client.table("products")
+                    .update({"stock": live_stock - qty})
+                    .eq("id", pid)
+                    .eq("stock", live_stock)
+                    .execute()
+                )
+                if upd.data and len(upd.data) > 0:
+                    return True
+            except Exception as exc:
+                logger.warning("CAS stock decrement retry error for #%s: %s", pid, exc)
                 return False
-            current = int(prod.get("stock") if prod.get("stock") is not None else 50)
-        if current < quantity:
-            return False
-        new_stock = current - quantity
-        upd = (
-            client.table("products")
-            .update({"stock": new_stock})
-            .eq("id", int(product_id))
-            .gte("stock", int(quantity))
-            .execute()
-        )
-        if upd.data is not None and len(upd.data) == 0:
-            return False
-        return True
-    except Exception as exc:
-        logger.warning("Conditional stock decrement warning for product %s: %s", product_id, exc)
-        return True
+        return False
+
+
+def increment_stock_atomic(client: Any, product_id: int, quantity: int) -> None:
+    """Compensating atomic stock restore if a subsequent line item in a multi-item order fails."""
+    pid = int(product_id)
+    qty = int(quantity)
+    if qty <= 0:
+        return
+    with _STOCK_LOCK_POOL.for_key(pid):
+        if is_pg_tcp_reachable():
+            try:
+                with engine.begin() as conn:
+                    conn.execute(
+                        text("UPDATE products SET stock = COALESCE(stock, 0) + :qty WHERE id = :pid"),
+                        {"pid": pid, "qty": qty},
+                    )
+                    return
+            except Exception:
+                pass
+        try:
+            client.rpc("increment_stock_atomic", {"p_product_id": pid, "p_qty": qty}).execute()
+            return
+        except Exception:
+            pass
+        try:
+            res = client.table("products").select("stock").eq("id", pid).limit(1).execute()
+            if res.data:
+                cur = int(res.data[0].get("stock") or 0)
+                client.table("products").update({"stock": cur + qty}).eq("id", pid).execute()
+        except Exception:
+            pass
 
 
 def get_db():
@@ -372,79 +454,83 @@ async def finalize_paid_stripe_order(
     3. Trigger order confirmation email & push notification (at most once!)
     """
     clean_sid = str(session_id or "").strip()
-    with _FULFILLMENT_LOCK:
-        if int(order_id) in _FULFILLED_ORDER_IDS or (
-            clean_sid and clean_sid in _FULFILLED_SESSION_IDS
-        ):
-            return get_order_record(order_id)
 
-        record = get_order_record(order_id)
-        if record is None:
-            return None
+    def _finalize_sync() -> tuple[Optional[dict[str, Any]], bool]:
+        with _FULFILLMENT_LOCK:
+            if _FULFILLED_ORDER_IDS.contains(int(order_id)) or (
+                clean_sid and _FULFILLED_SESSION_IDS.contains(clean_sid)
+            ):
+                return get_order_record(order_id), True
 
-        already_paid = str(record.get("payment_status") or "").lower() == "paid"
-        already_emailed = bool(record.get("email_sent"))
-        already_fulfilled = bool(record.get("fulfilled_at"))
+            rec = get_order_record(order_id)
+            if rec is None:
+                return None, True
 
-        if (already_paid and already_emailed) or already_fulfilled:
-            _FULFILLED_ORDER_IDS.add(int(order_id))
+            already_paid = str(rec.get("payment_status") or "").lower() == "paid"
+            already_emailed = bool(rec.get("email_sent"))
+            already_fulfilled = bool(rec.get("fulfilled_at"))
+
+            if (already_paid and already_emailed) or already_fulfilled:
+                _FULFILLED_ORDER_IDS.set(int(order_id), True)
+                if clean_sid:
+                    _FULFILLED_SESSION_IDS.set(clean_sid, True)
+                return rec, True
+
+            _FULFILLED_ORDER_IDS.set(int(order_id), True)
             if clean_sid:
-                _FULFILLED_SESSION_IDS.add(clean_sid)
-            return record
+                _FULFILLED_SESSION_IDS.set(clean_sid, True)
 
-        # Claim fulfillment inside the lock before side effects
-        _FULFILLED_ORDER_IDS.add(int(order_id))
-        if clean_sid:
-            _FULFILLED_SESSION_IDS.add(clean_sid)
+        client = get_supabase_client()
+        now_iso = datetime.now(timezone.utc).isoformat()
 
-    client = get_supabase_client()
-    now_iso = datetime.now(timezone.utc).isoformat()
+        if not rec.get("stock_deducted"):
+            for item in rec.get("items") or []:
+                pid = int(item.get("product_id") or 0)
+                qty = int(item.get("quantity") or 1)
+                decrement_stock_atomic(client, pid, qty)
+            invalidate_supabase_rest_cache()
 
-    # Deduct stock atomically if not yet deducted
-    if not record.get("stock_deducted"):
-        for item in record.get("items") or []:
-            pid = int(item.get("product_id") or 0)
-            qty = int(item.get("quantity") or 1)
-            decrement_stock_atomic(client, pid, qty)
-        invalidate_supabase_rest_cache()
+        with _MEM_ORDERS_LOCK:
+            for o in _MEM_ORDERS:
+                if int(o.get("order_id") or o.get("id") or 0) == int(order_id):
+                    o["payment_status"] = "paid"
+                    o["status"] = "Confirmed (Paid via Stripe)"
+                    o["stripe_session_id"] = clean_sid
+                    o["stock_deducted"] = True
+                    o["email_sent"] = True
+                    o["fulfilled_at"] = now_iso
+                    rec = dict(o)
+                    break
 
-    # Update order status in memory
-    with _MEM_ORDERS_LOCK:
-        for o in _MEM_ORDERS:
-            if int(o.get("order_id") or o.get("id") or 0) == int(order_id):
-                o["payment_status"] = "paid"
-                o["status"] = "Confirmed (Paid via Stripe)"
-                o["stripe_session_id"] = clean_sid
-                o["stock_deducted"] = True
-                o["email_sent"] = True
-                o["fulfilled_at"] = now_iso
-                record = dict(o)
-                break
-
-    # Best-effort update in Supabase orders table
-    try:
-        client.table("orders").update(
-            {
-                "payment_status": "paid",
-                "stripe_session_id": clean_sid,
-                "email_sent": True,
-                "fulfilled_at": now_iso,
-            }
-        ).eq("id", int(order_id)).execute()
-    except Exception:
         try:
             client.table("orders").update(
                 {
                     "payment_status": "paid",
                     "stripe_session_id": clean_sid,
                     "email_sent": True,
+                    "fulfilled_at": now_iso,
                 }
             ).eq("id", int(order_id)).execute()
         except Exception:
-            pass
+            try:
+                client.table("orders").update(
+                    {
+                        "payment_status": "paid",
+                        "stripe_session_id": clean_sid,
+                        "email_sent": True,
+                    }
+                ).eq("id", int(order_id)).execute()
+            except Exception:
+                pass
+
+        return rec, already_emailed
+
+    record, skip_email = await asyncio.to_thread(_finalize_sync)
+    if record is None:
+        return None
 
     clean_email = str(record.get("customer_email") or "").strip().lower()
-    if clean_email and not already_emailed:
+    if clean_email and not skip_email:
         if background_tasks is not None:
             background_tasks.add_task(send_order_confirmation, clean_email, str(order_id))
             background_tasks.add_task(
@@ -470,27 +556,19 @@ async def finalize_paid_stripe_order(
     return record
 
 
-@router.post("/api/orders/checkout")
-async def process_checkout(
+def _execute_checkout_sync(
     payload: CheckoutRequest,
-    background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db),
-):
-    """
-    Processes an order using authoritative server-side pricing (never trusting client
-    unit_price, discount_amount, or tax_amount), atomically verifies/deducts stock,
-    and returns a signed receipt_token for zero-IDOR confirmation lookups.
-    """
+    clean_email: str,
+    idempotency_key: Optional[str] = None,
+) -> tuple[dict[str, Any], bool, int]:
+    """Threadpool worker performing authoritative pricing, atomic stock deduction & DB insert."""
     global _MEM_ORDER_SEQ
 
-    if not payload.items:
-        raise HTTPException(status_code=400, detail="Cart cannot be empty")
-
-    clean_email = payload.customer_email.strip().lower()
-    if "@" not in clean_email:
-        raise HTTPException(
-            status_code=422, detail="Enter a valid customer email address."
-        )
+    clean_idem = (idempotency_key or "").strip()[:128] or None
+    if clean_idem:
+        cached = _ORDER_IDEMPOTENCY_CACHE.get(clean_idem)
+        if cached is not None:
+            return dict(cached), True, int(cached["order_id"])
 
     pricing = calculate_server_order_pricing(
         payload.items,
@@ -507,6 +585,7 @@ async def process_checkout(
         "dropship_dispatched": [],
     }
     prepared_items: list[dict[str, Any]] = []
+    deducted_lines: list[tuple[int, int]] = []
 
     client = get_supabase_client()
     is_stripe_pending = (payload.payment_method or "COD").strip().upper() == "STRIPE"
@@ -517,8 +596,6 @@ async def process_checkout(
         effective_unit_price: float = line["unit_price"]
         avail_stock: int = line["available_stock"]
 
-        # Deduct stock atomically ONLY for confirmed COD orders; for Stripe orders,
-        # stock is deducted once Stripe verifies payment_status == 'paid'.
         if not is_stripe_pending:
             ok = decrement_stock_atomic(
                 client,
@@ -527,10 +604,15 @@ async def process_checkout(
                 known_available=avail_stock,
             )
             if not ok:
+                # Roll back any earlier line items already deducted in this multi-item order
+                for prev_pid, prev_qty in deducted_lines:
+                    increment_stock_atomic(client, prev_pid, prev_qty)
+                invalidate_supabase_rest_cache()
                 raise HTTPException(
                     status_code=400,
                     detail=f"Insufficient stock for {prod_dict.get('name')}.",
                 )
+            deducted_lines.append((cart_item.product_id, cart_item.quantity))
 
         f_type = str(prod_dict.get("fulfillment_type") or "IN_HOUSE")
         tracking = f"LOCAL-PK-{cart_item.product_id}-001"
@@ -569,37 +651,35 @@ async def process_checkout(
 
     created_order_id: int | None = None
     try:
-        order_res = (
-            client.table("orders")
-            .insert(
-                {
-                    "customer_name": payload.customer_name.strip(),
-                    "customer_email": clean_email,
-                    "shipping_address": payload.shipping_address.strip(),
-                    "city": payload.city.strip(),
-                    "state_province": (payload.state_province or "Punjab").strip(),
-                    "country": (payload.country or "Pakistan").strip(),
-                    "postal_code": payload.postal_code.strip(),
-                    "total_amount": final_total,
-                }
-            )
-            .execute()
-        )
+        order_insert_payload: dict[str, Any] = {
+            "customer_name": payload.customer_name.strip(),
+            "customer_email": clean_email,
+            "shipping_address": payload.shipping_address.strip(),
+            "city": payload.city.strip(),
+            "state_province": (payload.state_province or "Punjab").strip(),
+            "country": (payload.country or "Pakistan").strip(),
+            "postal_code": payload.postal_code.strip(),
+            "total_amount": final_total,
+        }
+        order_res = client.table("orders").insert(order_insert_payload).execute()
         rows = order_res.data or []
         if rows:
             created_order_id = int(rows[0]["id"])
-            for p_item in prepared_items:
+            if prepared_items:
                 try:
                     client.table("order_items").insert(
-                        {
-                            "order_id": created_order_id,
-                            "product_id": p_item["product_id"],
-                            "quantity": p_item["quantity"],
-                            "unit_price": p_item["unit_price"],
-                            "fulfillment_type": p_item["fulfillment_type"],
-                            "dispatch_status": p_item["dispatch_status"],
-                            "tracking_number": p_item["tracking_number"],
-                        }
+                        [
+                            {
+                                "order_id": created_order_id,
+                                "product_id": p_item["product_id"],
+                                "quantity": p_item["quantity"],
+                                "unit_price": p_item["unit_price"],
+                                "fulfillment_type": p_item["fulfillment_type"],
+                                "dispatch_status": p_item["dispatch_status"],
+                                "tracking_number": p_item["tracking_number"],
+                            }
+                            for p_item in prepared_items
+                        ]
                     ).execute()
                 except Exception:
                     pass
@@ -610,8 +690,7 @@ async def process_checkout(
         if created_order_id is None:
             _MEM_ORDER_SEQ += 1
             created_order_id = _MEM_ORDER_SEQ
-        _MEM_ORDERS.insert(
-            0,
+        _MEM_ORDERS.appendleft(
             {
                 "id": created_order_id,
                 "order_id": created_order_id,
@@ -636,26 +715,11 @@ async def process_checkout(
                 "fulfilled_at": None if is_stripe_pending else now_iso,
                 "created_at": now_iso,
                 "items": prepared_items,
-            },
-        )
-
-    if not is_stripe_pending:
-        background_tasks.add_task(
-            send_order_confirmation,
-            clean_email,
-            str(created_order_id),
-        )
-
-        background_tasks.add_task(
-            send_push_notification,
-            clean_email,
-            "Order Confirmed (COD)!",
-            f"Your Cash-on-Delivery order #{created_order_id} is confirmed and being processed.",
+            }
         )
 
     receipt_token = generate_order_receipt_token(created_order_id, clean_email)
-
-    return {
+    response_body = {
         "status": "pending_payment" if is_stripe_pending else "success",
         "order_id": created_order_id,
         "receipt_token": receipt_token,
@@ -668,6 +732,64 @@ async def process_checkout(
         "promo_code": applied_promo_code,
         "fulfillment_routing": fulfillment_summary,
     }
+    if clean_idem:
+        _ORDER_IDEMPOTENCY_CACHE.set(clean_idem, dict(response_body))
+    return response_body, False, created_order_id
+
+
+@router.post("/api/orders/checkout")
+async def process_checkout(
+    payload: CheckoutRequest,
+    background_tasks: BackgroundTasks,
+    idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key", max_length=128),
+):
+    """
+    Non-blocking, oversell-proof order checkout supporting `Idempotency-Key` headers.
+    """
+    if not payload.items:
+        raise HTTPException(status_code=400, detail="Cart cannot be empty")
+
+    clean_email = payload.customer_email.strip().lower()
+    if "@" not in clean_email:
+        raise HTTPException(
+            status_code=422, detail="Enter a valid customer email address."
+        )
+
+    clean_idem = (idempotency_key or "").strip()[:128] or None
+    if clean_idem:
+        cached = _ORDER_IDEMPOTENCY_CACHE.get(clean_idem)
+        if cached is not None:
+            resp = dict(cached)
+            resp["idempotent_replay"] = True
+            return resp
+        response_body, was_replay, created_order_id = await _ORDER_IDEMPOTENCY_FLIGHT.get_or_load_sync(
+            f"idem:{clean_idem}",
+            lambda: _execute_checkout_sync(payload, clean_email, clean_idem),
+            ttl=86400.0,
+        )
+    else:
+        response_body, was_replay, created_order_id = await asyncio.to_thread(
+            _execute_checkout_sync,
+            payload,
+            clean_email,
+            None,
+        )
+
+    is_stripe_pending = (payload.payment_method or "COD").strip().upper() == "STRIPE"
+    if not is_stripe_pending and not was_replay:
+        background_tasks.add_task(
+            send_order_confirmation,
+            clean_email,
+            str(created_order_id),
+        )
+        background_tasks.add_task(
+            send_push_notification,
+            clean_email,
+            "Order Confirmed (COD)!",
+            f"Your Cash-on-Delivery order #{created_order_id} is confirmed and being processed.",
+        )
+
+    return response_body
 
 
 @router.get("/api/orders/history/{customer_email}")

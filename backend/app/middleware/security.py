@@ -96,6 +96,10 @@ def configure_cors(app: FastAPI) -> None:
             "Accept",
             "X-Agent-Key",
             "X-Requested-With",
+            "Idempotency-Key",
+            "MCP-Protocol-Version",
+            "Mcp-Method",
+            "Mcp-Name",
         ],
     )
 
@@ -168,6 +172,16 @@ async def security_and_rate_limit_middleware(request: Request, call_next):
             q.append(now)
 
     response = await call_next(request)
+    if (
+        request.method == "GET"
+        and response.status_code == 200
+        and "Cache-Control" not in response.headers
+        and (
+            path in ("/products/", "/products/search", "/api/v1/products/", "/api/v1/products/search", "/api/premium-3d/catalog", "/api/premium-3d/showcase")
+            or path.startswith("/api/v1/products/") and not path.endswith(("/reviews", "/review-insights"))
+        )
+    ):
+        response.headers["Cache-Control"] = "public, max-age=15, stale-while-revalidate=45"
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault(

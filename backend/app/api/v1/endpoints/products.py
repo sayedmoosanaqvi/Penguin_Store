@@ -24,7 +24,7 @@ router = APIRouter(prefix="/products", tags=["Products v1"])
 
 
 @router.get("/", response_model=list[Product])
-def list_products_v1(
+async def list_products_v1(
     limit: Optional[int] = Query(default=None, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     category: Optional[str] = Query(default=None, max_length=100),
@@ -34,11 +34,11 @@ def list_products_v1(
     max_price: Optional[float] = Query(default=None, ge=0),
     only_3d: bool = Query(default=False),
     sort: Optional[str] = Query(default=None, max_length=40),
-    db: Session = Depends(get_db),
 ):
+    from app.core.supabase_rest import fetch_products_singleflight_async
+
     effective_search = search if (search and search.strip()) else q
-    return list_public_products(
-        db,
+    return await fetch_products_singleflight_async(
         limit=limit,
         offset=offset,
         category=category,
@@ -51,7 +51,7 @@ def list_products_v1(
 
 
 @router.get("/search", response_model=list[Product])
-def search_products_v1(
+async def search_products_v1(
     q: Optional[str] = Query(default=None, max_length=150),
     search: Optional[str] = Query(default=None, max_length=150),
     category: Optional[str] = Query(default=None, max_length=100),
@@ -61,13 +61,12 @@ def search_products_v1(
     sort: Optional[str] = Query(default=None, max_length=40),
     limit: int = Query(default=60, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
-    db: Session = Depends(get_db),
 ):
-    """Fast hybrid PostgreSQL + semantic/pgvector product search (excludes inactive/deleted items)."""
-    from app.core.supabase_rest import search_products_hybrid_https
+    """Fast stampede-protected hybrid PostgreSQL + semantic/pgvector product search."""
+    from app.core.supabase_rest import fetch_products_singleflight_async
 
     effective_query = q if (q and q.strip()) else search
-    return search_products_hybrid_https(
+    return await fetch_products_singleflight_async(
         search=effective_query,
         category=category,
         min_price=min_price,
@@ -80,11 +79,12 @@ def search_products_v1(
 
 
 @router.get("/{product_id}", response_model=Product)
-def get_product_v1(
+async def get_product_v1(
     product_id: int,
-    db: Session = Depends(get_db),
 ):
-    product = get_public_product_by_id(db, product_id)
+    from app.core.supabase_rest import fetch_product_by_id_singleflight_async
+
+    product = await fetch_product_by_id_singleflight_async(product_id)
     if product is None:
         raise HTTPException(status_code=404, detail="Product not found.")
     return product

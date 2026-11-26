@@ -13,8 +13,13 @@ class ProductReviewModel {
   final int rating;
   final String title;
   final String comment;
+  final List<String> tags;
   final bool verifiedPurchase;
+  final int helpfulCount;
+  final bool viewerVotedHelpful;
+  final bool isOwnReview;
   final double trustScore;
+  final String trustReasons;
   final bool isFlaggedSuspicious;
   final List<String> trustFlags;
   final Map<String, String> aspectSentiments;
@@ -27,8 +32,13 @@ class ProductReviewModel {
     required this.rating,
     required this.title,
     required this.comment,
+    this.tags = const [],
     required this.verifiedPurchase,
+    this.helpfulCount = 0,
+    this.viewerVotedHelpful = false,
+    this.isOwnReview = false,
     this.trustScore = 85.0,
+    this.trustReasons = '',
     this.isFlaggedSuspicious = false,
     this.trustFlags = const [],
     this.aspectSentiments = const {},
@@ -41,6 +51,10 @@ class ProductReviewModel {
     final flags = rawFlags is List
         ? rawFlags.map((e) => e.toString()).toList()
         : const <String>[];
+    final rawTags = j['tags'];
+    final tags = rawTags is List
+        ? rawTags.map((e) => e.toString()).toList()
+        : const <String>[];
     final rawAspects = j['aspect_sentiments'];
     final aspects = rawAspects is Map
         ? rawAspects.map((k, v) => MapEntry(k.toString(), v.toString()))
@@ -52,8 +66,13 @@ class ProductReviewModel {
       rating: (j['rating'] as num?)?.toInt() ?? 5,
       title: (j['title'] ?? '').toString(),
       comment: (j['comment'] ?? '').toString(),
+      tags: tags,
       verifiedPurchase: j['verified_purchase'] == true,
+      helpfulCount: (j['helpful_count'] as num?)?.toInt() ?? 0,
+      viewerVotedHelpful: j['viewer_voted_helpful'] == true,
+      isOwnReview: j['is_own_review'] == true,
       trustScore: (j['trust_score'] as num?)?.toDouble() ?? 85.0,
+      trustReasons: (j['trust_reasons'] ?? '').toString(),
       isFlaggedSuspicious: j['is_flagged_suspicious'] == true,
       trustFlags: flags,
       aspectSentiments: aspects,
@@ -69,14 +88,18 @@ class ProductReviewsBundle {
   final double averageRating;
   final double trustWeightedRating;
   final int totalReviews;
+  final int verifiedPurchaseCount;
   final Map<int, int> distribution;
+  final ProductReviewModel? myReview;
   final List<ProductReviewModel> reviews;
 
   const ProductReviewsBundle({
     required this.averageRating,
     required this.trustWeightedRating,
     required this.totalReviews,
+    this.verifiedPurchaseCount = 0,
     required this.distribution,
+    this.myReview,
     required this.reviews,
   });
 
@@ -89,11 +112,17 @@ class ProductReviewsBundle {
     final rawList = j['reviews'] as List? ?? const [];
     final avg = (j['average_rating'] as num?)?.toDouble() ?? 0.0;
     final twAvg = (j['trust_weighted_rating'] as num?)?.toDouble() ?? avg;
+    final myRevMap = j['my_review'];
     return ProductReviewsBundle(
       averageRating: avg,
       trustWeightedRating: twAvg,
       totalReviews: (j['total_reviews'] as num?)?.toInt() ?? 0,
+      verifiedPurchaseCount:
+          (j['verified_purchase_count'] as num?)?.toInt() ?? 0,
       distribution: dist,
+      myReview: myRevMap is Map
+          ? ProductReviewModel.fromJson(Map<String, dynamic>.from(myRevMap))
+          : null,
       reviews: rawList
           .whereType<Map>()
           .map((m) => ProductReviewModel.fromJson(Map<String, dynamic>.from(m)))
@@ -104,9 +133,13 @@ class ProductReviewsBundle {
 
 class ProductReviewInsightsModel {
   final int productId;
+  final bool hasInsights;
+  final String sampleTier; // 'no_reviews' | 'early_feedback' | 'full_insights'
+  final String? earlyFeedbackBadge;
   final double rawRating;
   final double trustWeightedRating;
   final int totalReviews;
+  final int verifiedPurchaseCount;
   final double verifiedAuthenticPercent;
   final int flaggedSuspiciousCount;
   final List<String> pros;
@@ -116,9 +149,13 @@ class ProductReviewInsightsModel {
 
   const ProductReviewInsightsModel({
     required this.productId,
+    required this.hasInsights,
+    required this.sampleTier,
+    this.earlyFeedbackBadge,
     required this.rawRating,
     required this.trustWeightedRating,
     required this.totalReviews,
+    this.verifiedPurchaseCount = 0,
     required this.verifiedAuthenticPercent,
     required this.flaggedSuspiciousCount,
     required this.pros,
@@ -128,6 +165,15 @@ class ProductReviewInsightsModel {
   });
 
   factory ProductReviewInsightsModel.fromJson(Map<String, dynamic> j) {
+    final totalRevs = (j['total_reviews'] as num?)?.toInt() ?? 0;
+    final hasIns = j['has_insights'] is bool
+        ? j['has_insights'] as bool
+        : totalRevs > 0;
+    final tier = (j['sample_tier'] ??
+            (totalRevs == 0
+                ? 'no_reviews'
+                : (totalRevs <= 2 ? 'early_feedback' : 'full_insights')))
+        .toString();
     final summary = j['summary'] is Map
         ? Map<String, dynamic>.from(j['summary'] as Map)
         : const <String, dynamic>{};
@@ -139,22 +185,23 @@ class ProductReviewInsightsModel {
 
     final bars = <String, int>{};
     for (final entry in rawBars.entries) {
-      bars[entry.key] = ((entry.value as num?)?.toInt() ?? 85).clamp(0, 100);
-    }
-    if (bars.isEmpty) {
-      bars['Quality'] = 92;
-      bars['Value'] = 88;
-      bars['Delivery/Experience'] = 90;
-      bars['Performance'] = 91;
+      if (entry.key.startsWith('_')) continue;
+      bars[entry.key] = ((entry.value as num?)?.toInt() ?? 0).clamp(0, 100);
     }
 
     return ProductReviewInsightsModel(
       productId: (j['product_id'] as num?)?.toInt() ?? 0,
-      rawRating: (j['raw_rating'] as num?)?.toDouble() ?? 4.8,
-      trustWeightedRating: (j['trust_weighted_rating'] as num?)?.toDouble() ?? 4.8,
-      totalReviews: (j['total_reviews'] as num?)?.toInt() ?? 0,
+      hasInsights: hasIns,
+      sampleTier: tier,
+      earlyFeedbackBadge: j['early_feedback_badge']?.toString(),
+      rawRating: (j['raw_rating'] as num?)?.toDouble() ?? 0.0,
+      trustWeightedRating:
+          (j['trust_weighted_rating'] as num?)?.toDouble() ?? 0.0,
+      totalReviews: totalRevs,
+      verifiedPurchaseCount:
+          (j['verified_purchase_count'] as num?)?.toInt() ?? 0,
       verifiedAuthenticPercent:
-          (j['verified_authentic_percent'] as num?)?.toDouble() ?? 96.0,
+          (j['verified_authentic_percent'] as num?)?.toDouble() ?? 0.0,
       flaggedSuspiciousCount:
           (j['flagged_suspicious_count'] as num?)?.toInt() ?? 0,
       pros: rawPros.map((e) => e.toString()).toList(),
@@ -217,13 +264,23 @@ class CommerceService {
     };
   }
 
-  Future<ProductReviewsBundle> fetchReviews(int productId) async {
-    final res = await http
-        .get(
-          Uri.parse('$_base/api/v1/products/$productId/reviews'),
-          headers: const {'Accept': 'application/json'},
-        )
-        .timeout(_timeout);
+  Future<ProductReviewsBundle> fetchReviews(
+    int productId, {
+    String sort = 'most_helpful',
+    bool verifiedOnly = false,
+    int? starFilter,
+  }) async {
+    final headers = await _authHeaders();
+    final queryParams = <String, String>{
+      'sort': sort,
+      if (verifiedOnly) 'verified_only': 'true',
+      if (starFilter != null && starFilter >= 1 && starFilter <= 5)
+        'star_filter': '$starFilter',
+    };
+    final uri = Uri.parse(
+      '$_base/api/v1/products/$productId/reviews',
+    ).replace(queryParameters: queryParams);
+    final res = await http.get(uri, headers: headers).timeout(_timeout);
     if (res.statusCode != 200) {
       throw Exception(ApiErrorHandler.fromStatus(res.statusCode, res.body));
     }
@@ -320,6 +377,7 @@ class CommerceService {
     required int rating,
     required String title,
     required String comment,
+    List<String> tags = const [],
   }) async {
     final headers = await _authHeaders(jsonBody: true);
     if (!headers.containsKey('Authorization')) {
@@ -333,6 +391,7 @@ class CommerceService {
             'rating': rating,
             if (title.trim().isNotEmpty) 'title': title.trim(),
             'comment': comment.trim(),
+            if (tags.isNotEmpty) 'tags': tags,
           }),
         )
         .timeout(_timeout);
@@ -340,6 +399,74 @@ class CommerceService {
     if (res.statusCode != 201) {
       throw Exception(ApiErrorHandler.fromStatus(res.statusCode, res.body));
     }
+  }
+
+  Future<void> updateReview({
+    required int productId,
+    required int reviewId,
+    required int rating,
+    required String title,
+    required String comment,
+    List<String> tags = const [],
+  }) async {
+    final headers = await _authHeaders(jsonBody: true);
+    if (!headers.containsKey('Authorization')) {
+      throw Exception('Please log in to update your review.');
+    }
+    final res = await http
+        .put(
+          Uri.parse('$_base/api/v1/products/$productId/reviews/$reviewId'),
+          headers: headers,
+          body: jsonEncode({
+            'rating': rating,
+            if (title.trim().isNotEmpty) 'title': title.trim(),
+            'comment': comment.trim(),
+            'tags': tags,
+          }),
+        )
+        .timeout(_timeout);
+
+    if (res.statusCode != 200) {
+      throw Exception(ApiErrorHandler.fromStatus(res.statusCode, res.body));
+    }
+  }
+
+  Future<void> deleteReview({
+    required int productId,
+    required int reviewId,
+  }) async {
+    final headers = await _authHeaders();
+    if (!headers.containsKey('Authorization')) {
+      throw Exception('Please log in to delete your review.');
+    }
+    final res = await http
+        .delete(
+          Uri.parse('$_base/api/v1/products/$productId/reviews/$reviewId'),
+          headers: headers,
+        )
+        .timeout(_timeout);
+
+    if (res.statusCode != 200) {
+      throw Exception(ApiErrorHandler.fromStatus(res.statusCode, res.body));
+    }
+  }
+
+  Future<Map<String, dynamic>> toggleReviewHelpful(int reviewId) async {
+    final headers = await _authHeaders(jsonBody: true);
+    if (!headers.containsKey('Authorization')) {
+      throw Exception('Please log in to mark reviews helpful.');
+    }
+    final res = await http
+        .post(
+          Uri.parse('$_base/api/v1/reviews/$reviewId/helpful'),
+          headers: headers,
+        )
+        .timeout(_timeout);
+
+    if (res.statusCode != 200) {
+      throw Exception(ApiErrorHandler.fromStatus(res.statusCode, res.body));
+    }
+    return Map<String, dynamic>.from(jsonDecode(res.body) as Map);
   }
 
   Future<List<Product>> fetchWishlist() async {
@@ -376,7 +503,10 @@ class CommerceService {
         .toList();
   }
 
-  Future<bool?> toggleWishlist(int productId) async {
+  Future<bool?> toggleWishlist(
+    int productId, {
+    bool throwOnServerError = false,
+  }) async {
     final headers = await _authHeaders(jsonBody: true);
     if (!headers.containsKey('Authorization')) return null;
     final res = await http
@@ -386,7 +516,12 @@ class CommerceService {
           body: jsonEncode({'product_id': productId}),
         )
         .timeout(_timeout);
-    if (res.statusCode != 200) return null;
+    if (res.statusCode != 200) {
+      if (throwOnServerError) {
+        throw Exception(ApiErrorHandler.fromStatus(res.statusCode, res.body));
+      }
+      return null;
+    }
     final decoded = jsonDecode(res.body) as Map;
     return decoded['wishlisted'] == true;
   }

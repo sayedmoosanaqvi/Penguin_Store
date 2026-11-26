@@ -1127,7 +1127,9 @@ class _PenguinVoiceConciergeSheetState extends State<PenguinVoiceConciergeSheet>
                   spacing: 6,
                   runSpacing: 6,
                   children: _reasoningSteps.map((s) {
-                    final stepName = (s['step'] ?? 'Step').toString();
+                    final rawStepName = (s['step'] ?? 'Step').toString();
+                    final isMcp = s['is_mcp'] == true || rawStepName.contains('[MCP]');
+                    final stepName = rawStepName.replaceAll('[MCP]', '').trim();
                     final ms = (s['duration_ms'] as num?)?.toDouble() ?? 0.0;
                     return Container(
                       padding: const EdgeInsets.symmetric(
@@ -1135,17 +1137,53 @@ class _PenguinVoiceConciergeSheetState extends State<PenguinVoiceConciergeSheet>
                         vertical: 4,
                       ),
                       decoration: BoxDecoration(
-                        color:
-                            colors.secondaryContainer.withValues(alpha: 0.65),
+                        color: isMcp
+                            ? const Color(0xFF0284C7).withValues(alpha: 0.18)
+                            : colors.secondaryContainer.withValues(alpha: 0.65),
                         borderRadius: BorderRadius.circular(999),
+                        border: isMcp
+                            ? Border.all(
+                                color: const Color(0xFF0284C7).withValues(alpha: 0.7),
+                                width: 0.8,
+                              )
+                            : null,
                       ),
-                      child: Text(
-                        '✓ $stepName (${ms.toStringAsFixed(0)}ms)',
-                        style: TextStyle(
-                          fontSize: 10.5,
-                          fontWeight: FontWeight.w700,
-                          color: colors.onSecondaryContainer,
-                        ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (isMcp) ...[
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 4,
+                                vertical: 1,
+                              ),
+                              margin: const EdgeInsets.only(right: 5),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF0284C7),
+                                borderRadius: BorderRadius.circular(3),
+                              ),
+                              child: const Text(
+                                'MCP',
+                                style: TextStyle(
+                                  fontSize: 8,
+                                  fontWeight: FontWeight.w900,
+                                  color: Colors.white,
+                                  letterSpacing: 0.4,
+                                ),
+                              ),
+                            ),
+                          ],
+                          Text(
+                            '✓ $stepName (${ms.toStringAsFixed(0)}ms)',
+                            style: TextStyle(
+                              fontSize: 10.5,
+                              fontWeight: FontWeight.w700,
+                              color: isMcp
+                                  ? const Color(0xFF0369A1)
+                                  : colors.onSecondaryContainer,
+                            ),
+                          ),
+                        ],
                       ),
                     );
                   }).toList(),

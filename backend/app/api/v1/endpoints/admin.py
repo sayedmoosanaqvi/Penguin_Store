@@ -279,7 +279,7 @@ def moderate_review_status(
         product.rating = (
             round(sum(visible_ratings) / len(visible_ratings), 2)
             if visible_ratings
-            else 4.8
+            else 0.0
         )
 
     db.query(ProductReviewInsight).filter(

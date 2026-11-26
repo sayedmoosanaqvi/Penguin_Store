@@ -34,22 +34,25 @@ async def sync_supplier_products(
     adapter = DummyJSONAdapter()
 
     try:
+        from starlette.concurrency import run_in_threadpool
+
         products_data = await adapter.fetch_products()
-        added_count = 0
 
-        for item in products_data:
-            existing_product = (
-                db.query(Product.id)
-                .filter(Product.name == item["name"])
-                .first()
-            )
+        def _persist_synced(items_list: list[dict]) -> int:
+            added = 0
+            for item in items_list:
+                existing_product = (
+                    db.query(Product.id)
+                    .filter(Product.name == item["name"])
+                    .first()
+                )
+                if not existing_product:
+                    db.add(Product(**item))
+                    added += 1
+            db.commit()
+            return added
 
-            if not existing_product:
-                new_product = Product(**item)
-                db.add(new_product)
-                added_count += 1
-
-        db.commit()
+        added_count = await run_in_threadpool(_persist_synced, products_data)
         if added_count > 0:
             invalidate_visual_cache()
 

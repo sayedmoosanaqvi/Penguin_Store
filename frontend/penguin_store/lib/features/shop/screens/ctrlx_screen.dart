@@ -2051,7 +2051,9 @@ class _ReasoningTraceAccordionState extends State<_ReasoningTraceAccordion> {
               padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
               child: Column(
                 children: widget.steps.map((s) {
-                  final stepName = (s['step'] ?? 'Step').toString();
+                  final rawStepName = (s['step'] ?? 'Step').toString();
+                  final isMcp = s['is_mcp'] == true || rawStepName.contains('[MCP]');
+                  final stepName = rawStepName.replaceAll('[MCP]', '').trim();
                   final summary = (s['summary'] ?? '').toString();
                   final ms = (s['duration_ms'] as num?)?.toDouble() ?? 0.0;
                   return Padding(
@@ -2059,12 +2061,16 @@ class _ReasoningTraceAccordionState extends State<_ReasoningTraceAccordion> {
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const Padding(
-                          padding: EdgeInsets.only(top: 2),
+                        Padding(
+                          padding: const EdgeInsets.only(top: 2),
                           child: Icon(
-                            Icons.check_circle_rounded,
+                            isMcp
+                                ? Icons.hub_rounded
+                                : Icons.check_circle_rounded,
                             size: 14,
-                            color: Color(0xFF16A34A),
+                            color: isMcp
+                                ? const Color(0xFF0284C7)
+                                : const Color(0xFF16A34A),
                           ),
                         ),
                         const SizedBox(width: 8),
@@ -2077,12 +2083,47 @@ class _ReasoningTraceAccordionState extends State<_ReasoningTraceAccordion> {
                                     MainAxisAlignment.spaceBetween,
                                 children: [
                                   Flexible(
-                                    child: Text(
-                                      stepName,
-                                      style: const TextStyle(
-                                        fontSize: 11.5,
-                                        fontWeight: FontWeight.w800,
-                                      ),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        if (isMcp) ...[
+                                          Container(
+                                            padding: const EdgeInsets.symmetric(
+                                              horizontal: 5,
+                                              vertical: 1.5,
+                                            ),
+                                            margin: const EdgeInsets.only(right: 6),
+                                            decoration: BoxDecoration(
+                                              color: const Color(0xFF0284C7)
+                                                  .withValues(alpha: 0.15),
+                                              borderRadius:
+                                                  BorderRadius.circular(4),
+                                              border: Border.all(
+                                                color: const Color(0xFF0284C7),
+                                                width: 0.8,
+                                              ),
+                                            ),
+                                            child: const Text(
+                                              'MCP',
+                                              style: TextStyle(
+                                                fontSize: 9,
+                                                fontWeight: FontWeight.w900,
+                                                color: Color(0xFF0284C7),
+                                                letterSpacing: 0.5,
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                        Flexible(
+                                          child: Text(
+                                            stepName,
+                                            style: const TextStyle(
+                                              fontSize: 11.5,
+                                              fontWeight: FontWeight.w800,
+                                            ),
+                                          ),
+                                        ),
+                                      ],
                                     ),
                                   ),
                                   Text(
@@ -2090,7 +2131,9 @@ class _ReasoningTraceAccordionState extends State<_ReasoningTraceAccordion> {
                                     style: TextStyle(
                                       fontSize: 10.5,
                                       fontWeight: FontWeight.w700,
-                                      color: theme.primaryColor,
+                                      color: isMcp
+                                          ? const Color(0xFF0284C7)
+                                          : theme.primaryColor,
                                     ),
                                   ),
                                 ],

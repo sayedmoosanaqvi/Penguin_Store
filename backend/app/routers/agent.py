@@ -20,7 +20,7 @@ class AdminCommandRequest(BaseModel):
 # The AI or Admin calls this to check what is in stock and what 3D assets exist
 # ---------------------------------------------------------
 @router.get("/inventory")
-async def get_real_inventory(
+def get_real_inventory(
     caller: str = Depends(verify_admin_or_agent),
     db: Session = Depends(get_db),
 ):
@@ -75,7 +75,7 @@ async def get_real_inventory(
 # The AI or Admin calls this to update a product with text it generated
 # ---------------------------------------------------------
 @router.put("/products/{product_id}/update-seo")
-async def agent_update_product_seo(
+def agent_update_product_seo(
     product_id: int,
     payload: Dict[str, Any],
     caller: str = Depends(verify_admin_or_agent),
@@ -121,7 +121,7 @@ async def agent_update_product_seo(
 # Powers the Admin Panel CTRL-X Store Manager console
 # ---------------------------------------------------------
 @router.post("/admin-command")
-async def execute_admin_command(
+def execute_admin_command(
     request: AdminCommandRequest,
     caller: str = Depends(verify_admin_or_agent),
     db: Session = Depends(get_db),
@@ -211,7 +211,7 @@ async def execute_admin_command(
 # Lets admins and evaluators inspect routed agents, tool calls, and latency
 # ---------------------------------------------------------
 @router.get("/audit-logs")
-async def read_agent_audit_logs(
+def read_agent_audit_logs(
     limit: int = 50,
     caller: str = Depends(verify_admin_or_agent),
 ):

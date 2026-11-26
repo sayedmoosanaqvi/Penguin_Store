@@ -51,6 +51,8 @@ Completer<VoiceAudioPlayStatus>? _activePlayCompleter;
 // ---- Native Browser MediaRecorder state ----
 web.MediaRecorder? _webMediaRecorder;
 web.MediaStream? _webMediaStream;
+web.AudioContext? _webMicAudioContext;
+web.AnalyserNode? _webMicAnalyser;
 List<web.Blob> _webRecordedChunks = <web.Blob>[];
 String _webSelectedMime = '';
 Completer<void>? _webRecorderStopCompleter;
@@ -326,6 +328,15 @@ void _cleanupWebRecorderState() {
   }
   _webMediaRecorder = null;
 
+  _webMicAnalyser = null;
+  final audioCtx = _webMicAudioContext;
+  _webMicAudioContext = null;
+  if (audioCtx != null) {
+    try {
+      audioCtx.close();
+    } catch (_) {}
+  }
+
   final ms = _webMediaStream;
   if (ms != null) {
     try {
@@ -338,6 +349,28 @@ void _cleanupWebRecorderState() {
   _webRecordedChunks = <web.Blob>[];
   _webSelectedMime = '';
   _webRecorderStopCompleter = null;
+}
+
+double sampleWebMicLevel() {
+  final analyser = _webMicAnalyser;
+  if (analyser == null) return 0.0;
+  try {
+    final buf = Uint8List(128);
+    final jsArr = buf.toJS;
+    analyser.getByteTimeDomainData(jsArr);
+    final samples = jsArr.toDart;
+    double sumSq = 0.0;
+    for (int i = 0; i < samples.length; i++) {
+      final centered = (samples[i] - 128) / 128.0;
+      sumSq += centered * centered;
+    }
+    final rms = sumSq > 0 ? (sumSq / samples.length) : 0.0;
+    // Map quiet speech RMS (~0.01..0.25) smoothly into [0.05, 1.0]
+    final scaled = (rms * 18.0).clamp(0.0, 1.0);
+    return scaled;
+  } catch (_) {
+    return 0.0;
+  }
 }
 
 Future<PlatformRecordStartResult> startWebRecording() async {
@@ -371,6 +404,8 @@ Future<PlatformRecordStartResult> startWebRecording() async {
     try {
       final constraints = web.MediaStreamConstraints(
         audio: {
+          'sampleRate': 16000,
+          'channelCount': 1,
           'echoCancellation': true,
           'noiseSuppression': true,
           'autoGainControl': true,
@@ -390,6 +425,19 @@ Future<PlatformRecordStartResult> startWebRecording() async {
       // Fallback with simple boolean constraint for stricter mobile WebViews/iOS Safari
       final simple = web.MediaStreamConstraints(audio: true.toJS);
       stream = await web.window.navigator.mediaDevices.getUserMedia(simple).toDart;
+    }
+
+    // Attach lightweight Web Audio AnalyserNode for live mic amplitude visualization
+    try {
+      final audioCtx = web.AudioContext();
+      final source = audioCtx.createMediaStreamSource(stream);
+      final analyser = audioCtx.createAnalyser()..fftSize = 256;
+      source.connect(analyser);
+      _webMicAudioContext = audioCtx;
+      _webMicAnalyser = analyser;
+    } catch (_) {
+      _webMicAudioContext = null;
+      _webMicAnalyser = null;
     }
 
     final chosenMime = _pickSupportedRecordingMime();
@@ -522,7 +570,7 @@ Future<PlatformRecordedAudio?> stopWebRecording() async {
 
     return PlatformRecordedAudio(
       bytes: bytes,
-      filename: 'speech.$ext',
+      filename: 'recording.$ext',
       mimeType: cleanMime,
     );
   } catch (e) {

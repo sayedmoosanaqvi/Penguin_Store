@@ -14,6 +14,10 @@ import 'voice_platform_stub.dart'
 
 class VoiceTranscriptionResult {
   final String transcript;
+  final String rawTranscript;
+  final bool wasRepaired;
+  final double? inferredMaxPrice;
+  final bool inferredOnly3d;
   final String language;
   final double latencyMs;
   final bool emptyClip;
@@ -21,6 +25,10 @@ class VoiceTranscriptionResult {
 
   const VoiceTranscriptionResult({
     this.transcript = '',
+    this.rawTranscript = '',
+    this.wasRepaired = false,
+    this.inferredMaxPrice,
+    this.inferredOnly3d = false,
     this.language = 'en',
     this.latencyMs = 0.0,
     this.emptyClip = false,
@@ -144,6 +152,7 @@ class VoiceService {
 
   bool _ttsInitialized = false;
   bool _isRecording = false;
+  DateTime? _recordingStartedAt;
   bool _cancelSpeakRequested = false;
   String _nativeRecordingExt = 'm4a';
   String? _lastRecordError;
@@ -151,6 +160,22 @@ class VoiceService {
 
   bool get isRecording => _isRecording;
   String? get lastRecordError => _lastRecordError;
+
+  Future<double> sampleMicLevel() async {
+    if (!_isRecording) return 0.0;
+    if (platform_audio.usesPlatformWebRecorder) {
+      return platform_audio.sampleWebMicLevel();
+    }
+    final rec = _recorder;
+    if (rec == null) return 0.0;
+    try {
+      final amp = await rec.getAmplitude();
+      final db = amp.current.clamp(-55.0, 0.0);
+      return ((db + 55.0) / 55.0).clamp(0.0, 1.0);
+    } catch (_) {
+      return 0.0;
+    }
+  }
 
   static String get _base =>
       ApiConfig.baseUrl.replaceFirst(RegExp(r'/$'), '');
@@ -288,6 +313,7 @@ class VoiceService {
         return false;
       }
       _isRecording = true;
+      _recordingStartedAt = DateTime.now();
       return true;
     }
 
@@ -324,6 +350,7 @@ class VoiceService {
       );
 
       _isRecording = true;
+      _recordingStartedAt = DateTime.now();
       return true;
     } catch (e) {
       debugPrint('VoiceService startRecording error: $e');
@@ -334,14 +361,20 @@ class VoiceService {
   }
 
   Future<VoiceTranscriptionResult> stopRecordingAndTranscribe() async {
+    final startedAt = _recordingStartedAt;
+    _recordingStartedAt = null;
+    final elapsedMs = startedAt != null
+        ? DateTime.now().difference(startedAt).inMilliseconds
+        : 1000;
+
     if (platform_audio.usesPlatformWebRecorder) {
       _isRecording = false;
       final captured = await platform_audio.stopWebRecording();
-      if (captured == null || captured.bytes.length < 128) {
+      if (elapsedMs < 420 || captured == null || captured.bytes.length < 512) {
         return const VoiceTranscriptionResult(
           emptyClip: true,
           errorMessage:
-              'Clip was too short or silent. Tap the mic, speak clearly, then tap stop.',
+              'Clip was too short or silent. Speak clearly for at least half a second, then tap stop.',
         );
       }
       return transcribeAudioBytes(
@@ -381,17 +414,17 @@ class VoiceService {
     }
 
     final bytes = await platform_audio.readRecordedAudioBytes(recordedPath);
-    if (bytes == null || bytes.length < 128) {
+    if (elapsedMs < 420 || bytes == null || bytes.length < 512) {
       return const VoiceTranscriptionResult(
         emptyClip: true,
         errorMessage:
-            'Clip was too short or silent. Tap the mic, speak clearly, then tap stop.',
+            'Clip was too short or silent. Speak clearly for at least half a second, then tap stop.',
       );
     }
 
     return transcribeAudioBytes(
       bytes,
-      filename: 'speech.$_nativeRecordingExt',
+      filename: 'recording.$_nativeRecordingExt',
     );
   }
 
@@ -460,16 +493,31 @@ class VoiceService {
       if (response.statusCode == 200) {
         final decoded = jsonDecode(response.body) as Map;
         final transcript = (decoded['transcript'] ?? '').toString().trim();
+        final rawTranscript =
+            (decoded['raw_transcript'] ?? transcript).toString().trim();
+        final wasRepaired = decoded['was_repaired'] == true;
+        final inferredMaxPrice =
+            (decoded['inferred_max_price'] as num?)?.toDouble();
+        final inferredOnly3d = decoded['inferred_only_3d'] == true;
         final lang = (decoded['language'] ?? 'en').toString();
         final latency = (decoded['latency_ms'] as num?)?.toDouble() ?? 0.0;
         final empty = decoded['empty_clip'] == true || transcript.isEmpty;
+        final serverMsg = decoded['message']?.toString();
 
         return VoiceTranscriptionResult(
           transcript: transcript,
+          rawTranscript: rawTranscript,
+          wasRepaired: wasRepaired,
+          inferredMaxPrice: inferredMaxPrice,
+          inferredOnly3d: inferredOnly3d,
           language: lang,
           latencyMs: latency,
           emptyClip: empty,
-          errorMessage: empty ? 'No speech detected in audio clip.' : null,
+          errorMessage: empty
+              ? (serverMsg != null && serverMsg.isNotEmpty
+                    ? serverMsg
+                    : "Didn't catch that clearly — please speak closer to the mic and try again.")
+              : null,
         );
       }
 

@@ -1005,59 +1005,64 @@ def check_reviews_and_trust(product_id: int) -> str:
         active_3d_ids = set(fetch_3d_catalog_ids_https())
         enriched = _enrich_public_product_dict(prod, active_3d_ids)
 
-        verdict = "AI Trust Engine audited verified buyer reviews for authenticity."
+        verdict = "No customer reviews yet. Be the first verified shopper to share your experience."
         pros: list[str] = []
         cons: list[str] = []
-        trust_rating = float(enriched.get("rating") or 4.8)
-        verified_pct = 96.0
-        total_reviews = int(enriched.get("reviews") or 0)
+        trust_rating = float(enriched.get("rating") or 0.0)
+        verified_pct = 0.0
+        total_reviews = 0
         flagged_count = 0
 
         try:
             client = get_supabase_client()
-            ins_res = (
-                client.table("product_review_insights")
-                .select("*")
-                .eq("product_id", int(product_id))
-                .limit(1)
-                .execute()
-            )
-            ins_rows = ins_res.data or []
-            if ins_rows:
-                row = ins_rows[0]
-                if row.get("trust_weighted_rating") is not None:
-                    trust_rating = round(float(row["trust_weighted_rating"]), 2)
-                if row.get("verified_authentic_percent") is not None:
-                    verified_pct = round(float(row["verified_authentic_percent"]), 1)
-                if row.get("verdict"):
-                    verdict = str(row["verdict"])
-                for key, target in (("pros_json", pros), ("cons_json", cons)):
-                    raw_val = row.get(key)
-                    if isinstance(raw_val, list):
-                        target.extend(str(x) for x in raw_val[:3])
-                    elif isinstance(raw_val, str) and raw_val.strip():
-                        try:
-                            parsed = json.loads(raw_val)
-                            if isinstance(parsed, list):
-                                target.extend(str(x) for x in parsed[:3])
-                        except json.JSONDecodeError:
-                            pass
-
             rev_res = (
                 client.table("reviews")
-                .select("rating,trust_score,is_flagged_suspicious,verified_purchase")
+                .select("rating,trust_score,is_flagged_suspicious,verified_purchase,moderation_status")
                 .eq("product_id", int(product_id))
                 .execute()
             )
-            rev_rows = rev_res.data or []
+            rev_rows = [
+                r for r in (rev_res.data or [])
+                if (r.get("moderation_status") or "approved") != "hidden"
+            ]
             if rev_rows:
                 total_reviews = len(rev_rows)
                 flagged_count = sum(
                     1 for r in rev_rows if r.get("is_flagged_suspicious") is True
                 )
                 authentic_count = max(0, total_reviews - flagged_count)
-                if total_reviews > 0:
-                    verified_pct = round((authentic_count / total_reviews) * 100.0, 1)
+                verified_pct = round((authentic_count / total_reviews) * 100.0, 1)
+                trust_rating = round(
+                    sum(float(r.get("rating") or 0.0) for r in rev_rows) / total_reviews, 2
+                )
+
+                ins_res = (
+                    client.table("product_review_insights")
+                    .select("*")
+                    .eq("product_id", int(product_id))
+                    .limit(1)
+                    .execute()
+                )
+                ins_rows = ins_res.data or []
+                if ins_rows and int(ins_rows[0].get("review_count_at_generation") or 0) == total_reviews:
+                    row = ins_rows[0]
+                    if row.get("trust_weighted_rating") is not None:
+                        trust_rating = round(float(row["trust_weighted_rating"]), 2)
+                    if row.get("verdict"):
+                        verdict = str(row["verdict"])
+                    for key, target in (("pros_json", pros), ("cons_json", cons)):
+                        raw_val = row.get(key)
+                        if isinstance(raw_val, list):
+                            target.extend(str(x) for x in raw_val[:3])
+                        elif isinstance(raw_val, str) and raw_val.strip():
+                            try:
+                                parsed = json.loads(raw_val)
+                                if isinstance(parsed, list):
+                                    target.extend(str(x) for x in parsed[:3])
+                            except json.JSONDecodeError:
+                                pass
+                else:
+                    verdict = f"Based on {total_reviews} customer review(s), average rating is {trust_rating}/5.0."
         except Exception as exc:
             logger.debug("Supabase review insight REST query notice: %s", exc)
 

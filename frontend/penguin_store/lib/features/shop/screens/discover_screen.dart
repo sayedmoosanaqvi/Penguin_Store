@@ -924,6 +924,42 @@ class _DiscoverScreenState extends State<DiscoverScreen>
                   color: isDark ? Colors.white60 : const Color(0xFF64748B),
                 ),
               ),
+              if (hasSearch)
+                Consumer<VoiceProvider>(
+                  builder: (context, voice, _) {
+                    final heard = voice.lastHeardTranscript?.trim() ?? '';
+                    if (heard.isEmpty ||
+                        heard.toLowerCase() != _searchQuery.trim().toLowerCase()) {
+                      return const SizedBox.shrink();
+                    }
+                    return Padding(
+                      padding: const EdgeInsets.only(top: 6),
+                      child: ActionChip(
+                        visualDensity: VisualDensity.compact,
+                        avatar: Icon(
+                          voice.wasLastTranscriptRepaired
+                              ? Icons.auto_fix_high_rounded
+                              : Icons.mic_rounded,
+                          size: 14,
+                        ),
+                        label: Text(
+                          'Heard: "$heard" • Edit',
+                          style: const TextStyle(
+                            fontSize: 11.5,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        onPressed: () {
+                          _searchFocusNode.requestFocus();
+                          _searchController.selection = TextSelection(
+                            baseOffset: 0,
+                            extentOffset: _searchController.text.length,
+                          );
+                        },
+                      ),
+                    );
+                  },
+                ),
             ],
           ),
           Container(

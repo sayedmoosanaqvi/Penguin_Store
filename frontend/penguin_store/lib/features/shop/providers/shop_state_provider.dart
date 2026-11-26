@@ -22,6 +22,7 @@ class ShopStateProvider with ChangeNotifier {
   List<SavedAddress> _addresses = [];
   String _savedCategory = 'All';
   int _unreadNotifications = 0;
+  final Set<int> _inflightWishlistIds = <int>{};
 
   ShopStateProvider() {
     _loadLocal();
@@ -113,6 +114,9 @@ class ShopStateProvider with ChangeNotifier {
   }
 
   Future<void> toggleWishlist(Product product) async {
+    if (_inflightWishlistIds.contains(product.id)) return;
+    _inflightWishlistIds.add(product.id);
+
     final existed = isWishlisted(product.id);
     if (existed) {
       _wishlist.removeWhere((p) => p.id == product.id);
@@ -122,8 +126,20 @@ class ShopStateProvider with ChangeNotifier {
     notifyListeners();
     await _saveWishlistLocal();
 
-    // Sync silently with Supabase if authenticated
-    await _commerce.toggleWishlist(product.id);
+    try {
+      await _commerce.toggleWishlist(product.id, throwOnServerError: true);
+    } catch (_) {
+      // Automatic optimistic UI rollback on genuine server failure
+      if (existed && !isWishlisted(product.id)) {
+        _wishlist.insert(0, product);
+      } else if (!existed && isWishlisted(product.id)) {
+        _wishlist.removeWhere((p) => p.id == product.id);
+      }
+      notifyListeners();
+      await _saveWishlistLocal();
+    } finally {
+      _inflightWishlistIds.remove(product.id);
+    }
   }
 
   Future<void> recordViewed(Product product) async {

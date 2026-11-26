@@ -169,12 +169,37 @@ def _make_reasoning_step(
     summary: str,
     duration_ms: float,
     status: str = "completed",
+    is_mcp: Optional[bool] = None,
 ) -> dict[str, Any]:
+    _is_mcp = (
+        is_mcp
+        if is_mcp is not None
+        else (
+            step.startswith("[MCP]")
+            or any(
+                k in step.lower()
+                for k in (
+                    "vector",
+                    "catalog",
+                    "trust score",
+                    "pricing",
+                    "cart mutation",
+                    "rfq",
+                    "deal optimizer",
+                    "mcp",
+                )
+            )
+        )
+    )
+    formatted_step = (
+        step if (not _is_mcp or step.startswith("[MCP]")) else f"[MCP] {step}"
+    )
     return {
-        "step": step,
+        "step": formatted_step,
         "status": status,
         "duration_ms": round(max(0.1, float(duration_ms)), 2),
         "summary": summary[:280],
+        "is_mcp": _is_mcp,
     }
 
 

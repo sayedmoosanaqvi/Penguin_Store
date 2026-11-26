@@ -10,12 +10,12 @@ import 'package:penguin_store/features/shop/screens/checkout_result_screens.dart
 import 'package:penguin_store/features/shop/screens/ctrlx_screen.dart';
 import 'package:penguin_store/features/shop/screens/discover_screen.dart';
 import 'package:penguin_store/features/shop/screens/home_screen.dart';
+import 'package:penguin_store/features/shop/screens/mcp_hub_screen.dart';
 import 'package:penguin_store/features/shop/screens/notification_screen.dart';
 import 'package:penguin_store/features/shop/screens/order_tracking_screen.dart';
 import 'package:penguin_store/features/shop/screens/product_details_screen.dart';
 import 'package:penguin_store/features/shop/screens/profile_screen.dart';
 import 'package:penguin_store/features/shop/screens/showcase_3d_screen.dart';
-import 'package:penguin_store/features/shop/screens/splash_screen.dart';
 import 'package:penguin_store/features/shop/screens/support_screen.dart';
 import 'package:penguin_store/features/shop/screens/wishlist_screen.dart';
 import 'package:penguin_store/features/shop/widgets/bottom_nav_bar.dart';
@@ -24,7 +24,7 @@ final GlobalKey<NavigatorState> rootNavigatorKey = GlobalKey<NavigatorState>();
 
 final GoRouter appRouter = GoRouter(
   navigatorKey: rootNavigatorKey,
-  initialLocation: '/splash',
+  initialLocation: '/',
   errorBuilder: (context, state) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     return Scaffold(
@@ -89,7 +89,7 @@ final GoRouter appRouter = GoRouter(
   routes: [
     GoRoute(
       path: '/splash',
-      builder: (context, state) => const SplashScreen(),
+      redirect: (_, __) => '/',
     ),
 
     // StatefulShellRoute keeps HomeScreen, Discover, Cart, Support & Profile
@@ -179,6 +179,10 @@ final GoRouter appRouter = GoRouter(
         final q = state.uri.queryParameters['q'];
         return CtrlXScreen(initialQuery: q);
       },
+    ),
+    GoRoute(
+      path: '/mcp-hub',
+      builder: (context, state) => const McpHubScreen(),
     ),
     GoRoute(
       path: '/showcase-3d',

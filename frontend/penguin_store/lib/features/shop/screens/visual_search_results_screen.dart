@@ -3,7 +3,9 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:provider/provider.dart';
 
+import 'package:penguin_store/core/providers/voice_provider.dart';
 import '../models/product_model.dart';
 import '../services/visual_search_service.dart';
 import '../widgets/product_card.dart';
@@ -27,15 +29,17 @@ class VisualSearchResultsScreen extends StatefulWidget {
       _VisualSearchResultsScreenState();
 }
 
-class _VisualSearchResultsScreenState
-    extends State<VisualSearchResultsScreen> {
+class _VisualSearchResultsScreenState extends State<VisualSearchResultsScreen> {
   final VisualSearchService _visualSearchService = VisualSearchService();
+  final TextEditingController _refineController = TextEditingController();
 
   late List<dynamic> _matches;
   Uint8List? _queryImageBytes;
   late Map<String, dynamic> _analysis;
   String? _statusMessage;
   bool _isSearchingAgain = false;
+  bool _only3dRefine = false;
+  String _loadingStepText = 'Extracting 2048-D visual features...';
 
   @override
   void initState() {
@@ -44,6 +48,17 @@ class _VisualSearchResultsScreenState
     _queryImageBytes = widget.queryImageBytes;
     _analysis = Map<String, dynamic>.from(widget.analysis);
     _statusMessage = widget.statusMessage;
+    final initialQ = _analysis['query_text']?.toString().trim() ?? '';
+    if (initialQ.isNotEmpty) {
+      _refineController.text = initialQ;
+    }
+    _only3dRefine = _analysis['only_3d'] == true;
+  }
+
+  @override
+  void dispose() {
+    _refineController.dispose();
+    super.dispose();
   }
 
   List<Map<String, dynamic>> _parseMatchedItems() {
@@ -57,24 +72,28 @@ class _VisualSearchResultsScreenState
           ? Map<String, dynamic>.from(map['product'] as Map)
           : map;
 
-      final double rawScore =
-          (map['score'] as num?)?.toDouble() ?? 0.90;
+      final double rawScore = (map['score'] as num?)?.toDouble() ?? 0.65;
       final double clampedScore = rawScore.clamp(0.0, 1.0);
+      final String tier = (map['confidence_tier'] ??
+              (clampedScore >= 0.75
+                  ? 'strong_match'
+                  : clampedScore >= 0.55
+                      ? 'similar_style'
+                      : 'closest_alternatives'))
+          .toString();
       final String matchLabel = (map['match_label'] ??
-              (clampedScore >= 0.85
-                  ? 'Exact Match'
-                  : clampedScore >= 0.65
-                      ? 'Strong Match'
-                      : 'Visual Match'))
+              (clampedScore >= 0.75
+                  ? 'Strong Match'
+                  : clampedScore >= 0.55
+                      ? 'Similar Style'
+                      : 'Closest Alternative'))
           .toString();
       final String matchReason = (map['match_reason'] ?? '').toString().trim();
 
       final int id = (productData['id'] as num?)?.toInt() ?? 0;
       final String name = (productData['name'] ?? 'Product').toString();
-      final String description =
-          (productData['description'] ?? '').toString();
-      final double price =
-          (productData['price'] as num?)?.toDouble() ?? 0.0;
+      final String description = (productData['description'] ?? '').toString();
+      final double price = (productData['price'] as num?)?.toDouble() ?? 0.0;
       final double? originalPrice =
           (productData['original_price'] as num?)?.toDouble();
       final String imageUrl =
@@ -83,17 +102,17 @@ class _VisualSearchResultsScreenState
               .trim();
       final String category =
           (productData['category'] ?? 'CATALOG').toString();
-      final double rating =
-          (productData['rating'] as num?)?.toDouble() ?? 0.0;
-      final int reviews =
-          (productData['reviews'] as num?)?.toInt() ?? 0;
+      final double rating = (productData['rating'] as num?)?.toDouble() ?? 0.0;
+      final int reviews = (productData['reviews'] as num?)?.toInt() ?? 0;
       final int? discountPercent =
           (productData['discount_percent'] as num?)?.toInt();
       final bool isFeatured = productData['is_featured'] == true;
+      final int stock = (productData['stock'] as num?)?.toInt() ?? 50;
 
       items.add({
-        'score': (clampedScore * 100).toStringAsFixed(1),
+        'score': (clampedScore * 100).toStringAsFixed(0),
         'scoreValue': clampedScore,
+        'confidenceTier': tier,
         'matchLabel': matchLabel,
         'matchReason': matchReason,
         'product': Product(
@@ -108,6 +127,7 @@ class _VisualSearchResultsScreenState
           reviews: reviews,
           discountPercent: discountPercent,
           isFeatured: isFeatured,
+          stock: stock,
         ),
       });
     }
@@ -118,13 +138,21 @@ class _VisualSearchResultsScreenState
   Future<void> _runNewVisualSearch(ImageSource source) async {
     if (_isSearchingAgain) return;
 
-    final picked =
-        await _visualSearchService.pickImageForSearch(source);
+    final picked = await _visualSearchService.pickImageForSearch(source);
     if (picked == null || !mounted) return;
 
     setState(() {
       _isSearchingAgain = true;
+      _loadingStepText = 'Extracting 2048-D visual features...';
       _queryImageBytes = picked.bytes;
+    });
+
+    Future<void>.delayed(const Duration(milliseconds: 500), () {
+      if (mounted && _isSearchingAgain) {
+        setState(() {
+          _loadingStepText = 'Searching catalog vectors & calibrating tiers...';
+        });
+      }
     });
 
     try {
@@ -153,6 +181,83 @@ class _VisualSearchResultsScreenState
     }
   }
 
+  Future<void> _runInlineRefinement({String? presetOverride}) async {
+    if (_isSearchingAgain) return;
+    if (presetOverride != null) {
+      _refineController.text = presetOverride;
+    }
+    final q = _refineController.text.trim();
+    if (_queryImageBytes == null && q.isEmpty && !_only3dRefine) return;
+
+    setState(() {
+      _isSearchingAgain = true;
+      _loadingStepText =
+          'Fusing photo vector + "$q" via Reciprocal Rank Fusion...';
+    });
+
+    try {
+      final response = await _visualSearchService.searchMultimodal(
+        imageBytes: _queryImageBytes,
+        filename: 'query_photo.png',
+        queryText: q.isEmpty ? null : q,
+        only3d: _only3dRefine,
+      );
+      if (!mounted) return;
+      setState(() {
+        _matches = response.matches;
+        _analysis = response.analysis;
+        _statusMessage = response.message;
+        _isSearchingAgain = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _isSearchingAgain = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Refinement failed: $e'),
+          backgroundColor: Theme.of(context).colorScheme.error,
+        ),
+      );
+    }
+  }
+
+  Future<void> _dictateInlineRefinement() async {
+    if (_isSearchingAgain) return;
+    final voice = context.read<VoiceProvider>();
+    final transcript = await voice.toggleRecordingAndTranscribe(
+      context: context,
+    );
+    if (!mounted || transcript == null || transcript.trim().isEmpty) return;
+    setState(() {
+      _refineController.text = transcript.trim();
+    });
+    await _runInlineRefinement();
+  }
+
+  void _askCtrlXAboutPhoto(List<Map<String, dynamic>> items) {
+    final category = _analysis['detected_category']?.toString().trim() ?? '';
+    final modifier = _refineController.text.trim();
+    String prompt;
+    if (items.isNotEmpty) {
+      final topNames = items
+          .take(3)
+          .map((m) {
+            final p = m['product'] as Product;
+            return '${p.name} (\$${p.price.toStringAsFixed(0)})';
+          })
+          .join(', ');
+      prompt =
+          'I just ran a visual photo search${category.isNotEmpty ? ' in $category' : ''}'
+          '${modifier.isNotEmpty ? ' refined with "$modifier"' : ''}. '
+          'Compare the closest catalog matches ($topNames) and recommend the best one based on real reviews and value.';
+    } else {
+      prompt =
+          'I uploaded a photo to visual search${modifier.isNotEmpty ? ' looking for "$modifier"' : ''}, '
+          'but no exact match was found. Help me find the closest available item in Penguin Store.';
+    }
+    context.push('/ctrlx?q=${Uri.encodeComponent(prompt)}');
+  }
+
   void _showRescanSheet() {
     showModalBottomSheet<void>(
       context: context,
@@ -170,7 +275,7 @@ class _VisualSearchResultsScreenState
                     style: TextStyle(fontWeight: FontWeight.bold),
                   ),
                   subtitle: Text(
-                    'Our AI automatically enhances blurry or low-light photos.',
+                    'Auto-rotates EXIF orientation, composites transparent PNGs on white, and enhances blur.',
                   ),
                 ),
                 ListTile(
@@ -206,7 +311,7 @@ class _VisualSearchResultsScreenState
       backgroundColor: theme.scaffoldBackgroundColor,
       appBar: AppBar(
         title: const Text(
-          'AI Visual Search',
+          'AI Visual & Multimodal Search',
           style: TextStyle(fontWeight: FontWeight.bold),
         ),
         elevation: 0,
@@ -225,14 +330,20 @@ class _VisualSearchResultsScreenState
       body: _isSearchingAgain
           ? _buildAnalyzingView(theme)
           : items.isEmpty
-              ? _buildNotInDatabaseState(theme)
+              ? _buildNotInDatabaseState(theme, items)
               : CustomScrollView(
                   physics: const BouncingScrollPhysics(),
                   slivers: [
                     SliverToBoxAdapter(
                       child: Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
-                        child: _buildAnalysisBanner(theme, items.length),
+                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+                        child: Column(
+                          children: [
+                            _buildAnalysisBanner(theme, items),
+                            const SizedBox(height: 12),
+                            _buildInlineRefineCard(theme, items),
+                          ],
+                        ),
                       ),
                     ),
                     _buildResponsiveGridSliver(items),
@@ -273,16 +384,17 @@ class _VisualSearchResultsScreenState
               ),
             CircularProgressIndicator(color: theme.primaryColor),
             const SizedBox(height: 18),
-            const Text(
-              'Analyzing image & enhancing details...',
-              style: TextStyle(
+            Text(
+              _loadingStepText,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
                 fontSize: 15,
                 fontWeight: FontWeight.w700,
               ),
             ),
             const SizedBox(height: 6),
             Text(
-              'Matching 2048-D visual features against Penguin Store database',
+              'ResNet-50 ONNX 2048-D cosine similarity + RRF calibration',
               textAlign: TextAlign.center,
               style: TextStyle(
                 fontSize: 12,
@@ -295,31 +407,52 @@ class _VisualSearchResultsScreenState
     );
   }
 
-  Widget _buildAnalysisBanner(ThemeData theme, int matchCount) {
+  Widget _buildAnalysisBanner(
+    ThemeData theme,
+    List<Map<String, dynamic>> items,
+  ) {
     final bool wasDeblurred = _analysis['was_deblurred'] == true;
-    final String? detectedCategory =
-        _analysis['detected_category']?.toString();
+    final String? detectedCategory = _analysis['detected_category']?.toString();
     final dynamic searchTimeMs = _analysis['search_time_ms'];
     final bool isMultimodal = _analysis['search_mode'] == 'multimodal_rrf';
     final String? queryText = _analysis['query_text']?.toString().trim();
     final dynamic maxPriceCap = _analysis['max_price'];
     final bool only3dFilter = _analysis['only_3d'] == true;
+    final String tier = (_analysis['confidence_tier'] ??
+            (items.isNotEmpty ? items.first['confidenceTier'] : 'similar_style'))
+        .toString();
+    final String summaryText = (_analysis['search_summary'] ??
+            _statusMessage ??
+            'Found ${items.length} catalog matches.')
+        .toString();
+
+    final bool isClosestFallback = tier == 'closest_alternatives';
+    final bool isStrong = tier == 'strong_match';
+
+    final List<Color> bannerGradient = isClosestFallback
+        ? [const Color(0xFF92400E), const Color(0xFFB45309)]
+        : (isStrong
+            ? [theme.primaryColor, const Color(0xFF0F766E)]
+            : [theme.primaryColor, theme.colorScheme.tertiary]);
+
+    final String headline = isClosestFallback
+        ? 'Closest Catalog Alternatives'
+        : (isMultimodal
+            ? 'Multimodal AI Hybrid Match'
+            : (isStrong ? 'Strong Visual Match' : 'Similar Styles in Stock'));
 
     return Container(
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
         gradient: LinearGradient(
-          colors: [
-            theme.primaryColor,
-            theme.colorScheme.tertiary,
-          ],
+          colors: bannerGradient,
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
         ),
         borderRadius: BorderRadius.circular(18),
         boxShadow: [
           BoxShadow(
-            color: theme.primaryColor.withOpacity(0.28),
+            color: bannerGradient.first.withValues(alpha: 0.25),
             blurRadius: 14,
             offset: const Offset(0, 6),
           ),
@@ -339,7 +472,7 @@ class _VisualSearchResultsScreenState
                     color: Colors.white,
                     borderRadius: BorderRadius.circular(12),
                     border: Border.all(
-                      color: Colors.white.withOpacity(0.7),
+                      color: Colors.white.withValues(alpha: 0.75),
                       width: 2,
                     ),
                   ),
@@ -356,7 +489,7 @@ class _VisualSearchResultsScreenState
                   padding: const EdgeInsets.all(12),
                   margin: const EdgeInsets.only(right: 14),
                   decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.2),
+                    color: Colors.white.withValues(alpha: 0.2),
                     shape: BoxShape.circle,
                   ),
                   child: const Icon(
@@ -370,9 +503,7 @@ class _VisualSearchResultsScreenState
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      isMultimodal
-                          ? 'Multimodal AI Hybrid Match'
-                          : 'Visual Match Found',
+                      headline,
                       style: const TextStyle(
                         color: Colors.white,
                         fontSize: 17,
@@ -381,11 +512,11 @@ class _VisualSearchResultsScreenState
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      'Found $matchCount ${isMultimodal ? 'hybrid-ranked' : 'visually matching'} ${matchCount == 1 ? 'product' : 'products'} in the Penguin Store database.',
+                      summaryText,
                       style: const TextStyle(
                         color: Colors.white70,
                         fontSize: 12,
-                        height: 1.35,
+                        height: 1.38,
                       ),
                     ),
                   ],
@@ -393,57 +524,189 @@ class _VisualSearchResultsScreenState
               ),
             ],
           ),
-          if (wasDeblurred ||
-              isMultimodal ||
-              (queryText != null && queryText.isNotEmpty) ||
-              maxPriceCap != null ||
-              only3dFilter ||
-              (detectedCategory != null && detectedCategory.isNotEmpty) ||
-              searchTimeMs != null) ...[
-            const SizedBox(height: 12),
-            Wrap(
-              spacing: 8,
-              runSpacing: 6,
-              children: [
-                if (isMultimodal)
-                  _buildInfoPill(
-                    icon: Icons.merge_type_rounded,
-                    label: 'RRF Hybrid Fusion',
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            runSpacing: 6,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              if (isMultimodal)
+                _buildInfoPill(
+                  icon: Icons.merge_type_rounded,
+                  label: 'RRF Hybrid Fusion',
+                ),
+              if (queryText != null && queryText.isNotEmpty)
+                _buildInfoPill(
+                  icon: Icons.tune_rounded,
+                  label: '"$queryText"',
+                ),
+              if (maxPriceCap != null)
+                _buildInfoPill(
+                  icon: Icons.attach_money_rounded,
+                  label: 'Max \$$maxPriceCap',
+                ),
+              if (only3dFilter)
+                _buildInfoPill(
+                  icon: Icons.view_in_ar_rounded,
+                  label: '3D Models Only',
+                ),
+              if (wasDeblurred)
+                _buildInfoPill(
+                  icon: Icons.auto_fix_high_rounded,
+                  label: 'Blur Auto-Enhanced',
+                ),
+              if (detectedCategory != null && detectedCategory.isNotEmpty)
+                _buildInfoPill(
+                  icon: Icons.category_outlined,
+                  label: detectedCategory,
+                ),
+              if (searchTimeMs != null)
+                _buildInfoPill(
+                  icon: Icons.bolt_rounded,
+                  label: '${searchTimeMs}ms',
+                ),
+              ActionChip(
+                avatar: const Icon(Icons.auto_awesome_rounded, size: 15),
+                label: const Text(
+                  'Ask CTRL-X about this photo',
+                  style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w800),
+                ),
+                visualDensity: VisualDensity.compact,
+                onPressed: () => _askCtrlXAboutPhoto(items),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildInlineRefineCard(
+    ThemeData theme,
+    List<Map<String, dynamic>> items,
+  ) {
+    final colors = theme.colorScheme;
+    final voice = context.watch<VoiceProvider>();
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: colors.surface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: colors.outlineVariant.withValues(alpha: 0.5),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.tune_rounded, size: 17, color: theme.primaryColor),
+              const SizedBox(width: 6),
+              Text(
+                'Refine This Photo with Text or Voice',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w800,
+                  color: colors.onSurface,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _refineController,
+                  textInputAction: TextInputAction.search,
+                  onSubmitted: (_) => _runInlineRefinement(),
+                  decoration: InputDecoration(
+                    hintText:
+                        'e.g. "black leather under \$150" or "with 3D model"',
+                    isDense: true,
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 11,
+                    ),
+                    suffixIcon: IconButton(
+                      tooltip: voice.isRecording
+                          ? 'Stop recording'
+                          : 'Speak refinement',
+                      onPressed: _dictateInlineRefinement,
+                      icon: voice.isTranscribing
+                          ? SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: theme.primaryColor,
+                              ),
+                            )
+                          : Icon(
+                              voice.isRecording
+                                  ? Icons.stop_circle_rounded
+                                  : Icons.mic_none_rounded,
+                              color: voice.isRecording
+                                  ? colors.error
+                                  : theme.primaryColor,
+                              size: 20,
+                            ),
+                    ),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
                   ),
-                if (queryText != null && queryText.isNotEmpty)
-                  _buildInfoPill(
-                    icon: Icons.mic_none_rounded,
-                    label: '"$queryText"',
+                ),
+              ),
+              const SizedBox(width: 8),
+              FilledButton(
+                onPressed: () => _runInlineRefinement(),
+                style: FilledButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 12,
                   ),
-                if (maxPriceCap != null)
-                  _buildInfoPill(
-                    icon: Icons.attach_money_rounded,
-                    label: 'Max \$$maxPriceCap',
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
                   ),
-                if (only3dFilter)
-                  _buildInfoPill(
-                    icon: Icons.view_in_ar_rounded,
-                    label: '3D Models Only',
-                  ),
-                if (wasDeblurred)
-                  _buildInfoPill(
-                    icon: Icons.auto_fix_high_rounded,
-                    label: 'Blur Auto-Enhanced',
-                  ),
-                if (detectedCategory != null &&
-                    detectedCategory.isNotEmpty)
-                  _buildInfoPill(
-                    icon: Icons.category_outlined,
-                    label: detectedCategory,
-                  ),
-                if (searchTimeMs != null)
-                  _buildInfoPill(
-                    icon: Icons.bolt_rounded,
-                    label: '${searchTimeMs}ms',
-                  ),
-              ],
-            ),
-          ],
+                ),
+                child: const Text(
+                  'Refine',
+                  style: TextStyle(fontWeight: FontWeight.w800, fontSize: 12.5),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 6,
+            children: [
+              ActionChip(
+                visualDensity: VisualDensity.compact,
+                label: const Text('Under \$150', style: TextStyle(fontSize: 11)),
+                onPressed: () =>
+                    _runInlineRefinement(presetOverride: 'under \$150'),
+              ),
+              ActionChip(
+                visualDensity: VisualDensity.compact,
+                label: const Text('Under \$300', style: TextStyle(fontSize: 11)),
+                onPressed: () =>
+                    _runInlineRefinement(presetOverride: 'under \$300'),
+              ),
+              FilterChip(
+                visualDensity: VisualDensity.compact,
+                selected: _only3dRefine,
+                label: const Text('3D Twin Only', style: TextStyle(fontSize: 11)),
+                onSelected: (v) {
+                  setState(() => _only3dRefine = v);
+                  _runInlineRefinement();
+                },
+              ),
+            ],
+          ),
         ],
       ),
     );
@@ -459,10 +722,10 @@ class _VisualSearchResultsScreenState
         vertical: 5,
       ),
       decoration: BoxDecoration(
-        color: Colors.black.withOpacity(0.22),
+        color: Colors.black.withValues(alpha: 0.22),
         borderRadius: BorderRadius.circular(20),
         border: Border.all(
-          color: Colors.white.withOpacity(0.24),
+          color: Colors.white.withValues(alpha: 0.24),
         ),
       ),
       child: Row(
@@ -483,44 +746,40 @@ class _VisualSearchResultsScreenState
     );
   }
 
-  Widget _buildNotInDatabaseState(ThemeData theme) {
-    final bool wasDeblurred = _analysis['was_deblurred'] == true;
+  Widget _buildNotInDatabaseState(
+    ThemeData theme,
+    List<Map<String, dynamic>> items,
+  ) {
+    final bool isBlank = _analysis['is_blank_or_noise'] == true;
 
     return Center(
       child: SingleChildScrollView(
         padding: const EdgeInsets.all(24),
         child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 460),
-          child: Container(
-            padding: const EdgeInsets.all(24),
-            decoration: BoxDecoration(
-              color: theme.colorScheme.surface,
-              borderRadius: BorderRadius.circular(20),
-              border: Border.all(
-                color: theme.dividerColor.withOpacity(0.2),
-              ),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.04),
-                  blurRadius: 12,
-                  offset: const Offset(0, 4),
+          constraints: const BoxConstraints(maxWidth: 500),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(24),
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.surface,
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(
+                    color: theme.dividerColor.withValues(alpha: 0.2),
+                  ),
                 ),
-              ],
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (_queryImageBytes != null) ...[
-                  Stack(
-                    alignment: Alignment.bottomRight,
-                    children: [
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (_queryImageBytes != null) ...[
                       Container(
-                        width: 116,
-                        height: 116,
+                        width: 108,
+                        height: 108,
                         decoration: BoxDecoration(
                           borderRadius: BorderRadius.circular(16),
                           border: Border.all(
-                            color: theme.colorScheme.error.withOpacity(0.5),
+                            color: theme.colorScheme.outlineVariant,
                             width: 2,
                           ),
                         ),
@@ -532,130 +791,62 @@ class _VisualSearchResultsScreenState
                           ),
                         ),
                       ),
-                      Container(
-                        padding: const EdgeInsets.all(6),
-                        decoration: BoxDecoration(
-                          color: theme.colorScheme.error,
-                          shape: BoxShape.circle,
-                        ),
-                        child: const Icon(
-                          Icons.search_off_rounded,
-                          color: Colors.white,
-                          size: 18,
-                        ),
-                      ),
+                      const SizedBox(height: 16),
                     ],
-                  ),
-                  const SizedBox(height: 16),
-                ] else ...[
-                  Container(
-                    width: 80,
-                    height: 80,
-                    decoration: BoxDecoration(
-                      color: theme.colorScheme.error.withOpacity(0.1),
-                      shape: BoxShape.circle,
-                    ),
-                    child: Icon(
-                      Icons.search_off_rounded,
-                      size: 42,
-                      color: theme.colorScheme.error,
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                ],
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 10,
-                    vertical: 4,
-                  ),
-                  decoration: BoxDecoration(
-                    color: theme.colorScheme.error.withOpacity(0.12),
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                  child: Text(
-                    'NOT IN DATABASE',
-                    style: TextStyle(
-                      color: theme.colorScheme.error,
-                      fontSize: 10,
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: 0.8,
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                Text(
-                  'Product Not in Database',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.w800,
-                    color: theme.colorScheme.onSurface,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  _statusMessage?.isNotEmpty == true
-                      ? _statusMessage!
-                      : 'We analyzed your image${wasDeblurred ? ' (with automatic blur enhancement)' : ''}, '
-                          'but this item is not currently available in the Penguin Store database.',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize: 13,
-                    height: 1.45,
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
-                ),
-                const SizedBox(height: 22),
-                SizedBox(
-                  width: double.infinity,
-                  child: FilledButton.icon(
-                    onPressed: _showRescanSheet,
-                    icon: const Icon(Icons.camera_alt_outlined, size: 18),
-                    label: const Text('Try Another Image'),
-                    style: FilledButton.styleFrom(
-                      backgroundColor: theme.primaryColor,
-                      foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(vertical: 14),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(11),
+                    Text(
+                      isBlank
+                          ? 'Unclear or Blank Photo'
+                          : 'No Exact Match for Current Filters',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 19,
+                        fontWeight: FontWeight.w800,
+                        color: theme.colorScheme.onSurface,
                       ),
                     ),
-                  ),
-                ),
-                const SizedBox(height: 10),
-                Row(
-                  children: [
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        onPressed: () => context.push('/ctrlx'),
-                        icon: const Icon(
-                          Icons.auto_awesome_outlined,
-                          size: 16,
-                        ),
-                        label: const Text(
-                          'Ask CTRL-X',
-                          style: TextStyle(fontSize: 12),
-                        ),
+                    const SizedBox(height: 8),
+                    Text(
+                      _statusMessage?.isNotEmpty == true
+                          ? _statusMessage!
+                          : 'Try relaxing your price filter, refining with text below, or uploading a clearer angle.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 13,
+                        height: 1.45,
+                        color: theme.colorScheme.onSurfaceVariant,
                       ),
                     ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        onPressed: () => Navigator.of(context).maybePop(),
-                        icon: const Icon(
-                          Icons.storefront_outlined,
-                          size: 16,
+                    const SizedBox(height: 18),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: FilledButton.icon(
+                            onPressed: _showRescanSheet,
+                            icon: const Icon(Icons.camera_alt_outlined, size: 17),
+                            label: const Text('Try Another Photo'),
+                          ),
                         ),
-                        label: const Text(
-                          'Browse Store',
-                          style: TextStyle(fontSize: 12),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            onPressed: () => _askCtrlXAboutPhoto(items),
+                            icon: const Icon(
+                              Icons.auto_awesome_outlined,
+                              size: 16,
+                            ),
+                            label: const Text('Ask CTRL-X'),
+                          ),
                         ),
-                      ),
+                      ],
                     ),
                   ],
                 ),
+              ),
+              if (_queryImageBytes != null && !isBlank) ...[
+                const SizedBox(height: 14),
+                _buildInlineRefineCard(theme, items),
               ],
-            ),
+            ],
           ),
         ),
       ),
@@ -709,16 +900,20 @@ class _VisualSearchResultsScreenState
                 final item = items[index];
                 final Product product = item['product'] as Product;
                 final String score = item['score'] as String;
-                final double scoreVal =
-                    (item['scoreValue'] as num?)?.toDouble() ?? 0.8;
+                final String tier = item['confidenceTier'] as String;
+                final String matchLabel = item['matchLabel'] as String;
                 final String matchReason =
                     (item['matchReason'] ?? '').toString().trim();
 
-                final Color badgeAccent = scoreVal >= 0.85
+                final Color badgeAccent = tier == 'strong_match'
                     ? const Color(0xFF00E676)
-                    : scoreVal >= 0.65
+                    : tier == 'similar_style'
                         ? Colors.cyanAccent
                         : Colors.amberAccent;
+
+                final String topBadgeText = tier == 'closest_alternatives'
+                    ? 'Closest Alt ($score%)'
+                    : '$matchLabel • $score%';
 
                 return Stack(
                   fit: StackFit.expand,
@@ -734,10 +929,10 @@ class _VisualSearchResultsScreenState
                     ),
                     Positioned(
                       top: 7,
-                      right: 7,
+                      left: 7,
                       child: IgnorePointer(
                         child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.end,
+                          crossAxisAlignment: CrossAxisAlignment.start,
                           mainAxisSize: MainAxisSize.min,
                           children: [
                             Container(
@@ -746,19 +941,12 @@ class _VisualSearchResultsScreenState
                                 vertical: 4,
                               ),
                               decoration: BoxDecoration(
-                                color: Colors.black.withOpacity(0.82),
+                                color: Colors.black.withValues(alpha: 0.84),
                                 borderRadius: BorderRadius.circular(10),
                                 border: Border.all(
-                                  color: badgeAccent.withOpacity(0.5),
-                                  width: 0.8,
+                                  color: badgeAccent.withValues(alpha: 0.6),
+                                  width: 0.9,
                                 ),
-                                boxShadow: [
-                                  BoxShadow(
-                                    color: Colors.black.withOpacity(0.25),
-                                    blurRadius: 4,
-                                    offset: const Offset(0, 2),
-                                  ),
-                                ],
                               ),
                               child: Row(
                                 mainAxisSize: MainAxisSize.min,
@@ -770,12 +958,11 @@ class _VisualSearchResultsScreenState
                                   ),
                                   const SizedBox(width: 4),
                                   Text(
-                                    '$score%',
+                                    topBadgeText,
                                     style: const TextStyle(
                                       color: Colors.white,
-                                      fontSize: 10,
+                                      fontSize: 9.5,
                                       fontWeight: FontWeight.w800,
-                                      letterSpacing: 0.3,
                                     ),
                                   ),
                                 ],
@@ -785,7 +972,7 @@ class _VisualSearchResultsScreenState
                               const SizedBox(height: 4),
                               ConstrainedBox(
                                 constraints: BoxConstraints(
-                                  maxWidth: (itemWidth - 20).clamp(90.0, 175.0),
+                                  maxWidth: (itemWidth - 20).clamp(90.0, 185.0),
                                 ),
                                 child: Container(
                                   padding: const EdgeInsets.symmetric(
@@ -793,7 +980,7 @@ class _VisualSearchResultsScreenState
                                     vertical: 3,
                                   ),
                                   decoration: BoxDecoration(
-                                    color: Colors.black.withOpacity(0.76),
+                                    color: Colors.black.withValues(alpha: 0.78),
                                     borderRadius: BorderRadius.circular(8),
                                   ),
                                   child: Text(
@@ -802,7 +989,7 @@ class _VisualSearchResultsScreenState
                                     overflow: TextOverflow.ellipsis,
                                     style: const TextStyle(
                                       color: Colors.white70,
-                                      fontSize: 9.5,
+                                      fontSize: 9.2,
                                       fontWeight: FontWeight.w600,
                                     ),
                                   ),

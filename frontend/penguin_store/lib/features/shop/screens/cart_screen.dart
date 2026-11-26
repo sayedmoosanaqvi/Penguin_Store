@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
+import 'package:uuid/uuid.dart';
 
 import 'package:penguin_store/config/api_config.dart';
 import 'package:penguin_store/core/providers/voice_provider.dart';
@@ -76,6 +77,7 @@ class _CartScreenState extends State<CartScreen> {
       final token = (await SecureStorageService.getToken())?.trim();
       final isStripePayment =
           _stripePaymentsEnabled && details.paymentMethod == 'STRIPE';
+      final idempotencyKey = const Uuid().v4();
 
       final checkoutResponse = await http
           .post(
@@ -83,6 +85,7 @@ class _CartScreenState extends State<CartScreen> {
             headers: {
               'Content-Type': 'application/json',
               'Accept': 'application/json',
+              'Idempotency-Key': idempotencyKey,
               if (token != null && token.isNotEmpty)
                 'Authorization': 'Bearer $token',
             },

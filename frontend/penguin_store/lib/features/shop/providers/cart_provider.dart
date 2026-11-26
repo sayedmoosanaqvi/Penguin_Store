@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -57,6 +58,8 @@ class CartProvider with ChangeNotifier {
 
   String? _appliedPromoCode;
   String? _promoDescription;
+  Timer? _syncDebounceTimer;
+  Future<void>? _syncInflight;
 
   CartProvider() {
     _loadFromStorage();
@@ -202,6 +205,14 @@ class CartProvider with ChangeNotifier {
       debugPrint('Failed to persist cart: $e');
     }
 
+    // Debounce & coalesce rapid cart taps into a single server sync request
+    _syncDebounceTimer?.cancel();
+    _syncDebounceTimer = Timer(const Duration(milliseconds: 280), () {
+      _pushCartToServer();
+    });
+  }
+
+  Future<void> _pushCartToServer() async {
     try {
       final token = (await SecureStorageService.getToken())?.trim();
       if (token == null || token.isEmpty) return;
@@ -235,7 +246,15 @@ class CartProvider with ChangeNotifier {
   }
 
   /// Called on login/app boot when user already has an authenticated JWT.
-  Future<void> syncWithServer() async {
+  /// Deduplicates concurrent in-flight sync calls.
+  Future<void> syncWithServer() {
+    if (_syncInflight != null) return _syncInflight!;
+    final fut = _syncWithServerInternal();
+    _syncInflight = fut.whenComplete(() => _syncInflight = null);
+    return _syncInflight!;
+  }
+
+  Future<void> _syncWithServerInternal() async {
     try {
       final token = (await SecureStorageService.getToken())?.trim();
       if (token == null || token.isEmpty) return;
@@ -303,10 +322,11 @@ class CartProvider with ChangeNotifier {
     double? unitPrice,
     String pricingMode = 'B2C',
   }) {
-    final safeQty = quantity.clamp(1, 500);
+    final maxCap = product.stock > 0 ? product.stock.clamp(1, 500) : 500;
+    final safeQty = quantity.clamp(1, maxCap);
     if (_items.containsKey(product.id)) {
       final existing = _items[product.id]!;
-      final nextQty = (existing.quantity + safeQty).clamp(1, 500);
+      final nextQty = (existing.quantity + safeQty).clamp(1, maxCap);
       _items[product.id] = CartItem(
         product: product,
         quantity: nextQty,
@@ -332,7 +352,11 @@ class CartProvider with ChangeNotifier {
 
   void incrementQuantity(int productId) {
     final existing = _items[productId];
-    if (existing == null || existing.quantity >= 500) return;
+    if (existing == null) return;
+    final maxCap = existing.product.stock > 0
+        ? existing.product.stock.clamp(1, 500)
+        : 500;
+    if (existing.quantity >= maxCap) return;
     existing.quantity += 1;
     notifyListeners();
     _saveAndSync();

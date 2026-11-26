@@ -173,7 +173,7 @@ class _ProductCardState extends State<ProductCard> {
     final product = widget.product;
     final primary = colors.primary;
     final outOfStock = product.stock <= 0;
-    final lowStock = product.stock > 0 && product.stock <= 8;
+    final lowStock = product.stock > 0 && product.stock <= 5;
 
     final hasDiscount = product.originalPrice != null &&
         product.originalPrice! > product.price;
@@ -463,7 +463,7 @@ class _ProductCardState extends State<ProductCard> {
                                 child: Text(
                                   outOfStock
                                       ? 'Out of Stock'
-                                      : 'Only ${product.stock} Left',
+                                      : 'Only ${product.stock} left',
                                   style: const TextStyle(
                                     color: Colors.white,
                                     fontSize: 9,
@@ -515,7 +515,11 @@ class _ProductCardState extends State<ProductCard> {
                               const SizedBox(width: 3),
                               Flexible(
                                 child: Text(
-                                  '${product.rating} (${product.reviews})',
+                                  product.reviews > 0
+                                      ? '${product.rating.toStringAsFixed(1)} (${product.reviews})'
+                                      : (product.rating > 0
+                                            ? product.rating.toStringAsFixed(1)
+                                            : 'New'),
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
                                   style: TextStyle(

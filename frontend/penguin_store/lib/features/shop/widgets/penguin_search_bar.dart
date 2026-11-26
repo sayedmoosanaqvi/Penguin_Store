@@ -370,6 +370,166 @@ class _PenguinSearchBarState extends State<PenguinSearchBar> {
             ],
           ),
         ),
+        Consumer<VoiceProvider>(
+          builder: (context, voice, _) {
+            if (voice.isRecording) {
+              final lvl = voice.micLevel.clamp(0.08, 1.0);
+              const weights = [0.45, 0.80, 1.0, 0.75, 0.50];
+              return Container(
+                margin: const EdgeInsets.only(top: 6),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 8,
+                ),
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.errorContainer.withValues(
+                    alpha: 0.45,
+                  ),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(
+                    color: theme.colorScheme.error.withValues(alpha: 0.4),
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    SizedBox(
+                      width: 24,
+                      height: 18,
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        crossAxisAlignment: CrossAxisAlignment.center,
+                        children: weights.map((w) {
+                          final barH = (4.0 + 14.0 * lvl * w).clamp(4.0, 18.0);
+                          return AnimatedContainer(
+                            duration: const Duration(milliseconds: 85),
+                            width: 3.2,
+                            height: barH,
+                            decoration: BoxDecoration(
+                              color: theme.colorScheme.error,
+                              borderRadius: BorderRadius.circular(99),
+                            ),
+                          );
+                        }).toList(),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        'Listening (16 kHz Whisper v3)... Speak clearly, then tap stop.',
+                        style: TextStyle(
+                          fontSize: 11.5,
+                          fontWeight: FontWeight.w700,
+                          color: theme.colorScheme.onSurface,
+                        ),
+                      ),
+                    ),
+                    TextButton(
+                      style: TextButton.styleFrom(
+                        visualDensity: VisualDensity.compact,
+                        foregroundColor: theme.colorScheme.error,
+                      ),
+                      onPressed: widget.onVoiceTap,
+                      child: const Text('Done'),
+                    ),
+                  ],
+                ),
+              );
+            }
+
+            final heard = voice.lastHeardTranscript?.trim() ?? '';
+            if (heard.isNotEmpty &&
+                widget.query.trim().toLowerCase() == heard.toLowerCase()) {
+              return Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Wrap(
+                  spacing: 8,
+                  runSpacing: 4,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 5,
+                      ),
+                      decoration: BoxDecoration(
+                        color: theme.colorScheme.primaryContainer.withValues(
+                          alpha: 0.55,
+                        ),
+                        borderRadius: BorderRadius.circular(999),
+                        border: Border.all(
+                          color: theme.primaryColor.withValues(alpha: 0.35),
+                        ),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            voice.wasLastTranscriptRepaired
+                                ? Icons.auto_fix_high_rounded
+                                : Icons.mic_rounded,
+                            size: 13,
+                            color: theme.primaryColor,
+                          ),
+                          const SizedBox(width: 6),
+                          Flexible(
+                            child: Text(
+                              'Heard: "$heard"${voice.wasLastTranscriptRepaired ? ' (Smart-matched)' : ''}',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 11.5,
+                                fontWeight: FontWeight.w700,
+                                color: theme.colorScheme.onSurface,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          InkWell(
+                            borderRadius: BorderRadius.circular(6),
+                            onTap: () {
+                              widget.focusNode.requestFocus();
+                              widget.controller.selection = TextSelection(
+                                baseOffset: 0,
+                                extentOffset: widget.controller.text.length,
+                              );
+                            },
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 4,
+                                vertical: 1,
+                              ),
+                              child: Text(
+                                'Edit',
+                                style: TextStyle(
+                                  fontSize: 11.5,
+                                  fontWeight: FontWeight.w800,
+                                  color: theme.primaryColor,
+                                  decoration: TextDecoration.underline,
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 4),
+                          InkWell(
+                            borderRadius: BorderRadius.circular(99),
+                            onTap: voice.dismissLastHeard,
+                            child: Icon(
+                              Icons.close_rounded,
+                              size: 14,
+                              color: theme.colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            }
+
+            return const SizedBox.shrink();
+          },
+        ),
         if (showDropdown)
           Container(
             margin: const EdgeInsets.only(top: 6),

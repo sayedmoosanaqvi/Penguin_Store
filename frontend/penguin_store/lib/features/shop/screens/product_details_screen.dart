@@ -117,12 +117,30 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
 
   int _selectedRating = 5;
   List<ProductReviewModel> _reviews = [];
+  int _totalReviewsCount = 0;
+  int _verifiedPurchaseCount = 0;
+  Map<int, int> _ratingDistribution = const {5: 0, 4: 0, 3: 0, 2: 0, 1: 0};
+  ProductReviewModel? _myReview;
+  bool _isEditingMyReview = false;
+  final Set<String> _selectedReviewTags = <String>{};
+  String _reviewSort = 'most_helpful';
+  int? _starFilter;
+  final Set<int> _helpfulVotingIds = <int>{};
   double _averageRating = 0;
   double _weightedTrustRating = 0;
   bool _verifiedBuyersOnly = false;
   ProductReviewInsightsModel? _aiReviewInsights;
   bool _isLoadingAiInsights = false;
   List<Product> _recommendedProducts = [];
+
+  static const List<String> _availableReviewTags = [
+    'True to Specs',
+    'Great Value',
+    'Fast Shipping',
+    'Premium Build',
+    'Gift Ready',
+    'B2B Verified',
+  ];
 
   static const List<_AddOnOption> _availableAddOns = [
     _AddOnOption(
@@ -396,15 +414,24 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
   Future<void> _loadReviews(int productId) async {
     setState(() => _isReviewsLoading = true);
     try {
-      final bundle = await _commerceService.fetchReviews(productId);
+      final bundle = await _commerceService.fetchReviews(
+        productId,
+        sort: _reviewSort,
+        verifiedOnly: _verifiedBuyersOnly,
+        starFilter: _starFilter,
+      );
       if (!mounted) return;
       setState(() {
-        _averageRating = bundle.averageRating > 0
-            ? bundle.averageRating
-            : (_product?.rating ?? 4.8);
-        _weightedTrustRating = bundle.trustWeightedRating > 0
-            ? bundle.trustWeightedRating
-            : _averageRating;
+        _totalReviewsCount = bundle.totalReviews;
+        _verifiedPurchaseCount = bundle.verifiedPurchaseCount;
+        _ratingDistribution = bundle.distribution;
+        _myReview = bundle.myReview;
+        _averageRating = bundle.totalReviews > 0 ? bundle.averageRating : 0.0;
+        _weightedTrustRating = bundle.totalReviews > 0
+            ? (bundle.trustWeightedRating > 0
+                  ? bundle.trustWeightedRating
+                  : bundle.averageRating)
+            : 0.0;
         _reviews = bundle.reviews;
         _isReviewsLoading = false;
       });
@@ -414,14 +441,17 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
     }
   }
 
-  Future<void> _loadAiInsights(int productId) async {
+  Future<void> _loadAiInsights(int productId, {bool refresh = false}) async {
     setState(() => _isLoadingAiInsights = true);
     try {
-      final insights = await _commerceService.fetchReviewInsights(productId);
+      final insights = await _commerceService.fetchReviewInsights(
+        productId,
+        refresh: refresh,
+      );
       if (!mounted) return;
       setState(() {
         _aiReviewInsights = insights;
-        if (insights.trustWeightedRating > 0) {
+        if (insights.hasInsights && insights.trustWeightedRating > 0) {
           _weightedTrustRating = insights.trustWeightedRating;
         }
         _isLoadingAiInsights = false;
@@ -463,6 +493,28 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
     }
   }
 
+  void _beginEditingReview(ProductReviewModel review) {
+    setState(() {
+      _isEditingMyReview = true;
+      _selectedRating = review.rating.clamp(1, 5);
+      _reviewTitleController.text = review.title;
+      _reviewCommentController.text = review.comment;
+      _selectedReviewTags
+        ..clear()
+        ..addAll(review.tags);
+    });
+  }
+
+  void _cancelEditingReview() {
+    setState(() {
+      _isEditingMyReview = false;
+      _selectedRating = 5;
+      _reviewTitleController.clear();
+      _reviewCommentController.clear();
+      _selectedReviewTags.clear();
+    });
+  }
+
   Future<void> _submitReview() async {
     final product = _product;
     if (product == null) return;
@@ -478,26 +530,43 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
     }
 
     setState(() => _isSubmittingReview = true);
+    final editingReview = _isEditingMyReview ? _myReview : null;
     try {
-      await _commerceService.submitReview(
-        productId: product.id,
-        rating: _selectedRating,
-        title: _reviewTitleController.text.trim(),
-        comment: comment,
-      );
+      if (editingReview != null && editingReview.id > 0) {
+        await _commerceService.updateReview(
+          productId: product.id,
+          reviewId: editingReview.id,
+          rating: _selectedRating,
+          title: _reviewTitleController.text.trim(),
+          comment: comment,
+          tags: _selectedReviewTags.toList(),
+        );
+      } else {
+        await _commerceService.submitReview(
+          productId: product.id,
+          rating: _selectedRating,
+          title: _reviewTitleController.text.trim(),
+          comment: comment,
+          tags: _selectedReviewTags.toList(),
+        );
+      }
       if (!mounted) return;
-      setState(() => _isSubmittingReview = false);
+      setState(() {
+        _isSubmittingReview = false;
+        _isEditingMyReview = false;
+        _selectedReviewTags.clear();
+      });
       _reviewTitleController.clear();
       _reviewCommentController.clear();
       await Future.wait([
         _loadReviews(product.id),
-        _loadAiInsights(product.id),
+        _loadAiInsights(product.id, refresh: true),
       ]);
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Review analyzed by AI Trust Engine & published!'),
-        ),
+      AppNotifier.showSuccess(
+        editingReview != null
+            ? 'Your review has been updated!'
+            : 'Review verified by Trust Engine & published!',
       );
     } catch (e) {
       if (!mounted) return;
@@ -505,6 +574,75 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))),
       );
+    }
+  }
+
+  Future<void> _deleteReview(ProductReviewModel review) async {
+    final product = _product;
+    if (product == null || review.id <= 0) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete Review?'),
+        content: const Text(
+          'Are you sure you want to permanently remove your review?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton.tonal(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: FilledButton.styleFrom(foregroundColor: Colors.redAccent),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    try {
+      await _commerceService.deleteReview(
+        productId: product.id,
+        reviewId: review.id,
+      );
+      if (!mounted) return;
+      _cancelEditingReview();
+      await Future.wait([
+        _loadReviews(product.id),
+        _loadAiInsights(product.id, refresh: true),
+      ]);
+      if (!mounted) return;
+      AppNotifier.showSuccess('Your review was deleted.');
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))),
+      );
+    }
+  }
+
+  Future<void> _toggleHelpfulVote(ProductReviewModel review) async {
+    if (review.id <= 0 || _helpfulVotingIds.contains(review.id)) return;
+    final product = _product;
+    if (product == null) return;
+
+    setState(() => _helpfulVotingIds.add(review.id));
+    try {
+      await _commerceService.toggleReviewHelpful(review.id);
+      if (!mounted) return;
+      await _loadReviews(product.id);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _helpfulVotingIds.remove(review.id));
+      }
     }
   }
 
@@ -1396,7 +1534,9 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
                   const Icon(Icons.star_rounded, size: 15, color: Colors.amber),
                   const SizedBox(width: 4),
                   Text(
-                    '${_weightedTrustRating.toStringAsFixed(1)} AI Trust Rating (${_reviews.length})',
+                    _totalReviewsCount > 0
+                        ? '${_weightedTrustRating.toStringAsFixed(1)} Trust Rating ($_totalReviewsCount)'
+                        : 'No Reviews Yet • Be First',
                     style: GoogleFonts.plusJakartaSans(
                       fontSize: 11.5,
                       fontWeight: FontWeight.w700,
@@ -1559,18 +1699,23 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
 
   Widget _buildStockAndDeliveryStrip(BuildContext context, Product product) {
     final colors = Theme.of(context).colorScheme;
-    final stock = product.stock;
+    final int stock = product.stock;
     final bool isOut = stock <= 0;
-    final bool isLow = stock > 0 && stock < 10;
+    final bool isUrgentLow = stock > 0 && stock <= 5;
+    final bool isLow = stock > 5 && stock <= 10;
 
     final Color badgeColor = isOut
         ? Colors.redAccent
-        : (isLow ? Colors.amber.shade800 : const Color(0xFF10B981));
+        : (isUrgentLow
+              ? const Color(0xFFD97706)
+              : (isLow ? Colors.amber.shade800 : const Color(0xFF10B981)));
     final String stockText = isOut
         ? 'Out of Stock — Temporarily Unavailable'
-        : (isLow
-              ? 'Only $stock Left in Stock — Order Soon'
-              : 'In Stock ($stock units ready for immediate dispatch)');
+        : (isUrgentLow
+              ? 'Only $stock left in stock — order soon!'
+              : (isLow
+                    ? 'Low Stock ($stock left — selling fast)'
+                    : 'In Stock ($stock units ready for immediate dispatch)'));
 
     final bool hasExpress = _selectedAddOnIds.contains('express_handling');
     final now = DateTime.now();
@@ -2438,11 +2583,64 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
     }
 
     final insights = _aiReviewInsights;
-    if (insights == null) return const SizedBox.shrink();
+    if (insights == null || !insights.hasInsights || insights.totalReviews <= 0) {
+      return Container(
+        padding: const EdgeInsets.all(18),
+        decoration: BoxDecoration(
+          color: colors.surfaceContainerLowest,
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(
+            color: colors.outlineVariant.withValues(alpha: 0.45),
+          ),
+        ),
+        child: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: colors.primaryContainer.withValues(alpha: 0.55),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Icon(
+                Icons.rate_review_outlined,
+                color: colors.primary,
+                size: 22,
+              ),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'No Customer Reviews Yet',
+                    style: GoogleFonts.plusJakartaSans(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w800,
+                      color: colors.onSurface,
+                    ),
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    'Be the first shopper to share your real experience below. '
+                    'AI Trust Insights unlock automatically once verified customer reviews are submitted.',
+                    style: GoogleFonts.inter(
+                      fontSize: 12.5,
+                      height: 1.45,
+                      color: colors.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      );
+    }
 
-    final summary = insights.verdict.isNotEmpty
-        ? insights.verdict
-        : 'AI Trust Engine analyzed verified buyer feedback for authenticity.';
+    final isEarlyFeedback =
+        insights.sampleTier == 'early_feedback' || insights.totalReviews <= 2;
+    final summary = insights.verdict;
     final pros = insights.pros;
     final cons = insights.cons;
     final aspects = insights.aspectSentimentBars;
@@ -2457,62 +2655,42 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            crossAxisAlignment: WrapCrossAlignment.center,
             children: [
               Icon(Icons.shield_rounded, color: colors.primary, size: 22),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  'AI Review Intelligence & Fake-Review Detection Engine',
-                  style: GoogleFonts.plusJakartaSans(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w800,
-                    color: colors.onSurface,
-                  ),
+              Text(
+                isEarlyFeedback
+                    ? 'Early Customer Feedback'
+                    : 'AI Review Intelligence & Authenticity Summary',
+                style: GoogleFonts.plusJakartaSans(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w800,
+                  color: colors.onSurface,
                 ),
               ),
-              Consumer<VoiceProvider>(
-                builder: (context, voice, _) {
-                  final pid = _product?.id ?? 0;
-                  final isPlayingVerdict =
-                      voice.isSpeaking &&
-                      voice.activeLabel == 'AI Verdict: $pid';
-                  return Padding(
-                    padding: const EdgeInsets.only(right: 6),
-                    child: IconButton.filledTonal(
-                      tooltip: isPlayingVerdict
-                          ? 'Stop Verdict Audio'
-                          : 'Listen to AI Review Verdict',
-                      onPressed: () {
-                        if (isPlayingVerdict) {
-                          voice.stopSpeaking();
-                        } else {
-                          final prosText = pros.isNotEmpty
-                              ? 'Strengths: ${pros.take(2).join(', ')}.'
-                              : '';
-                          final consText = cons.isNotEmpty
-                              ? 'Trade-offs: ${cons.take(2).join(', ')}.'
-                              : '';
-                          final spoken =
-                              'Weighted trust score is ${_weightedTrustRating.toStringAsFixed(1)} stars. $summary $prosText $consText';
-                          voice.speakText(
-                            spoken,
-                            label: 'AI Verdict: $pid',
-                            preferNeural: spoken.length <= 185,
-                            forceEvenIfMuted: true,
-                          );
-                        }
-                      },
-                      icon: Icon(
-                        isPlayingVerdict
-                            ? Icons.stop_rounded
-                            : Icons.volume_up_rounded,
-                        size: 18,
-                      ),
+              if (isEarlyFeedback)
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 4,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.amber.withValues(alpha: 0.16),
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: Text(
+                    insights.earlyFeedbackBadge ??
+                        'Early Feedback — Based on ${insights.totalReviews} review${insights.totalReviews == 1 ? '' : 's'}',
+                    style: GoogleFonts.plusJakartaSans(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w800,
+                      color: Colors.amber.shade900,
                     ),
-                  );
-                },
-              ),
+                  ),
+                ),
               Container(
                 padding: const EdgeInsets.symmetric(
                   horizontal: 10,
@@ -2523,26 +2701,68 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
                   borderRadius: BorderRadius.circular(999),
                 ),
                 child: Text(
-                  'Weighted Trust: ${_weightedTrustRating.toStringAsFixed(2)} ★',
+                  'Trust-Weighted: ${insights.trustWeightedRating.toStringAsFixed(2)} ★ (Raw ${insights.rawRating.toStringAsFixed(2)} ★)',
                   style: GoogleFonts.plusJakartaSans(
-                    fontSize: 11.5,
+                    fontSize: 11,
                     fontWeight: FontWeight.w800,
                     color: colors.onPrimaryContainer,
                   ),
                 ),
               ),
+              Consumer<VoiceProvider>(
+                builder: (context, voice, _) {
+                  final pid = _product?.id ?? 0;
+                  final isPlayingVerdict =
+                      voice.isSpeaking &&
+                      voice.activeLabel == 'AI Verdict: $pid';
+                  return IconButton.filledTonal(
+                    visualDensity: VisualDensity.compact,
+                    tooltip: isPlayingVerdict
+                        ? 'Stop Verdict Audio'
+                        : 'Listen to Review Summary',
+                    onPressed: () {
+                      if (isPlayingVerdict) {
+                        voice.stopSpeaking();
+                      } else {
+                        final prosText = pros.isNotEmpty
+                            ? 'Strengths: ${pros.take(2).join(', ')}.'
+                            : '';
+                        final consText = cons.isNotEmpty
+                            ? 'Trade-offs: ${cons.take(2).join(', ')}.'
+                            : '';
+                        final spoken =
+                            'Trust weighted score is ${insights.trustWeightedRating.toStringAsFixed(1)} stars across ${insights.totalReviews} reviews. $summary $prosText $consText';
+                        voice.speakText(
+                          spoken,
+                          label: 'AI Verdict: $pid',
+                          preferNeural: spoken.length <= 185,
+                          forceEvenIfMuted: true,
+                        );
+                      }
+                    },
+                    icon: Icon(
+                      isPlayingVerdict
+                          ? Icons.stop_rounded
+                          : Icons.volume_up_rounded,
+                      size: 17,
+                    ),
+                  );
+                },
+              ),
             ],
           ),
-          const SizedBox(height: 10),
-          Text(
-            summary,
-            style: GoogleFonts.inter(
-              fontSize: 13.5,
-              height: 1.5,
-              color: colors.onSurfaceVariant,
+          if (summary.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            Text(
+              summary,
+              style: GoogleFonts.inter(
+                fontSize: 13.5,
+                height: 1.5,
+                color: colors.onSurfaceVariant,
+              ),
             ),
-          ),
-          if (pros.isNotEmpty || cons.isNotEmpty) ...[
+          ],
+          if (!isEarlyFeedback && (pros.isNotEmpty || cons.isNotEmpty)) ...[
             const SizedBox(height: 14),
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -2553,7 +2773,7 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          'Verified Strengths',
+                          'Shopper-Reported Strengths',
                           style: GoogleFonts.plusJakartaSans(
                             fontSize: 12.5,
                             fontWeight: FontWeight.w800,
@@ -2608,13 +2828,14 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
               ],
             ),
           ],
-          if (aspects.isNotEmpty) ...[
+          if (!isEarlyFeedback && aspects.isNotEmpty) ...[
             const SizedBox(height: 12),
             Wrap(
               spacing: 8,
               runSpacing: 8,
               children: aspects.entries.map((entry) {
                 return Chip(
+                  visualDensity: VisualDensity.compact,
                   label: Text(
                     '${entry.key}: ${entry.value}% positive',
                     style: GoogleFonts.inter(
@@ -2633,15 +2854,8 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
 
   Widget _buildReviewsSummaryCard(BuildContext context, Product product) {
     final colors = Theme.of(context).colorScheme;
-    final filteredReviews = _verifiedBuyersOnly
-        ? _reviews
-              .where((r) => !r.isFlaggedSuspicious && r.trustScore >= 70)
-              .toList()
-        : _reviews;
-    final verifiedCount = _reviews
-        .where((r) => r.verifiedPurchase || r.trustScore >= 75)
-        .length;
-    final flaggedCount = _reviews.where((r) => r.isFlaggedSuspicious).length;
+    final auth = context.watch<AuthProvider>();
+    final showComposer = _myReview == null || _isEditingMyReview;
 
     return Container(
       padding: const EdgeInsets.all(20),
@@ -2655,83 +2869,451 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // Header + Rating Distribution Histogram
           Wrap(
-            spacing: 12,
-            runSpacing: 8,
-            alignment: WrapAlignment.spaceBetween,
+            spacing: 24,
+            runSpacing: 16,
             crossAxisAlignment: WrapCrossAlignment.center,
             children: [
-              Text(
-                'Customer Reviews (${_reviews.length}) • $verifiedCount High-Trust • $flaggedCount Flagged',
-                style: GoogleFonts.plusJakartaSans(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w800,
-                  color: colors.onSurface,
-                ),
-              ),
-              FilterChip(
-                label: const Text('Verified High-Trust Only'),
-                selected: _verifiedBuyersOnly,
-                onSelected: (val) => setState(() => _verifiedBuyersOnly = val),
-              ),
-            ],
-          ),
-          const SizedBox(height: 14),
-          Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: _reviewCommentController,
-                  decoration: InputDecoration(
-                    hintText: 'Share your experience with ${product.name}...',
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Customer Reviews ($_totalReviewsCount)',
+                    style: GoogleFonts.plusJakartaSans(
+                      fontSize: 17,
+                      fontWeight: FontWeight.w800,
+                      color: colors.onSurface,
                     ),
                   ),
+                  const SizedBox(height: 6),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      Text(
+                        _totalReviewsCount > 0
+                            ? _averageRating.toStringAsFixed(1)
+                            : '—',
+                        style: GoogleFonts.plusJakartaSans(
+                          fontSize: 34,
+                          fontWeight: FontWeight.w900,
+                          color: colors.onSurface,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 6),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: List.generate(5, (i) {
+                                final filled =
+                                    _totalReviewsCount > 0 &&
+                                    (i + 1) <= _averageRating.round();
+                                return Icon(
+                                  filled
+                                      ? Icons.star_rounded
+                                      : Icons.star_border_rounded,
+                                  size: 16,
+                                  color: Colors.amber,
+                                );
+                              }),
+                            ),
+                            Text(
+                              '$_verifiedPurchaseCount Verified Purchase${_verifiedPurchaseCount == 1 ? '' : 's'}',
+                              style: GoogleFonts.inter(
+                                fontSize: 11.5,
+                                fontWeight: FontWeight.w600,
+                                color: const Color(0xFF10B981),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+              if (_totalReviewsCount > 0)
+                ConstrainedBox(
+                  constraints: const BoxConstraints(minWidth: 220, maxWidth: 320),
+                  child: Column(
+                    children: [5, 4, 3, 2, 1].map((star) {
+                      final cnt = _ratingDistribution[star] ?? 0;
+                      final ratio = _totalReviewsCount > 0
+                          ? (cnt / _totalReviewsCount).clamp(0.0, 1.0)
+                          : 0.0;
+                      final isSelected = _starFilter == star;
+                      return InkWell(
+                        borderRadius: BorderRadius.circular(6),
+                        onTap: () {
+                          setState(() {
+                            _starFilter = isSelected ? null : star;
+                          });
+                          _loadReviews(product.id);
+                        },
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 2.5),
+                          child: Row(
+                            children: [
+                              SizedBox(
+                                width: 32,
+                                child: Text(
+                                  '$star ★',
+                                  style: GoogleFonts.plusJakartaSans(
+                                    fontSize: 11.5,
+                                    fontWeight: isSelected
+                                        ? FontWeight.w900
+                                        : FontWeight.w700,
+                                    color: isSelected
+                                        ? colors.primary
+                                        : colors.onSurface,
+                                  ),
+                                ),
+                              ),
+                              Expanded(
+                                child: ClipRRect(
+                                  borderRadius: BorderRadius.circular(999),
+                                  child: LinearProgressIndicator(
+                                    value: ratio,
+                                    minHeight: 8,
+                                    backgroundColor:
+                                        colors.surfaceContainerHighest,
+                                    color: isSelected
+                                        ? colors.primary
+                                        : Colors.amber,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              SizedBox(
+                                width: 26,
+                                child: Text(
+                                  '$cnt',
+                                  textAlign: TextAlign.right,
+                                  style: GoogleFonts.inter(
+                                    fontSize: 11,
+                                    color: colors.onSurfaceVariant,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    }).toList(),
+                  ),
                 ),
-              ),
-              const SizedBox(width: 10),
-              DropdownButton<int>(
-                value: _selectedRating,
-                items: [5, 4, 3, 2, 1]
-                    .map(
-                      (r) => DropdownMenuItem(value: r, child: Text('$r ★')),
-                    )
-                    .toList(),
-                onChanged: (v) {
-                  if (v != null) setState(() => _selectedRating = v);
-                },
-              ),
-              const SizedBox(width: 10),
-              FilledButton(
-                onPressed: _isSubmittingReview ? null : _submitReview,
-                child: Text(_isSubmittingReview ? 'Posting...' : 'Post'),
-              ),
             ],
           ),
           const SizedBox(height: 16),
-          if (_isReviewsLoading)
-            const Center(child: CircularProgressIndicator())
-          else if (filteredReviews.isEmpty)
-            Text(
-              'No reviews match the current filter yet.',
-              style: GoogleFonts.inter(color: colors.onSurfaceVariant),
+
+          // Sort & Filter Controls
+          Wrap(
+            spacing: 10,
+            runSpacing: 8,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10),
+                decoration: BoxDecoration(
+                  color: colors.surface,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(
+                    color: colors.outlineVariant.withValues(alpha: 0.5),
+                  ),
+                ),
+                child: DropdownButtonHideUnderline(
+                  child: DropdownButton<String>(
+                    value: _reviewSort,
+                    isDense: true,
+                    style: GoogleFonts.plusJakartaSans(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                      color: colors.onSurface,
+                    ),
+                    items: const [
+                      DropdownMenuItem(
+                        value: 'most_helpful',
+                        child: Text('Sort: Most Helpful'),
+                      ),
+                      DropdownMenuItem(
+                        value: 'highest_trust',
+                        child: Text('Sort: Highest Trust'),
+                      ),
+                      DropdownMenuItem(
+                        value: 'most_recent',
+                        child: Text('Sort: Most Recent'),
+                      ),
+                      DropdownMenuItem(
+                        value: 'highest_rating',
+                        child: Text('Sort: Highest Rating'),
+                      ),
+                      DropdownMenuItem(
+                        value: 'lowest_rating',
+                        child: Text('Sort: Lowest Rating'),
+                      ),
+                    ],
+                    onChanged: (val) {
+                      if (val == null || val == _reviewSort) return;
+                      setState(() => _reviewSort = val);
+                      _loadReviews(product.id);
+                    },
+                  ),
+                ),
+              ),
+              FilterChip(
+                label: const Text('Verified Purchases Only'),
+                selected: _verifiedBuyersOnly,
+                visualDensity: VisualDensity.compact,
+                onSelected: (val) {
+                  setState(() => _verifiedBuyersOnly = val);
+                  _loadReviews(product.id);
+                },
+              ),
+              if (_starFilter != null)
+                InputChip(
+                  label: Text('$_starFilter ★ Only'),
+                  visualDensity: VisualDensity.compact,
+                  onDeleted: () {
+                    setState(() => _starFilter = null);
+                    _loadReviews(product.id);
+                  },
+                ),
+            ],
+          ),
+          const SizedBox(height: 16),
+
+          // Own Review Banner OR Interactive Review Composer
+          if (!showComposer && _myReview != null)
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: colors.primaryContainer.withValues(alpha: 0.35),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(
+                  color: colors.primary.withValues(alpha: 0.45),
+                ),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.check_circle_rounded, color: colors.primary),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'You reviewed this item (${_myReview!.rating} ★)',
+                          style: GoogleFonts.plusJakartaSans(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w800,
+                            color: colors.onSurface,
+                          ),
+                        ),
+                        Text(
+                          _myReview!.comment,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: GoogleFonts.inter(
+                            fontSize: 12,
+                            color: colors.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  TextButton.icon(
+                    onPressed: () => _beginEditingReview(_myReview!),
+                    icon: const Icon(Icons.edit_outlined, size: 16),
+                    label: const Text('Edit'),
+                  ),
+                  TextButton.icon(
+                    onPressed: () => _deleteReview(_myReview!),
+                    style: TextButton.styleFrom(
+                      foregroundColor: Colors.redAccent,
+                    ),
+                    icon: const Icon(Icons.delete_outline_rounded, size: 16),
+                    label: const Text('Delete'),
+                  ),
+                ],
+              ),
             )
           else
-            ...filteredReviews.take(8).map((r) {
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: colors.surface,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(
+                  color: colors.outlineVariant.withValues(alpha: 0.45),
+                ),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        _isEditingMyReview
+                            ? 'Edit Your Review'
+                            : 'Write a Customer Review',
+                        style: GoogleFonts.plusJakartaSans(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w800,
+                          color: colors.onSurface,
+                        ),
+                      ),
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: List.generate(5, (idx) {
+                          final starVal = idx + 1;
+                          return IconButton(
+                            visualDensity: VisualDensity.compact,
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(
+                              minWidth: 30,
+                              minHeight: 30,
+                            ),
+                            tooltip: '$starVal Stars',
+                            onPressed: () =>
+                                setState(() => _selectedRating = starVal),
+                            icon: Icon(
+                              starVal <= _selectedRating
+                                  ? Icons.star_rounded
+                                  : Icons.star_border_rounded,
+                              color: Colors.amber,
+                              size: 24,
+                            ),
+                          );
+                        }),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: _reviewTitleController,
+                    enabled: !_isSubmittingReview,
+                    decoration: InputDecoration(
+                      labelText: 'Review Headline (optional)',
+                      hintText: 'e.g. Crisp sound & comfortable fit',
+                      isDense: true,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: _reviewCommentController,
+                    enabled: !_isSubmittingReview,
+                    maxLines: 2,
+                    decoration: InputDecoration(
+                      hintText: auth.isAuthenticated
+                          ? 'Share honest details about build quality, fit, or value...'
+                          : 'Sign in to publish a verified customer review...',
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: _availableReviewTags.map((tag) {
+                      final selected = _selectedReviewTags.contains(tag);
+                      return FilterChip(
+                        label: Text(tag, style: const TextStyle(fontSize: 11)),
+                        selected: selected,
+                        visualDensity: VisualDensity.compact,
+                        onSelected: (v) {
+                          setState(() {
+                            if (v) {
+                              _selectedReviewTags.add(tag);
+                            } else {
+                              _selectedReviewTags.remove(tag);
+                            }
+                          });
+                        },
+                      );
+                    }).toList(),
+                  ),
+                  const SizedBox(height: 10),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      if (_isEditingMyReview)
+                        TextButton(
+                          onPressed: _isSubmittingReview
+                              ? null
+                              : _cancelEditingReview,
+                          child: const Text('Cancel'),
+                        ),
+                      const SizedBox(width: 8),
+                      FilledButton.icon(
+                        onPressed: _isSubmittingReview
+                            ? null
+                            : (auth.isAuthenticated
+                                  ? _submitReview
+                                  : () => context.push('/auth')),
+                        icon: Icon(
+                          auth.isAuthenticated
+                              ? Icons.send_rounded
+                              : Icons.login_rounded,
+                          size: 16,
+                        ),
+                        label: Text(
+                          _isSubmittingReview
+                              ? 'Saving...'
+                              : (!auth.isAuthenticated
+                                    ? 'Sign In to Review'
+                                    : (_isEditingMyReview
+                                          ? 'Update Review'
+                                          : 'Publish Review')),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          const SizedBox(height: 16),
+
+          // Reviews Feed
+          if (_isReviewsLoading)
+            const Center(child: CircularProgressIndicator())
+          else if (_reviews.isEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              child: Text(
+                _totalReviewsCount == 0
+                    ? 'No reviews yet for ${product.name}. Be the first to review!'
+                    : 'No reviews match the active filter. Try clearing the star or verified filter.',
+                style: GoogleFonts.inter(color: colors.onSurfaceVariant),
+              ),
+            )
+          else
+            ..._reviews.take(15).map((r) {
               final trustScore = r.trustScore;
               final isSuspicious = r.isFlaggedSuspicious || trustScore < 45;
               final trustLabel = isSuspicious
-                  ? 'Flagged Suspicious'
-                  : (trustScore >= 80
-                        ? 'Verified High-Trust'
-                        : 'Likely Genuine');
+                  ? 'Flagged Low-Trust'
+                  : (trustScore >= 82
+                        ? 'High-Trust'
+                        : 'Standard Trust');
+              final isVoting = _helpfulVotingIds.contains(r.id);
+
               return Container(
-                margin: const EdgeInsets.only(bottom: 10),
-                padding: const EdgeInsets.all(12),
+                margin: const EdgeInsets.only(bottom: 12),
+                padding: const EdgeInsets.all(14),
                 decoration: BoxDecoration(
                   color: colors.surface,
-                  borderRadius: BorderRadius.circular(12),
+                  borderRadius: BorderRadius.circular(14),
                   border: Border.all(
                     color: isSuspicious
                         ? Colors.redAccent.withValues(alpha: 0.4)
@@ -2741,50 +3323,201 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 6,
+                      alignment: WrapAlignment.spaceBetween,
+                      crossAxisAlignment: WrapCrossAlignment.center,
                       children: [
-                        Text(
-                          '${r.author} • ${r.rating} ★',
-                          style: GoogleFonts.plusJakartaSans(
-                            fontWeight: FontWeight.w700,
-                            fontSize: 13,
-                            color: colors.onSurface,
-                          ),
-                        ),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 8,
-                            vertical: 3,
-                          ),
-                          decoration: BoxDecoration(
-                            color: isSuspicious
-                                ? Colors.redAccent.withValues(alpha: 0.15)
-                                : const Color(
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              '${r.author} • ${r.rating} ★',
+                              style: GoogleFonts.plusJakartaSans(
+                                fontWeight: FontWeight.w800,
+                                fontSize: 13,
+                                color: colors.onSurface,
+                              ),
+                            ),
+                            if (r.verifiedPurchase) ...[
+                              const SizedBox(width: 8),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 7,
+                                  vertical: 2,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: const Color(
                                     0xFF10B981,
-                                  ).withValues(alpha: 0.15),
-                            borderRadius: BorderRadius.circular(999),
-                          ),
-                          child: Text(
-                            '$trustLabel (${trustScore.toStringAsFixed(0)}/100)',
-                            style: GoogleFonts.plusJakartaSans(
-                              fontSize: 11,
-                              fontWeight: FontWeight.w800,
+                                  ).withValues(alpha: 0.14),
+                                  borderRadius: BorderRadius.circular(999),
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const Icon(
+                                      Icons.verified_rounded,
+                                      size: 12,
+                                      color: Color(0xFF10B981),
+                                    ),
+                                    const SizedBox(width: 3),
+                                    Text(
+                                      'Verified Purchase',
+                                      style: GoogleFonts.plusJakartaSans(
+                                        fontSize: 10.5,
+                                        fontWeight: FontWeight.w800,
+                                        color: const Color(0xFF10B981),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                        Tooltip(
+                          message: r.trustReasons.isNotEmpty
+                              ? r.trustReasons
+                              : 'AI Trust Score',
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 3,
+                            ),
+                            decoration: BoxDecoration(
                               color: isSuspicious
-                                  ? Colors.redAccent
-                                  : const Color(0xFF10B981),
+                                  ? Colors.redAccent.withValues(alpha: 0.14)
+                                  : colors.surfaceContainerHighest,
+                              borderRadius: BorderRadius.circular(999),
+                            ),
+                            child: Text(
+                              '$trustLabel (${trustScore.toStringAsFixed(0)}/100)',
+                              style: GoogleFonts.plusJakartaSans(
+                                fontSize: 10.5,
+                                fontWeight: FontWeight.w800,
+                                color: isSuspicious
+                                    ? Colors.redAccent
+                                    : colors.onSurfaceVariant,
+                              ),
                             ),
                           ),
                         ),
                       ],
                     ),
-                    const SizedBox(height: 6),
+                    if (r.title.trim().isNotEmpty) ...[
+                      const SizedBox(height: 6),
+                      Text(
+                        r.title,
+                        style: GoogleFonts.plusJakartaSans(
+                          fontSize: 13.5,
+                          fontWeight: FontWeight.w800,
+                          color: colors.onSurface,
+                        ),
+                      ),
+                    ],
+                    const SizedBox(height: 5),
                     Text(
                       r.comment,
                       style: GoogleFonts.inter(
                         fontSize: 13,
+                        height: 1.45,
                         color: colors.onSurfaceVariant,
                       ),
+                    ),
+                    if (r.tags.isNotEmpty) ...[
+                      const SizedBox(height: 8),
+                      Wrap(
+                        spacing: 6,
+                        runSpacing: 4,
+                        children: r.tags.map((t) {
+                          return Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 2.5,
+                            ),
+                            decoration: BoxDecoration(
+                              color: colors.primaryContainer.withValues(
+                                alpha: 0.5,
+                              ),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: Text(
+                              t,
+                              style: GoogleFonts.inter(
+                                fontSize: 10.5,
+                                fontWeight: FontWeight.w600,
+                                color: colors.onPrimaryContainer,
+                              ),
+                            ),
+                          );
+                        }).toList(),
+                      ),
+                    ],
+                    if (r.trustReasons.isNotEmpty) ...[
+                      const SizedBox(height: 6),
+                      Text(
+                        r.trustReasons,
+                        style: GoogleFonts.inter(
+                          fontSize: 11,
+                          color: colors.onSurfaceVariant.withValues(alpha: 0.8),
+                        ),
+                      ),
+                    ],
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        OutlinedButton.icon(
+                          style: OutlinedButton.styleFrom(
+                            visualDensity: VisualDensity.compact,
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 4,
+                            ),
+                            backgroundColor: r.viewerVotedHelpful
+                                ? colors.primaryContainer.withValues(alpha: 0.6)
+                                : null,
+                          ),
+                          onPressed: isVoting
+                              ? null
+                              : () => _toggleHelpfulVote(r),
+                          icon: Icon(
+                            r.viewerVotedHelpful
+                                ? Icons.thumb_up_alt_rounded
+                                : Icons.thumb_up_off_alt_rounded,
+                            size: 14,
+                            color: r.viewerVotedHelpful
+                                ? colors.primary
+                                : colors.onSurfaceVariant,
+                          ),
+                          label: Text(
+                            'Helpful (${r.helpfulCount})',
+                            style: GoogleFonts.plusJakartaSans(
+                              fontSize: 11.5,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                        const Spacer(),
+                        if (r.isOwnReview) ...[
+                          IconButton(
+                            visualDensity: VisualDensity.compact,
+                            tooltip: 'Edit your review',
+                            onPressed: () => _beginEditingReview(r),
+                            icon: const Icon(Icons.edit_outlined, size: 17),
+                          ),
+                          IconButton(
+                            visualDensity: VisualDensity.compact,
+                            tooltip: 'Delete your review',
+                            onPressed: () => _deleteReview(r),
+                            icon: const Icon(
+                              Icons.delete_outline_rounded,
+                              size: 17,
+                              color: Colors.redAccent,
+                            ),
+                          ),
+                        ],
+                      ],
                     ),
                   ],
                 ),

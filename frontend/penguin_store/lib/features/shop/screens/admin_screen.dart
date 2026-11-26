@@ -150,6 +150,15 @@ class _AdminScreenState extends State<AdminScreen>
             ),
           ],
         ),
+        actions: [
+          IconButton(
+            tooltip: 'MCP Agent Hub & Protocol Inspector',
+            icon: const Icon(Icons.hub_rounded),
+            color: const Color(0xFF0284C7),
+            onPressed: () => context.push('/mcp-hub'),
+          ),
+          const SizedBox(width: 8),
+        ],
         bottom: TabBar(
           controller: _tabController,
           isScrollable: true,

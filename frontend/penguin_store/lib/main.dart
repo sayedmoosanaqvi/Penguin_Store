@@ -35,19 +35,31 @@ Future<void> initPush() async {
   }
 }
 
+Future<void> _initBackgroundSdkServices() async {
+  try {
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
+  } catch (e) {
+    debugPrint('Firebase init background error: $e');
+  }
+
+  try {
+    Stripe.publishableKey =
+        'pk_test_51TRZQcC2PJj8GFRJu9id3IBbT4rqMSDpGmcCQLRKVO5q1BdkMOXwFuRm9CrsIxfAchZKc6xEKRF3B7P0ByyJbSWe007itj8oW7';
+    await Stripe.instance.applySettings();
+  } catch (e) {
+    debugPrint('Stripe applySettings background error: $e');
+  }
+}
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   await SharedPreferencesHelper.init();
 
-  await Firebase.initializeApp(
-    options: DefaultFirebaseOptions.currentPlatform,
-  );
-
-  Stripe.publishableKey =
-      'pk_test_51TRZQcC2PJj8GFRJu9id3IBbT4rqMSDpGmcCQLRKVO5q1BdkMOXwFuRm9CrsIxfAchZKc6xEKRF3B7P0ByyJbSWe007itj8oW7';
-
-  await Stripe.instance.applySettings();
+  // Launch external SDKs non-blocking so frame 1 paints immediately without jitter
+  _initBackgroundSdkServices();
 
   runApp(
     MultiProvider(
